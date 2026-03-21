@@ -26,10 +26,10 @@ enum Commands {
         /// Input .st file
         input: PathBuf,
     },
-    /// Compile a Structured Text file
+    /// Compile one or more Structured Text files
     Compile {
-        /// Input .st file
-        input: PathBuf,
+        /// Input .st file(s)
+        inputs: Vec<PathBuf>,
         /// Output file
         #[arg(short, long)]
         output: PathBuf,
@@ -112,27 +112,50 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::Compile {
-            input,
+            inputs,
             output,
             target,
         } => {
-            let source = read_source(&input)?;
-            let (unit, parse_errors) = plcc_st::parse(&source);
-
-            if !parse_errors.is_empty() {
-                let file_name = input.display().to_string();
-                for err in &parse_errors {
-                    let report = miette::Report::new(err.clone())
-                        .with_source_code(NamedSource::new(&file_name, source.clone()));
-                    eprintln!("{:?}", report);
-                }
+            if inputs.is_empty() {
+                eprintln!("Error: at least one input file is required");
                 std::process::exit(1);
             }
 
-            let context = inkwell::context::Context::create();
-            let mut compiler = plcc_codegen::Compiler::new(&context, &input.display().to_string());
+            // Parse all input files and merge declarations
+            let mut all_declarations = Vec::new();
+            let mut had_errors = false;
 
-            if let Err(e) = compiler.compile(&unit) {
+            for input in &inputs {
+                let source = read_source(input)?;
+                let (unit, parse_errors) = plcc_st::parse(&source);
+
+                if !parse_errors.is_empty() {
+                    let file_name = input.display().to_string();
+                    for err in &parse_errors {
+                        let report = miette::Report::new(err.clone())
+                            .with_source_code(NamedSource::new(&file_name, source.clone()));
+                        eprintln!("{:?}", report);
+                    }
+                    had_errors = true;
+                }
+
+                all_declarations.extend(unit.declarations);
+            }
+
+            if had_errors {
+                std::process::exit(1);
+            }
+
+            let merged = plcc_st::ast::CompilationUnit {
+                declarations: all_declarations,
+                span: plcc_st::span::Span::empty(),
+            };
+
+            let module_name = inputs[0].display().to_string();
+            let context = inkwell::context::Context::create();
+            let mut compiler = plcc_codegen::Compiler::new(&context, &module_name);
+
+            if let Err(e) = compiler.compile(&merged) {
                 eprintln!("Codegen error: {e}");
                 std::process::exit(1);
             }
@@ -148,7 +171,7 @@ fn main() -> Result<()> {
                     .map_err(|e| miette::miette!("{e}"))?;
             }
 
-            println!("Compiled to {}", output.display());
+            println!("Compiled {} file(s) to {}", inputs.len(), output.display());
             Ok(())
         }
     }

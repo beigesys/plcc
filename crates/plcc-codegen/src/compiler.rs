@@ -2,6 +2,7 @@
 
 use inkwell::builder::Builder;
 use inkwell::context::Context;
+use inkwell::intrinsics::Intrinsic;
 use inkwell::module::Module;
 use inkwell::targets::{
     CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
@@ -15,6 +16,58 @@ use thiserror::Error;
 use plcc_hir::types::{IecType, TypeRegistry};
 use plcc_hir::check::TypeChecker;
 use plcc_st::ast::*;
+
+/// Parse a TIME literal string (e.g., "T#100ms", "T#1s500ms", "T#1h30m") into nanoseconds.
+fn parse_time_literal_ns(s: &str) -> i64 {
+    let s = s.trim();
+    // Strip T# or t# prefix
+    let s = if s.len() > 2 && (s.starts_with("T#") || s.starts_with("t#")) {
+        &s[2..]
+    } else {
+        s
+    };
+    let mut ns: i64 = 0;
+    let mut num_buf = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        if c.is_ascii_digit() || c == '.' || c == '_' {
+            if c != '_' {
+                num_buf.push(c);
+            }
+            chars.next();
+        } else {
+            let val: f64 = num_buf.parse().unwrap_or(0.0);
+            num_buf.clear();
+            // Read unit suffix
+            let mut unit = String::new();
+            while let Some(&u) = chars.peek() {
+                if u.is_ascii_alphabetic() {
+                    unit.push(u);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            let multiplier: f64 = match unit.to_lowercase().as_str() {
+                "d" => 86_400_000_000_000.0,
+                "h" => 3_600_000_000_000.0,
+                "m" => 60_000_000_000.0,
+                "s" => 1_000_000_000.0,
+                "ms" => 1_000_000.0,
+                "us" => 1_000.0,
+                "ns" => 1.0,
+                _ => 0.0,
+            };
+            ns += (val * multiplier) as i64;
+        }
+    }
+    // Handle trailing number with no unit (assume ms for bare numbers)
+    if !num_buf.is_empty() {
+        let val: f64 = num_buf.parse().unwrap_or(0.0);
+        ns += (val * 1_000_000.0) as i64; // default ms
+    }
+    ns
+}
 
 #[derive(Debug, Error)]
 pub enum CodegenError {
@@ -54,7 +107,571 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
+    /// Register LLVM intrinsic declarations for standard math functions.
+    fn register_standard_functions(&self) {
+        let f32_ty: BasicTypeEnum = self.context.f32_type().into();
+        let f64_ty: BasicTypeEnum = self.context.f64_type().into();
+
+        let intrinsics_f32_f64 = [
+            "llvm.fabs",
+            "llvm.sqrt",
+            "llvm.sin",
+            "llvm.cos",
+            "llvm.exp",
+            "llvm.log",
+            "llvm.pow",
+            "llvm.floor",
+            "llvm.ceil",
+            "llvm.trunc",
+        ];
+
+        for name in &intrinsics_f32_f64 {
+            if let Some(intr) = Intrinsic::find(name) {
+                intr.get_declaration(&self.module, &[f32_ty]);
+                intr.get_declaration(&self.module, &[f64_ty]);
+            }
+        }
+
+        let i16_ty: BasicTypeEnum = self.context.i16_type().into();
+        let i32_ty: BasicTypeEnum = self.context.i32_type().into();
+        for name in &["llvm.fshl", "llvm.fshr"] {
+            if let Some(intr) = Intrinsic::find(name) {
+                intr.get_declaration(&self.module, &[i16_ty]);
+                intr.get_declaration(&self.module, &[i32_ty]);
+            }
+        }
+    }
+
+    /// Try to compile a call to a standard library function.
+    /// Returns `Ok(Some(val))` if handled, `Ok(None)` if not a known stdlib function.
+    fn compile_stdlib_call(
+        &mut self,
+        name: &str,
+        args: &[CallArg],
+        function: FunctionValue<'ctx>,
+    ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
+        let uname = name.to_uppercase();
+
+        let mut arg_vals: Vec<BasicValueEnum<'ctx>> = Vec::new();
+        for arg in args {
+            if let Some(val) = self.compile_expression(&arg.value, function)? {
+                arg_vals.push(val);
+            } else {
+                return Err(CodegenError::LlvmError(format!(
+                    "failed to compile argument for {uname}"
+                )));
+            }
+        }
+
+        match uname.as_str() {
+            "SQRT" | "SIN" | "COS" | "EXP" | "LN" => {
+                if arg_vals.len() != 1 {
+                    return Err(CodegenError::LlvmError(format!(
+                        "{uname} expects 1 argument, got {}",
+                        arg_vals.len()
+                    )));
+                }
+                let arg = self.ensure_float(arg_vals[0])?;
+                let intrinsic_name = match uname.as_str() {
+                    "SQRT" => "llvm.sqrt",
+                    "SIN" => "llvm.sin",
+                    "COS" => "llvm.cos",
+                    "EXP" => "llvm.exp",
+                    "LN" => "llvm.log",
+                    _ => unreachable!(),
+                };
+                let fty = arg.get_type();
+                let intr = Intrinsic::find(intrinsic_name).ok_or_else(|| {
+                    CodegenError::LlvmError(format!("intrinsic {intrinsic_name} not found"))
+                })?;
+                let fn_val = intr
+                    .get_declaration(&self.module, &[fty.into()])
+                    .ok_or_else(|| {
+                        CodegenError::LlvmError(format!(
+                            "failed to get declaration for {intrinsic_name}"
+                        ))
+                    })?;
+                let result = self
+                    .builder
+                    .build_call(fn_val, &[arg.into()], &uname.to_lowercase())
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                    .try_as_basic_value();
+                let result = match result {
+                    inkwell::values::ValueKind::Basic(v) => v,
+                    _ => return Err(CodegenError::LlvmError("expected return value from intrinsic".into())),
+                };
+                Ok(Some(result))
+            }
+
+            "EXPT" => {
+                if arg_vals.len() != 2 {
+                    return Err(CodegenError::LlvmError(format!(
+                        "EXPT expects 2 arguments, got {}",
+                        arg_vals.len()
+                    )));
+                }
+                let base = self.ensure_float(arg_vals[0])?;
+                let exp_val = self.ensure_float(arg_vals[1])?;
+                let (base, exp_val) = self.match_float_widths(base, exp_val)?;
+                let fty = base.get_type();
+                let intr = Intrinsic::find("llvm.pow").ok_or_else(|| {
+                    CodegenError::LlvmError("intrinsic llvm.pow not found".into())
+                })?;
+                let fn_val = intr
+                    .get_declaration(&self.module, &[fty.into()])
+                    .ok_or_else(|| {
+                        CodegenError::LlvmError("failed to get llvm.pow declaration".into())
+                    })?;
+                let result = self
+                    .builder
+                    .build_call(fn_val, &[base.into(), exp_val.into()], "expt")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                    .try_as_basic_value();
+                let result = match result {
+                    inkwell::values::ValueKind::Basic(v) => v,
+                    _ => return Err(CodegenError::LlvmError("expected return value from intrinsic".into())),
+                };
+                Ok(Some(result))
+            }
+
+            "ABS" => {
+                if arg_vals.len() != 1 {
+                    return Err(CodegenError::LlvmError(format!(
+                        "ABS expects 1 argument, got {}",
+                        arg_vals.len()
+                    )));
+                }
+                let arg = arg_vals[0];
+                if arg.is_float_value() {
+                    let fv = arg.into_float_value();
+                    let fty = fv.get_type();
+                    let intr = Intrinsic::find("llvm.fabs").unwrap();
+                    let fn_val = intr.get_declaration(&self.module, &[fty.into()]).unwrap();
+                    let call_result = self
+                        .builder
+                        .build_call(fn_val, &[fv.into()], "fabs")
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                        .try_as_basic_value();
+                    let result = match call_result {
+                        inkwell::values::ValueKind::Basic(v) => v,
+                        _ => return Err(CodegenError::LlvmError("expected return value from fabs intrinsic".into())),
+                    };
+                    Ok(Some(result))
+                } else {
+                    let iv = arg.into_int_value();
+                    let zero = iv.get_type().const_zero();
+                    let is_neg = self
+                        .builder
+                        .build_int_compare(IntPredicate::SLT, iv, zero, "is_neg")
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    let neg_val = self
+                        .builder
+                        .build_int_neg(iv, "neg")
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    let result = self
+                        .builder
+                        .build_select(is_neg, neg_val, iv, "abs")
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    Ok(Some(result.into()))
+                }
+            }
+
+            "MIN" | "MAX" => {
+                if arg_vals.len() != 2 {
+                    return Err(CodegenError::LlvmError(format!(
+                        "{uname} expects 2 arguments, got {}",
+                        arg_vals.len()
+                    )));
+                }
+                let a = arg_vals[0];
+                let b = arg_vals[1];
+                let is_max = uname == "MAX";
+
+                if a.is_float_value() || b.is_float_value() {
+                    let fa = self.ensure_float(a)?;
+                    let fb = self.ensure_float(b)?;
+                    let (fa, fb) = self.match_float_widths(fa, fb)?;
+                    let pred = if is_max {
+                        FloatPredicate::OGT
+                    } else {
+                        FloatPredicate::OLT
+                    };
+                    let cmp = self
+                        .builder
+                        .build_float_compare(pred, fa, fb, "cmp")
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    let result = self
+                        .builder
+                        .build_select(cmp, fa, fb, &uname.to_lowercase())
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    Ok(Some(result.into()))
+                } else {
+                    let ia = a.into_int_value();
+                    let ib = b.into_int_value();
+                    let (ia, ib) = self.match_int_widths(ia, ib)?;
+                    let pred = if is_max {
+                        IntPredicate::SGT
+                    } else {
+                        IntPredicate::SLT
+                    };
+                    let cmp = self
+                        .builder
+                        .build_int_compare(pred, ia, ib, "cmp")
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    let result = self
+                        .builder
+                        .build_select(cmp, ia, ib, &uname.to_lowercase())
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    Ok(Some(result.into()))
+                }
+            }
+
+            "LIMIT" => {
+                if arg_vals.len() != 3 {
+                    return Err(CodegenError::LlvmError(format!(
+                        "LIMIT expects 3 arguments, got {}",
+                        arg_vals.len()
+                    )));
+                }
+                let mn = arg_vals[0];
+                let val = arg_vals[1];
+                let mx = arg_vals[2];
+
+                if val.is_float_value() || mn.is_float_value() || mx.is_float_value() {
+                    let fmn = self.ensure_float(mn)?;
+                    let fval = self.ensure_float(val)?;
+                    let fmx = self.ensure_float(mx)?;
+                    let cmp_hi = self
+                        .builder
+                        .build_float_compare(FloatPredicate::OLT, fval, fmx, "cmp_hi")
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    let clamped_hi = self
+                        .builder
+                        .build_select(cmp_hi, fval, fmx, "clamp_hi")
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                        .into_float_value();
+                    let cmp_lo = self
+                        .builder
+                        .build_float_compare(FloatPredicate::OGT, clamped_hi, fmn, "cmp_lo")
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    let result = self
+                        .builder
+                        .build_select(cmp_lo, clamped_hi, fmn, "limit")
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    Ok(Some(result.into()))
+                } else {
+                    let imn = mn.into_int_value();
+                    let ival = val.into_int_value();
+                    let imx = mx.into_int_value();
+                    let (ival, imx) = self.match_int_widths(ival, imx)?;
+                    let (ival, imn) = self.match_int_widths(ival, imn)?;
+                    let (imx, imn) = self.match_int_widths(imx, imn)?;
+                    let cmp_hi = self
+                        .builder
+                        .build_int_compare(IntPredicate::SLT, ival, imx, "cmp_hi")
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    let clamped_hi = self
+                        .builder
+                        .build_select(cmp_hi, ival, imx, "clamp_hi")
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                        .into_int_value();
+                    let cmp_lo = self
+                        .builder
+                        .build_int_compare(IntPredicate::SGT, clamped_hi, imn, "cmp_lo")
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    let result = self
+                        .builder
+                        .build_select(cmp_lo, clamped_hi, imn, "limit")
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    Ok(Some(result.into()))
+                }
+            }
+
+            "SEL" => {
+                if arg_vals.len() != 3 {
+                    return Err(CodegenError::LlvmError(format!(
+                        "SEL expects 3 arguments, got {}",
+                        arg_vals.len()
+                    )));
+                }
+                let g = arg_vals[0].into_int_value();
+                let in0 = arg_vals[1];
+                let in1 = arg_vals[2];
+                let cond = self.to_i1(g)?;
+                let result = self
+                    .builder
+                    .build_select(cond, in1, in0, "sel")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(Some(result.into()))
+            }
+
+            "SHL" => {
+                if arg_vals.len() != 2 {
+                    return Err(CodegenError::LlvmError(format!(
+                        "SHL expects 2 arguments, got {}",
+                        arg_vals.len()
+                    )));
+                }
+                let val = arg_vals[0].into_int_value();
+                let n = arg_vals[1].into_int_value();
+                let (val, n) = self.match_int_widths(val, n)?;
+                let result = self
+                    .builder
+                    .build_left_shift(val, n, "shl")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(Some(result.into()))
+            }
+            "SHR" => {
+                if arg_vals.len() != 2 {
+                    return Err(CodegenError::LlvmError(format!(
+                        "SHR expects 2 arguments, got {}",
+                        arg_vals.len()
+                    )));
+                }
+                let val = arg_vals[0].into_int_value();
+                let n = arg_vals[1].into_int_value();
+                let (val, n) = self.match_int_widths(val, n)?;
+                let result = self
+                    .builder
+                    .build_right_shift(val, n, false, "shr")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(Some(result.into()))
+            }
+
+            "ROL" => {
+                if arg_vals.len() != 2 {
+                    return Err(CodegenError::LlvmError(format!(
+                        "ROL expects 2 arguments, got {}",
+                        arg_vals.len()
+                    )));
+                }
+                let val = arg_vals[0].into_int_value();
+                let n = arg_vals[1].into_int_value();
+                let (val, n) = self.match_int_widths(val, n)?;
+                let ity: BasicTypeEnum = val.get_type().into();
+                let intr = Intrinsic::find("llvm.fshl").ok_or_else(|| {
+                    CodegenError::LlvmError("intrinsic llvm.fshl not found".into())
+                })?;
+                let fn_val = intr.get_declaration(&self.module, &[ity]).ok_or_else(|| {
+                    CodegenError::LlvmError("failed to get llvm.fshl declaration".into())
+                })?;
+                let result = self
+                    .builder
+                    .build_call(fn_val, &[val.into(), val.into(), n.into()], "rol")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                    .try_as_basic_value();
+                let result = match result {
+                    inkwell::values::ValueKind::Basic(v) => v,
+                    _ => return Err(CodegenError::LlvmError("expected return value from intrinsic".into())),
+                };
+                Ok(Some(result))
+            }
+            "ROR" => {
+                if arg_vals.len() != 2 {
+                    return Err(CodegenError::LlvmError(format!(
+                        "ROR expects 2 arguments, got {}",
+                        arg_vals.len()
+                    )));
+                }
+                let val = arg_vals[0].into_int_value();
+                let n = arg_vals[1].into_int_value();
+                let (val, n) = self.match_int_widths(val, n)?;
+                let ity: BasicTypeEnum = val.get_type().into();
+                let intr = Intrinsic::find("llvm.fshr").ok_or_else(|| {
+                    CodegenError::LlvmError("intrinsic llvm.fshr not found".into())
+                })?;
+                let fn_val = intr.get_declaration(&self.module, &[ity]).ok_or_else(|| {
+                    CodegenError::LlvmError("failed to get llvm.fshr declaration".into())
+                })?;
+                let result = self
+                    .builder
+                    .build_call(fn_val, &[val.into(), val.into(), n.into()], "ror")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                    .try_as_basic_value();
+                let result = match result {
+                    inkwell::values::ValueKind::Basic(v) => v,
+                    _ => return Err(CodegenError::LlvmError("expected return value from intrinsic".into())),
+                };
+                Ok(Some(result))
+            }
+
+            "INT_TO_REAL" | "DINT_TO_REAL" => {
+                if arg_vals.len() != 1 {
+                    return Err(CodegenError::LlvmError(format!(
+                        "{uname} expects 1 argument"
+                    )));
+                }
+                let iv = arg_vals[0].into_int_value();
+                let result = self
+                    .builder
+                    .build_signed_int_to_float(iv, self.context.f32_type(), "to_real")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(Some(result.into()))
+            }
+            "INT_TO_LREAL" | "DINT_TO_LREAL" => {
+                if arg_vals.len() != 1 {
+                    return Err(CodegenError::LlvmError(format!(
+                        "{uname} expects 1 argument"
+                    )));
+                }
+                let iv = arg_vals[0].into_int_value();
+                let result = self
+                    .builder
+                    .build_signed_int_to_float(iv, self.context.f64_type(), "to_lreal")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(Some(result.into()))
+            }
+            "REAL_TO_INT" => {
+                if arg_vals.len() != 1 {
+                    return Err(CodegenError::LlvmError(
+                        "REAL_TO_INT expects 1 argument".into(),
+                    ));
+                }
+                let fv = arg_vals[0].into_float_value();
+                let result = self
+                    .builder
+                    .build_float_to_signed_int(fv, self.context.i16_type(), "real_to_int")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(Some(result.into()))
+            }
+            "REAL_TO_DINT" => {
+                if arg_vals.len() != 1 {
+                    return Err(CodegenError::LlvmError(
+                        "REAL_TO_DINT expects 1 argument".into(),
+                    ));
+                }
+                let fv = arg_vals[0].into_float_value();
+                let result = self
+                    .builder
+                    .build_float_to_signed_int(fv, self.context.i32_type(), "real_to_dint")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(Some(result.into()))
+            }
+            "INT_TO_DINT" => {
+                if arg_vals.len() != 1 {
+                    return Err(CodegenError::LlvmError(
+                        "INT_TO_DINT expects 1 argument".into(),
+                    ));
+                }
+                let iv = arg_vals[0].into_int_value();
+                let result = self
+                    .builder
+                    .build_int_s_extend(iv, self.context.i32_type(), "int_to_dint")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(Some(result.into()))
+            }
+            "DINT_TO_INT" => {
+                if arg_vals.len() != 1 {
+                    return Err(CodegenError::LlvmError(
+                        "DINT_TO_INT expects 1 argument".into(),
+                    ));
+                }
+                let iv = arg_vals[0].into_int_value();
+                let result = self
+                    .builder
+                    .build_int_truncate(iv, self.context.i16_type(), "dint_to_int")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(Some(result.into()))
+            }
+            "BOOL_TO_INT" => {
+                if arg_vals.len() != 1 {
+                    return Err(CodegenError::LlvmError(
+                        "BOOL_TO_INT expects 1 argument".into(),
+                    ));
+                }
+                let iv = arg_vals[0].into_int_value();
+                let result = self
+                    .builder
+                    .build_int_z_extend(iv, self.context.i16_type(), "bool_to_int")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(Some(result.into()))
+            }
+            "TRUNC" => {
+                if arg_vals.len() != 1 {
+                    return Err(CodegenError::LlvmError(
+                        "TRUNC expects 1 argument".into(),
+                    ));
+                }
+                let fv = self.ensure_float(arg_vals[0])?;
+                let fty = fv.get_type();
+                let intr = Intrinsic::find("llvm.trunc").ok_or_else(|| {
+                    CodegenError::LlvmError("intrinsic llvm.trunc not found".into())
+                })?;
+                let fn_val =
+                    intr.get_declaration(&self.module, &[fty.into()])
+                        .ok_or_else(|| {
+                            CodegenError::LlvmError(
+                                "failed to get llvm.trunc declaration".into(),
+                            )
+                        })?;
+                let result = self
+                    .builder
+                    .build_call(fn_val, &[fv.into()], "trunc")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                    .try_as_basic_value();
+                let result = match result {
+                    inkwell::values::ValueKind::Basic(v) => v,
+                    _ => return Err(CodegenError::LlvmError("expected return value from intrinsic".into())),
+                };
+                Ok(Some(result))
+            }
+
+            _ => Ok(None),
+        }
+    }
+
+    /// Convert a value to float if it's an integer (int -> f32).
+    fn ensure_float(
+        &self,
+        val: BasicValueEnum<'ctx>,
+    ) -> Result<inkwell::values::FloatValue<'ctx>, CodegenError> {
+        if val.is_float_value() {
+            Ok(val.into_float_value())
+        } else {
+            self.builder
+                .build_signed_int_to_float(
+                    val.into_int_value(),
+                    self.context.f32_type(),
+                    "itof",
+                )
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))
+        }
+    }
+
+    /// Match two float values to the same (wider) type.
+    fn match_float_widths(
+        &self,
+        a: inkwell::values::FloatValue<'ctx>,
+        b: inkwell::values::FloatValue<'ctx>,
+    ) -> Result<
+        (
+            inkwell::values::FloatValue<'ctx>,
+            inkwell::values::FloatValue<'ctx>,
+        ),
+        CodegenError,
+    > {
+        let aty = a.get_type();
+        let bty = b.get_type();
+        if aty == bty {
+            Ok((a, b))
+        } else if aty == self.context.f64_type() {
+            let b_ext = self
+                .builder
+                .build_float_ext(b, self.context.f64_type(), "fext")
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+            Ok((a, b_ext))
+        } else {
+            let a_ext = self
+                .builder
+                .build_float_ext(a, self.context.f64_type(), "fext")
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+            Ok((a_ext, b))
+        }
+    }
+
     pub fn compile(&mut self, unit: &CompilationUnit) -> Result<(), CodegenError> {
+        self.register_standard_functions();
+
         // Register types and POUs
         for decl in &unit.declarations {
             if let Declaration::FunctionBlock(fb) = decl {
@@ -135,7 +752,39 @@ impl<'ctx> Compiler<'ctx> {
                     .product();
                 elem_ty.array_type(total_size).into()
             }
-            _ => self.context.i32_type().into(), // Fallback
+            // TIME/LTIME stored as i64 (nanoseconds)
+            IecType::Time | IecType::Ltime => self.context.i64_type().into(),
+            // DATE types stored as i64 (Unix timestamp in nanoseconds)
+            IecType::Date | IecType::Tod | IecType::Dt | IecType::Ldate | IecType::Ltod | IecType::Ldt => {
+                self.context.i64_type().into()
+            }
+            // STRING stored as fixed-size byte array (default 256 bytes)
+            IecType::StringType { max_len } => {
+                let len = max_len.unwrap_or(256) + 1; // +1 for null terminator
+                self.context.i8_type().array_type(len as u32).into()
+            }
+            IecType::WstringType { max_len } => {
+                let len = max_len.unwrap_or(256) + 1;
+                self.context.i16_type().array_type(len as u32).into()
+            }
+            IecType::Char => self.context.i8_type().into(),
+            IecType::Wchar => self.context.i16_type().into(),
+            // ENUM backed by base type (default i32)
+            IecType::Enum { base_type, .. } => self.iec_to_llvm_type(base_type),
+            // Subrange uses base type
+            IecType::Subrange { base_type, .. } => self.iec_to_llvm_type(base_type),
+            // Pointer as opaque ptr
+            IecType::Pointer(_) => self.context.ptr_type(AddressSpace::default()).into(),
+            // Struct with known fields
+            IecType::Struct { fields, .. } => {
+                let field_types: Vec<BasicTypeEnum<'ctx>> = fields
+                    .iter()
+                    .map(|(_, ft)| self.iec_to_llvm_type(ft))
+                    .collect();
+                self.context.struct_type(&field_types, false).into()
+            }
+            // Fallback for FB instances and others
+            _ => self.context.i32_type().into(),
         }
     }
 
@@ -419,7 +1068,7 @@ impl<'ctx> Compiler<'ctx> {
     ) -> Result<(), CodegenError> {
         match &stmt.kind {
             StatementKind::Assignment { target, value } => {
-                if let Some(ptr) = self.compile_lvalue(target)? {
+                if let Some(ptr) = self.compile_lvalue_with_fn(target, function)? {
                     if let Some(val) = self.compile_expression(value, function)? {
                         self.builder
                             .build_store(ptr, val)
@@ -864,9 +1513,18 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
-    fn compile_lvalue(
+    fn compile_lvalue_with_fn(
         &mut self,
         expr: &Expression,
+        function: FunctionValue<'ctx>,
+    ) -> Result<Option<PointerValue<'ctx>>, CodegenError> {
+        self.compile_lvalue_inner(expr, Some(function))
+    }
+
+    fn compile_lvalue_inner(
+        &mut self,
+        expr: &Expression,
+        function: Option<FunctionValue<'ctx>>,
     ) -> Result<Option<PointerValue<'ctx>>, CodegenError> {
         match &expr.kind {
             ExpressionKind::Identifier(ident) => {
@@ -874,6 +1532,142 @@ impl<'ctx> Compiler<'ctx> {
                     .variables
                     .get(&ident.name.to_uppercase())
                     .map(|(ptr, _)| *ptr))
+            }
+            ExpressionKind::ArrayIndex { array, indices } => {
+                // Get the array variable's pointer and IEC type
+                if let ExpressionKind::Identifier(ident) = &array.kind {
+                    if let Some((arr_ptr, iec_ty)) = self.variables.get(&ident.name.to_uppercase()).cloned() {
+                        if let IecType::Array { ref ranges, .. } = iec_ty {
+                            let ranges = ranges.clone();
+                            let function = function.ok_or_else(|| {
+                                CodegenError::LlvmError("array index in lvalue requires function context".into())
+                            })?;
+                            let arr_llvm_ty = self.iec_to_llvm_type(&iec_ty);
+
+                            if indices.len() == 1 {
+                                let idx_val = self.compile_expression(&indices[0], function)?
+                                    .ok_or_else(|| CodegenError::LlvmError("failed to compile array index".into()))?;
+
+                                let lo = ranges[0].0;
+                                let idx_int = idx_val.into_int_value();
+                                let adjusted = if lo != 0 {
+                                    let lo_val = idx_int.get_type().const_int(lo as u64, true);
+                                    self.builder
+                                        .build_int_sub(idx_int, lo_val, "adj_idx")
+                                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                                } else {
+                                    idx_int
+                                };
+
+                                let idx_i32 = if adjusted.get_type().get_bit_width() < 32 {
+                                    self.builder
+                                        .build_int_s_extend(adjusted, self.context.i32_type(), "idx_ext")
+                                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                                } else {
+                                    adjusted
+                                };
+
+                                let zero = self.context.i32_type().const_zero();
+                                let elem_ptr = unsafe {
+                                    self.builder
+                                        .build_in_bounds_gep(arr_llvm_ty, arr_ptr, &[zero, idx_i32], "arr_elem")
+                                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                                };
+                                Ok(Some(elem_ptr))
+                            } else {
+                                // Multi-dimensional: flatten to linear index
+                                let function = function;
+                                let mut linear_idx = self.context.i32_type().const_zero();
+
+                                for (dim, idx_expr) in indices.iter().enumerate() {
+                                    let idx_val = self.compile_expression(idx_expr, function)?
+                                        .ok_or_else(|| CodegenError::LlvmError("failed to compile array index".into()))?;
+
+                                    let lo = ranges[dim].0;
+                                    let idx_int = idx_val.into_int_value();
+                                    let idx_i32 = if idx_int.get_type().get_bit_width() < 32 {
+                                        self.builder
+                                            .build_int_s_extend(idx_int, self.context.i32_type(), "idx_ext")
+                                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                                    } else {
+                                        idx_int
+                                    };
+
+                                    let adjusted = if lo != 0 {
+                                        let lo_val = self.context.i32_type().const_int(lo as u64, true);
+                                        self.builder
+                                            .build_int_sub(idx_i32, lo_val, "adj_idx")
+                                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                                    } else {
+                                        idx_i32
+                                    };
+
+                                    let mut stride = 1i64;
+                                    for d in (dim + 1)..ranges.len() {
+                                        stride *= ranges[d].1 - ranges[d].0 + 1;
+                                    }
+                                    let stride_val = self.context.i32_type().const_int(stride as u64, false);
+                                    let component = self.builder
+                                        .build_int_mul(adjusted, stride_val, "dim_component")
+                                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                                    linear_idx = self.builder
+                                        .build_int_add(linear_idx, component, "linear_idx")
+                                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                                }
+
+                                let zero = self.context.i32_type().const_zero();
+                                let elem_ptr = unsafe {
+                                    self.builder
+                                        .build_in_bounds_gep(arr_llvm_ty, arr_ptr, &[zero, linear_idx], "arr_elem")
+                                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                                };
+                                Ok(Some(elem_ptr))
+                            }
+                        } else {
+                            Err(CodegenError::UnsupportedType(format!(
+                                "array indexing on non-array type: {}", iec_ty
+                            )))
+                        }
+                    } else {
+                        Ok(None)
+                    }
+                } else {
+                    Ok(None)
+                }
+            }
+            ExpressionKind::MemberAccess { object, member } => {
+                if let ExpressionKind::Identifier(ident) = &object.kind {
+                    if let Some((obj_ptr, iec_ty)) = self.variables.get(&ident.name.to_uppercase()).cloned() {
+                        if let IecType::Struct { fields, .. } = &iec_ty {
+                            let field_idx = fields
+                                .iter()
+                                .position(|(name, _)| name.eq_ignore_ascii_case(&member.name))
+                                .ok_or_else(|| {
+                                    CodegenError::UndefinedVariable(format!(
+                                        "{}.{}",
+                                        ident.name, member.name
+                                    ))
+                                })?;
+                            let struct_llvm_ty = self.iec_to_llvm_type(&iec_ty);
+                            let field_ptr = self
+                                .builder
+                                .build_struct_gep(
+                                    struct_llvm_ty.into_struct_type(),
+                                    obj_ptr,
+                                    field_idx as u32,
+                                    &member.name,
+                                )
+                                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                            Ok(Some(field_ptr))
+                        } else {
+                            Ok(None)
+                        }
+                    } else {
+                        Ok(None)
+                    }
+                } else {
+                    Ok(None)
+                }
             }
             _ => Ok(None),
         }
@@ -942,11 +1736,22 @@ impl<'ctx> Compiler<'ctx> {
             ExpressionKind::Parenthesized(inner) => self.compile_expression(inner, function),
             ExpressionKind::FunctionCall { callee, args } => {
                 if let ExpressionKind::Identifier(ident) = &callee.kind {
-                    if let Some(fn_val) = self.module.get_function(&ident.name.to_lowercase()) {
-                        let mut arg_vals: Vec<BasicMetadataTypeEnum<'ctx>> = Vec::new();
+                    // Try standard library functions first (case-insensitive)
+                    if let Some(result) =
+                        self.compile_stdlib_call(&ident.name, args, function)?
+                    {
+                        return Ok(Some(result));
+                    }
+
+                    // Fall back to user-defined functions
+                    if let Some(fn_val) =
+                        self.module.get_function(&ident.name.to_lowercase())
+                    {
                         let mut compiled_args = Vec::new();
                         for arg in args {
-                            if let Some(val) = self.compile_expression(&arg.value, function)? {
+                            if let Some(val) =
+                                self.compile_expression(&arg.value, function)?
+                            {
                                 compiled_args.push(val.into());
                             }
                         }
@@ -961,6 +1766,71 @@ impl<'ctx> Compiler<'ctx> {
                     } else {
                         Ok(None)
                     }
+                } else {
+                    Ok(None)
+                }
+            }
+            ExpressionKind::TimeLiteral(s) => {
+                let ns = parse_time_literal_ns(s);
+                Ok(Some(self.context.i64_type().const_int(ns as u64, true).into()))
+            }
+            ExpressionKind::DateLiteral(_)
+            | ExpressionKind::TodLiteral(_)
+            | ExpressionKind::DtLiteral(_) => {
+                // Date/time-of-day literals — store as i64 placeholder
+                Ok(Some(self.context.i64_type().const_int(0, false).into()))
+            }
+            ExpressionKind::StringLiteral(_)
+            | ExpressionKind::WstringLiteral(_) => {
+                // String literals — not yet supported in codegen
+                Ok(None)
+            }
+            ExpressionKind::DirectVariable(_) => {
+                // Direct variables (%I, %Q, %M) resolved at link time
+                Ok(None)
+            }
+            ExpressionKind::ArrayIndex { array, indices } => {
+                // Get the element pointer via lvalue, then load from it
+                if let Some(elem_ptr) = self.compile_lvalue_with_fn(expr, function)? {
+                    // Determine the element type from the array's IEC type
+                    if let ExpressionKind::Identifier(ident) = &array.kind {
+                        if let Some((_, iec_ty)) = self.variables.get(&ident.name.to_uppercase()).cloned() {
+                            if let IecType::Array { element_type, .. } = &iec_ty {
+                                let elem_llvm_ty = self.iec_to_llvm_type(element_type);
+                                let val = self
+                                    .builder
+                                    .build_load(elem_llvm_ty, elem_ptr, "arr_load")
+                                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                                return Ok(Some(val));
+                            }
+                        }
+                    }
+                    Ok(None)
+                } else {
+                    Ok(None)
+                }
+            }
+            ExpressionKind::MemberAccess { object, member } => {
+                // Get the field pointer via lvalue, then load from it
+                if let Some(field_ptr) = self.compile_lvalue_with_fn(expr, function)? {
+                    if let ExpressionKind::Identifier(ident) = &object.kind {
+                        if let Some((_, iec_ty)) = self.variables.get(&ident.name.to_uppercase()).cloned() {
+                            if let IecType::Struct { fields, .. } = &iec_ty {
+                                if let Some((_, field_ty)) = fields
+                                    .iter()
+                                    .find(|(name, _)| name.eq_ignore_ascii_case(&member.name))
+                                {
+                                    let field_llvm_ty = self.iec_to_llvm_type(field_ty);
+                                    let val = self
+                                        .builder
+                                        .build_load(field_llvm_ty, field_ptr, &member.name)
+                                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                                    return Ok(Some(val));
+                                }
+                            }
+                        }
+                    }
+                    Ok(None)
                 } else {
                     Ok(None)
                 }
