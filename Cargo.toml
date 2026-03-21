@@ -5,6 +5,7 @@ members = [
     "crates/plcc-codegen",
     "crates/plcc-runtime",
     "crates/plcc-cli",
+    "crates/plcc-hal",
 ]
 resolver = "3"
 

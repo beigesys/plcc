@@ -653,6 +653,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "plcc-hal"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "plcc-hir"
 version = "0.1.0"
 dependencies = [

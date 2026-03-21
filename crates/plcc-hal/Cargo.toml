@@ -1,0 +1,12 @@
+[package]
+name = "plcc-hal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["simulator"]
+simulator = []
+
+[dependencies]
+thiserror = "2.0.18"
