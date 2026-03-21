@@ -81,6 +81,17 @@ pub enum CodegenError {
     TargetError(String),
 }
 
+/// Information about a compiled method on an FB/Class.
+#[derive(Clone, Debug)]
+struct MethodInfo {
+    /// The LLVM function name for this method (e.g. "counter_add").
+    fn_name: String,
+    /// Parameter names and types (excludes the implicit instance pointer).
+    params: Vec<(String, IecType)>,
+    /// Return type (Void if the method doesn't return a value).
+    return_type: IecType,
+}
+
 /// Layout information for a compiled function block.
 #[derive(Clone, Debug)]
 struct FbLayout<'ctx> {
@@ -88,6 +99,8 @@ struct FbLayout<'ctx> {
     scan_fn_name: String,
     /// Ordered field names and their IEC types (inputs, outputs, locals — all in declaration order).
     fields: Vec<(String, IecType)>,
+    /// Compiled methods, keyed by uppercase method name.
+    methods: HashMap<String, MethodInfo>,
 }
 
 /// Runtime info for an FB instance embedded in a parent POU's state struct.
@@ -99,6 +112,8 @@ struct FbInstanceInfo<'ctx> {
     scan_fn_name: String,
     fields: Vec<(String, IecType)>,
     struct_type: StructType<'ctx>,
+    /// Compiled methods on this FB type.
+    methods: HashMap<String, MethodInfo>,
 }
 
 pub struct Compiler<'ctx> {
@@ -786,24 +801,27 @@ impl<'ctx> Compiler<'ctx> {
 
         // Register types and POUs
         for decl in &unit.declarations {
-            if let Declaration::FunctionBlock(fb) = decl {
-                let fb_type = IecType::FbInstance(fb.name.name.clone());
-                self.type_registry.register(
-                    fb.name.name.to_uppercase(),
-                    fb_type.clone(),
-                );
-                // Also register in the type checker so resolve_type_spec finds it.
-                // Register both original case and uppercase since TypeRegistry lookups
-                // are case-sensitive and the parser may preserve original casing.
-                self.type_checker.types.register(
-                    fb.name.name.to_uppercase(),
-                    fb_type.clone(),
-                );
-                self.type_checker.types.register(
-                    fb.name.name.clone(),
-                    fb_type,
-                );
-            }
+            let (name, fb_type) = match decl {
+                Declaration::FunctionBlock(fb) => {
+                    (fb.name.name.clone(), IecType::FbInstance(fb.name.name.clone()))
+                }
+                Declaration::Class(cls) => {
+                    (cls.name.name.clone(), IecType::FbInstance(cls.name.name.clone()))
+                }
+                _ => continue,
+            };
+            self.type_registry.register(
+                name.to_uppercase(),
+                fb_type.clone(),
+            );
+            self.type_checker.types.register(
+                name.to_uppercase(),
+                fb_type.clone(),
+            );
+            self.type_checker.types.register(
+                name.clone(),
+                fb_type,
+            );
         }
 
         // Scan for VAR_GLOBAL declarations and create a global struct
@@ -845,11 +863,12 @@ impl<'ctx> Compiler<'ctx> {
             self.global_var = Some((global_val, global_struct, names_types));
         }
 
-        // Compile FBs and functions first so they're available when programs reference them
+        // Compile FBs, classes, and functions first so they're available when programs reference them
         for decl in &unit.declarations {
             match decl {
                 Declaration::Function(f) => self.compile_function(f)?,
                 Declaration::FunctionBlock(fb) => self.compile_function_block(fb)?,
+                Declaration::Class(cls) => self.compile_class(cls)?,
                 _ => {}
             }
         }
@@ -1068,6 +1087,7 @@ impl<'ctx> Compiler<'ctx> {
                             scan_fn_name: layout.scan_fn_name.clone(),
                             fields: layout.fields.clone(),
                             struct_type: layout.struct_type,
+                            methods: layout.methods.clone(),
                         },
                     );
                 }
@@ -1285,12 +1305,27 @@ impl<'ctx> Compiler<'ctx> {
             .zip(field_iec_types.iter())
             .map(|(n, t)| (n.clone(), t.clone()))
             .collect();
+
+        // Compile methods first (before the scan body) so they're available
+        let mut method_infos: HashMap<String, MethodInfo> = HashMap::new();
+        for method in &fb.methods {
+            let method_info = self.compile_method(
+                &fb.name.name,
+                method,
+                struct_type,
+                &field_names,
+                &field_iec_types,
+            )?;
+            method_infos.insert(method.name.name.to_uppercase(), method_info);
+        }
+
         self.compiled_fbs.insert(
             fb.name.name.to_uppercase(),
             FbLayout {
                 struct_type,
                 scan_fn_name: fn_name.clone(),
                 fields: fb_fields,
+                methods: method_infos,
             },
         );
 
@@ -1325,6 +1360,251 @@ impl<'ctx> Compiler<'ctx> {
             .build_return(None)
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
         Ok(())
+    }
+
+    /// Compile a CLASS declaration. A CLASS is like an FB but has no scan body — only methods.
+    fn compile_class(&mut self, cls: &ClassDecl) -> Result<(), CodegenError> {
+        let fn_name = format!("{}_scan", cls.name.name.to_lowercase());
+
+        let mut field_types: Vec<BasicTypeEnum<'ctx>> = Vec::new();
+        let mut field_names: Vec<String> = Vec::new();
+        let mut field_iec_types: Vec<IecType> = Vec::new();
+
+        for block in &cls.var_blocks {
+            for decl in &block.declarations {
+                let iec_ty = self.resolve_type_spec(&decl.type_spec);
+                let llvm_ty = self.iec_to_llvm_type(&iec_ty);
+                field_types.push(llvm_ty);
+                field_names.push(decl.name.name.clone());
+                field_iec_types.push(iec_ty);
+            }
+        }
+
+        let struct_type = self.context.struct_type(&field_types, false);
+        let state_ptr_type = self.context.ptr_type(AddressSpace::default());
+
+        // Create an empty scan function (classes don't have a body like FBs)
+        let void_fn_type = self.context.void_type().fn_type(&[state_ptr_type.into()], false);
+        let scan_function = self.module.add_function(&fn_name, void_fn_type, None);
+        let entry = self.context.append_basic_block(scan_function, "entry");
+        self.builder.position_at_end(entry);
+        self.builder
+            .build_return(None)
+            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+
+        let fb_fields: Vec<(String, IecType)> = field_names
+            .iter()
+            .zip(field_iec_types.iter())
+            .map(|(n, t)| (n.clone(), t.clone()))
+            .collect();
+
+        // Compile methods
+        let mut method_infos: HashMap<String, MethodInfo> = HashMap::new();
+        for method in &cls.methods {
+            let method_info = self.compile_method(
+                &cls.name.name,
+                method,
+                struct_type,
+                &field_names,
+                &field_iec_types,
+            )?;
+            method_infos.insert(method.name.name.to_uppercase(), method_info);
+        }
+
+        self.compiled_fbs.insert(
+            cls.name.name.to_uppercase(),
+            FbLayout {
+                struct_type,
+                scan_fn_name: fn_name,
+                fields: fb_fields,
+                methods: method_infos,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Compile a METHOD declaration on an FB/Class.
+    /// Produces an LLVM function: `{fb_name}_{method_name}(instance_ptr, ...params) -> ret_type`
+    fn compile_method(
+        &mut self,
+        fb_name: &str,
+        method: &MethodDecl,
+        fb_struct_type: StructType<'ctx>,
+        fb_field_names: &[String],
+        fb_field_iec_types: &[IecType],
+    ) -> Result<MethodInfo, CodegenError> {
+        let method_fn_name = format!(
+            "{}_{}",
+            fb_name.to_lowercase(),
+            method.name.name.to_lowercase()
+        );
+
+        let ret_iec_ty = method
+            .return_type
+            .as_ref()
+            .map(|t| self.resolve_type_spec(t))
+            .unwrap_or(IecType::Void);
+
+        // First param is always the instance pointer
+        let state_ptr_type = self.context.ptr_type(AddressSpace::default());
+        let mut param_types: Vec<BasicMetadataTypeEnum<'ctx>> = vec![state_ptr_type.into()];
+        let mut param_names: Vec<String> = Vec::new();
+        let mut param_iec_types: Vec<IecType> = Vec::new();
+
+        for block in &method.var_blocks {
+            if block.kind == VarBlockKind::VarInput {
+                for decl in &block.declarations {
+                    let iec_ty = self.resolve_type_spec(&decl.type_spec);
+                    let llvm_ty = self.iec_to_llvm_type(&iec_ty);
+                    param_types.push(llvm_ty.into());
+                    param_names.push(decl.name.name.clone());
+                    param_iec_types.push(iec_ty);
+                }
+            }
+        }
+
+        let fn_type = if ret_iec_ty == IecType::Void {
+            self.context.void_type().fn_type(&param_types, false)
+        } else {
+            let ret_llvm = self.iec_to_llvm_type(&ret_iec_ty);
+            ret_llvm.fn_type(&param_types, false)
+        };
+
+        let function = self.module.add_function(&method_fn_name, fn_type, None);
+        let entry = self.context.append_basic_block(function, "entry");
+        self.builder.position_at_end(entry);
+
+        // Save and clear current variables
+        let saved_vars = std::mem::take(&mut self.variables);
+        let saved_fb_instances = std::mem::take(&mut self.fb_instances);
+        let saved_struct_type = self.current_struct_type.take();
+        let saved_state_ptr = self.current_state_ptr.take();
+
+        let instance_ptr = function.get_nth_param(0).unwrap().into_pointer_value();
+
+        // Set up FB fields as variables via GEP on the instance pointer
+        self.current_struct_type = Some(fb_struct_type);
+        self.current_state_ptr = Some(instance_ptr);
+
+        for (i, (name, iec_ty)) in fb_field_names
+            .iter()
+            .zip(fb_field_iec_types.iter())
+            .enumerate()
+        {
+            let ptr = self
+                .builder
+                .build_struct_gep(fb_struct_type, instance_ptr, i as u32, name)
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+            self.variables
+                .insert(name.to_uppercase(), (ptr, iec_ty.clone()));
+        }
+
+        // Allocate method input params as local allocas
+        for (i, (name, iec_ty)) in param_names
+            .iter()
+            .zip(param_iec_types.iter())
+            .enumerate()
+        {
+            let llvm_ty = self.iec_to_llvm_type(iec_ty);
+            let alloca = self
+                .builder
+                .build_alloca(llvm_ty, name)
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+            // Param 0 is instance_ptr, so method params start at index 1
+            self.builder
+                .build_store(alloca, function.get_nth_param((i + 1) as u32).unwrap())
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+            self.variables
+                .insert(name.to_uppercase(), (alloca, iec_ty.clone()));
+        }
+
+        // Allocate local vars (VAR, VAR_TEMP, etc. — not VAR_INPUT)
+        for block in &method.var_blocks {
+            if block.kind != VarBlockKind::VarInput {
+                for decl in &block.declarations {
+                    let iec_ty = self.resolve_type_spec(&decl.type_spec);
+                    let llvm_ty = self.iec_to_llvm_type(&iec_ty);
+                    let alloca = self
+                        .builder
+                        .build_alloca(llvm_ty, &decl.name.name)
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    if let Some(init) = &decl.initializer {
+                        if let Some(val) = self.compile_expression(init, function)? {
+                            self.builder
+                                .build_store(alloca, val)
+                                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                        }
+                    }
+                    self.variables
+                        .insert(decl.name.name.to_uppercase(), (alloca, iec_ty));
+                }
+            }
+        }
+
+        // Return value variable (method name = return value, like functions)
+        if ret_iec_ty != IecType::Void {
+            let ret_llvm = self.iec_to_llvm_type(&ret_iec_ty);
+            let ret_alloca = self
+                .builder
+                .build_alloca(ret_llvm, &method.name.name)
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+            // Initialize to zero
+            self.builder
+                .build_store(ret_alloca, ret_llvm.const_zero())
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+            self.variables.insert(
+                method.name.name.to_uppercase(),
+                (ret_alloca, ret_iec_ty.clone()),
+            );
+        }
+
+        // Add global variables
+        self.add_globals_to_variables()?;
+
+        // Compile method body
+        for stmt in &method.body {
+            self.compile_statement(stmt, function)?;
+        }
+
+        // Return
+        if ret_iec_ty != IecType::Void {
+            let ret_llvm_ty = self.iec_to_llvm_type(&ret_iec_ty);
+            if let Some((ptr, _)) = self.variables.get(&method.name.name.to_uppercase()) {
+                let val = self
+                    .builder
+                    .build_load(ret_llvm_ty, *ptr, "retval")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                self.builder
+                    .build_return(Some(&val))
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+            } else {
+                self.builder
+                    .build_return(Some(&ret_llvm_ty.const_zero()))
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+            }
+        } else {
+            self.builder
+                .build_return(None)
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+        }
+
+        // Restore saved state
+        self.variables = saved_vars;
+        self.fb_instances = saved_fb_instances;
+        self.current_struct_type = saved_struct_type;
+        self.current_state_ptr = saved_state_ptr;
+
+        let params: Vec<(String, IecType)> = param_names
+            .into_iter()
+            .zip(param_iec_types.into_iter())
+            .collect();
+
+        Ok(MethodInfo {
+            fn_name: method_fn_name,
+            params,
+            return_type: ret_iec_ty,
+        })
     }
 
     fn compile_statement(
@@ -1376,6 +1656,32 @@ impl<'ctx> Compiler<'ctx> {
                         self.compile_fb_call(&ident.name, args, function)?;
                     } else {
                         // Regular function call
+                        let call_expr = Expression {
+                            kind: ExpressionKind::FunctionCall {
+                                callee: Box::new(callee.clone()),
+                                args: args.clone(),
+                            },
+                            span: stmt.span,
+                        };
+                        self.compile_expression(&call_expr, function)?;
+                    }
+                } else if let ExpressionKind::MemberAccess { object, member } = &callee.kind {
+                    // Method call: obj.Method(args)
+                    if let ExpressionKind::Identifier(ident) = &object.kind {
+                        if self.fb_instances.contains_key(&ident.name.to_uppercase()) {
+                            self.compile_method_call(&ident.name, &member.name, args, function)?;
+                        } else {
+                            // Not an FB instance — fall through to expression compilation
+                            let call_expr = Expression {
+                                kind: ExpressionKind::FunctionCall {
+                                    callee: Box::new(callee.clone()),
+                                    args: args.clone(),
+                                },
+                                span: stmt.span,
+                            };
+                            self.compile_expression(&call_expr, function)?;
+                        }
+                    } else {
                         let call_expr = Expression {
                             kind: ExpressionKind::FunctionCall {
                                 callee: Box::new(callee.clone()),
@@ -1488,6 +1794,113 @@ impl<'ctx> Compiler<'ctx> {
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
 
         Ok(())
+    }
+
+    /// Compile a method call: `instance.MethodName(args)`
+    /// Returns the method's return value (if any).
+    fn compile_method_call(
+        &mut self,
+        instance_name: &str,
+        method_name: &str,
+        args: &[CallArg],
+        function: FunctionValue<'ctx>,
+    ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
+        let info = self
+            .fb_instances
+            .get(&instance_name.to_uppercase())
+            .ok_or_else(|| {
+                CodegenError::UndefinedVariable(format!(
+                    "FB instance '{instance_name}' not found"
+                ))
+            })?
+            .clone();
+
+        let method_info = info
+            .methods
+            .get(&method_name.to_uppercase())
+            .ok_or_else(|| {
+                CodegenError::UndefinedVariable(format!(
+                    "method '{method_name}' not found on FB type '{}'",
+                    info.fb_type_name
+                ))
+            })?
+            .clone();
+
+        // Get pointer to the embedded FB struct within the parent state
+        let parent_struct_type = self.current_struct_type.ok_or_else(|| {
+            CodegenError::LlvmError("no parent struct type for FB instance".into())
+        })?;
+        let parent_state_ptr = self.current_state_ptr.ok_or_else(|| {
+            CodegenError::LlvmError("no parent state pointer for FB instance".into())
+        })?;
+        let fb_ptr = self
+            .builder
+            .build_struct_gep(
+                parent_struct_type,
+                parent_state_ptr,
+                info.field_index,
+                &format!("{}_method_ptr", instance_name),
+            )
+            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+
+        // Build argument list: instance pointer + method params
+        let mut call_args: Vec<BasicValueEnum<'ctx>> = vec![fb_ptr.into()];
+
+        // Method params can be positional or named
+        if !args.is_empty() && args[0].name.is_some() {
+            // Named arguments — match by name to method param order
+            for (param_name, _param_ty) in &method_info.params {
+                let arg = args
+                    .iter()
+                    .find(|a| {
+                        a.name
+                            .as_ref()
+                            .map(|n| n.name.eq_ignore_ascii_case(param_name))
+                            .unwrap_or(false)
+                    })
+                    .ok_or_else(|| {
+                        CodegenError::LlvmError(format!(
+                            "missing argument '{param_name}' for method '{method_name}'"
+                        ))
+                    })?;
+                if let Some(val) = self.compile_expression(&arg.value, function)? {
+                    call_args.push(val);
+                }
+            }
+        } else {
+            // Positional arguments
+            for arg in args {
+                if let Some(val) = self.compile_expression(&arg.value, function)? {
+                    call_args.push(val);
+                }
+            }
+        }
+
+        let method_fn = self
+            .module
+            .get_function(&method_info.fn_name)
+            .ok_or_else(|| {
+                CodegenError::LlvmError(format!(
+                    "method function '{}' not found",
+                    method_info.fn_name
+                ))
+            })?;
+
+        let call_args_meta: Vec<inkwell::values::BasicMetadataValueEnum> =
+            call_args.iter().map(|v| (*v).into()).collect();
+        let call = self
+            .builder
+            .build_call(
+                method_fn,
+                &call_args_meta,
+                &format!("{}_{}_call", instance_name, method_name),
+            )
+            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+
+        match call.try_as_basic_value() {
+            inkwell::values::ValueKind::Basic(v) => Ok(Some(v)),
+            inkwell::values::ValueKind::Instruction(_) => Ok(None),
+        }
     }
 
     fn compile_if(
@@ -2151,6 +2564,19 @@ impl<'ctx> Compiler<'ctx> {
                     } else {
                         Ok(None)
                     }
+                } else if let ExpressionKind::MemberAccess { object, member } = &callee.kind {
+                    // Method call: obj.Method(args)
+                    if let ExpressionKind::Identifier(ident) = &object.kind {
+                        if self.fb_instances.contains_key(&ident.name.to_uppercase()) {
+                            return self.compile_method_call(
+                                &ident.name,
+                                &member.name,
+                                args,
+                                function,
+                            );
+                        }
+                    }
+                    Ok(None)
                 } else {
                     Ok(None)
                 }
