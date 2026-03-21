@@ -8,7 +8,7 @@ use inkwell::targets::{
     CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
 };
 use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, StructType};
-use inkwell::values::{BasicValue, BasicValueEnum, FunctionValue, PointerValue};
+use inkwell::values::{BasicValue, BasicValueEnum, FunctionValue, GlobalValue, PointerValue};
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate, OptimizationLevel};
 use std::collections::HashMap;
 use std::path::Path;
@@ -81,6 +81,26 @@ pub enum CodegenError {
     TargetError(String),
 }
 
+/// Layout information for a compiled function block.
+#[derive(Clone, Debug)]
+struct FbLayout<'ctx> {
+    struct_type: StructType<'ctx>,
+    scan_fn_name: String,
+    /// Ordered field names and their IEC types (inputs, outputs, locals — all in declaration order).
+    fields: Vec<(String, IecType)>,
+}
+
+/// Runtime info for an FB instance embedded in a parent POU's state struct.
+#[derive(Clone, Debug)]
+struct FbInstanceInfo<'ctx> {
+    /// Index of this FB instance's sub-struct within the parent struct.
+    field_index: u32,
+    fb_type_name: String,
+    scan_fn_name: String,
+    fields: Vec<(String, IecType)>,
+    struct_type: StructType<'ctx>,
+}
+
 pub struct Compiler<'ctx> {
     context: &'ctx Context,
     module: Module<'ctx>,
@@ -90,6 +110,16 @@ pub struct Compiler<'ctx> {
     type_checker: TypeChecker,
     /// Target block for EXIT statements inside loops.
     loop_exit_bb: Option<inkwell::basic_block::BasicBlock<'ctx>>,
+    /// Global variables: (global LLVM value, struct type, field names+types).
+    global_var: Option<(GlobalValue<'ctx>, StructType<'ctx>, Vec<(String, IecType)>)>,
+    /// Compiled FB layouts, keyed by uppercase FB type name.
+    compiled_fbs: HashMap<String, FbLayout<'ctx>>,
+    /// FB instances in the current POU being compiled, keyed by uppercase instance name.
+    fb_instances: HashMap<String, FbInstanceInfo<'ctx>>,
+    /// The parent struct type for the current POU being compiled (needed for GEP on FB instances).
+    current_struct_type: Option<StructType<'ctx>>,
+    /// The state pointer for the current POU being compiled.
+    current_state_ptr: Option<PointerValue<'ctx>>,
 }
 
 impl<'ctx> Compiler<'ctx> {
@@ -104,6 +134,11 @@ impl<'ctx> Compiler<'ctx> {
             type_registry: TypeRegistry::new(),
             type_checker: TypeChecker::new(),
             loop_exit_bb: None,
+            global_var: None,
+            compiled_fbs: HashMap::new(),
+            fb_instances: HashMap::new(),
+            current_struct_type: None,
+            current_state_ptr: None,
         }
     }
 
@@ -616,8 +651,85 @@ impl<'ctx> Compiler<'ctx> {
                 Ok(Some(result))
             }
 
+            "LEN" => {
+                if arg_vals.len() != 1 {
+                    return Err(CodegenError::LlvmError(
+                        "LEN expects 1 argument".into(),
+                    ));
+                }
+                // LEN needs the pointer to the string array, not the loaded value.
+                // Re-evaluate the argument as an lvalue to get the pointer.
+                if let Some(str_ptr) = self.compile_lvalue_with_fn(&args[0].value, function)? {
+                    let strlen_fn = self.get_or_create_strlen_fn();
+                    let result = self
+                        .builder
+                        .build_call(strlen_fn, &[str_ptr.into()], "len_result")
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                        .try_as_basic_value();
+                    match result {
+                        inkwell::values::ValueKind::Basic(v) => Ok(Some(v)),
+                        _ => Err(CodegenError::LlvmError("LEN: expected return value".into())),
+                    }
+                } else {
+                    Ok(Some(self.context.i16_type().const_zero().into()))
+                }
+            }
+
             _ => Ok(None),
         }
+    }
+
+    /// Get or create a `plcc_strlen` helper function that counts non-null bytes.
+    /// Signature: i16 plcc_strlen(ptr) -- scans bytes until null, returns count as i16.
+    fn get_or_create_strlen_fn(&self) -> FunctionValue<'ctx> {
+        if let Some(f) = self.module.get_function("plcc_strlen") {
+            return f;
+        }
+
+        let i16_ty = self.context.i16_type();
+        let i8_ty = self.context.i8_type();
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let fn_type = i16_ty.fn_type(&[ptr_ty.into()], false);
+        let function = self.module.add_function("plcc_strlen", fn_type, None);
+
+        let saved_block = self.builder.get_insert_block();
+
+        let entry = self.context.append_basic_block(function, "entry");
+        let loop_bb = self.context.append_basic_block(function, "loop");
+        let inc_bb = self.context.append_basic_block(function, "inc");
+        let done_bb = self.context.append_basic_block(function, "done");
+
+        self.builder.position_at_end(entry);
+        let counter = self.builder.build_alloca(i16_ty, "counter").unwrap();
+        self.builder.build_store(counter, i16_ty.const_zero()).unwrap();
+        self.builder.build_unconditional_branch(loop_bb).unwrap();
+
+        self.builder.position_at_end(loop_bb);
+        let str_ptr = function.get_nth_param(0).unwrap().into_pointer_value();
+        let idx = self.builder.build_load(i16_ty, counter, "idx").unwrap().into_int_value();
+        let idx_i64 = self.builder.build_int_s_extend(idx, self.context.i64_type(), "idx64").unwrap();
+        let char_ptr = unsafe {
+            self.builder.build_in_bounds_gep(i8_ty, str_ptr, &[idx_i64], "char_ptr").unwrap()
+        };
+        let ch = self.builder.build_load(i8_ty, char_ptr, "ch").unwrap().into_int_value();
+        let is_null = self.builder.build_int_compare(IntPredicate::EQ, ch, i8_ty.const_zero(), "is_null").unwrap();
+        self.builder.build_conditional_branch(is_null, done_bb, inc_bb).unwrap();
+
+        self.builder.position_at_end(inc_bb);
+        let cur = self.builder.build_load(i16_ty, counter, "cur").unwrap().into_int_value();
+        let next = self.builder.build_int_add(cur, i16_ty.const_int(1, false), "next").unwrap();
+        self.builder.build_store(counter, next).unwrap();
+        self.builder.build_unconditional_branch(loop_bb).unwrap();
+
+        self.builder.position_at_end(done_bb);
+        let result = self.builder.build_load(i16_ty, counter, "result").unwrap();
+        self.builder.build_return(Some(&result)).unwrap();
+
+        if let Some(bb) = saved_block {
+            self.builder.position_at_end(bb);
+        }
+
+        function
     }
 
     /// Convert a value to float if it's an integer (int -> f32).
@@ -675,19 +787,114 @@ impl<'ctx> Compiler<'ctx> {
         // Register types and POUs
         for decl in &unit.declarations {
             if let Declaration::FunctionBlock(fb) = decl {
+                let fb_type = IecType::FbInstance(fb.name.name.clone());
                 self.type_registry.register(
                     fb.name.name.to_uppercase(),
-                    IecType::FbInstance(fb.name.name.clone()),
+                    fb_type.clone(),
+                );
+                // Also register in the type checker so resolve_type_spec finds it.
+                // Register both original case and uppercase since TypeRegistry lookups
+                // are case-sensitive and the parser may preserve original casing.
+                self.type_checker.types.register(
+                    fb.name.name.to_uppercase(),
+                    fb_type.clone(),
+                );
+                self.type_checker.types.register(
+                    fb.name.name.clone(),
+                    fb_type,
                 );
             }
         }
 
+        // Scan for VAR_GLOBAL declarations and create a global struct
+        let mut global_fields = Vec::new();
+        let mut global_names = Vec::new();
+        for decl in &unit.declarations {
+            if let Declaration::GlobalVarDecl(block) = decl {
+                for var in &block.declarations {
+                    let ty = self.resolve_type_spec(&var.type_spec);
+                    global_fields.push(self.iec_to_llvm_type(&ty));
+                    global_names.push((var.name.name.clone(), ty, var.initializer.clone()));
+                }
+            }
+        }
+        if !global_fields.is_empty() {
+            let global_struct = self.context.struct_type(&global_fields, false);
+            let global_val = self.module.add_global(global_struct, None, "plcc_globals");
+            // Build initializer with constant values
+            let mut const_vals: Vec<inkwell::values::BasicValueEnum<'ctx>> = Vec::new();
+            for (i, (_name, ty, init)) in global_names.iter().enumerate() {
+                if let Some(init_expr) = init {
+                    // Try to evaluate constant initializer
+                    if let Some(val) = self.eval_const_initializer(init_expr, ty) {
+                        const_vals.push(val);
+                    } else {
+                        const_vals.push(global_fields[i].const_zero());
+                    }
+                } else {
+                    const_vals.push(global_fields[i].const_zero());
+                }
+            }
+            let init = global_struct.const_named_struct(&const_vals);
+            global_val.set_initializer(&init);
+
+            let names_types: Vec<(String, IecType)> = global_names
+                .into_iter()
+                .map(|(name, ty, _)| (name, ty))
+                .collect();
+            self.global_var = Some((global_val, global_struct, names_types));
+        }
+
+        // Compile FBs and functions first so they're available when programs reference them
         for decl in &unit.declarations {
             match decl {
-                Declaration::Program(p) => self.compile_program(p)?,
                 Declaration::Function(f) => self.compile_function(f)?,
                 Declaration::FunctionBlock(fb) => self.compile_function_block(fb)?,
                 _ => {}
+            }
+        }
+        // Then compile programs (which may instantiate FBs)
+        for decl in &unit.declarations {
+            match decl {
+                Declaration::Program(p) => self.compile_program(p)?,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Evaluate a constant expression for use as a global initializer.
+    fn eval_const_initializer(
+        &self,
+        expr: &Expression,
+        _ty: &IecType,
+    ) -> Option<BasicValueEnum<'ctx>> {
+        match &expr.kind {
+            ExpressionKind::IntegerLiteral(v) => {
+                // Use i16 (INT) by default, matching compile_expression
+                Some(self.context.i16_type().const_int(*v as u64, true).into())
+            }
+            ExpressionKind::RealLiteral(v) => {
+                Some(self.context.f32_type().const_float(*v).into())
+            }
+            ExpressionKind::BoolLiteral(v) => {
+                Some(self.context.i8_type().const_int(*v as u64, false).into())
+            }
+            _ => None,
+        }
+    }
+
+    /// Add global variable GEPs to the variables map.
+    fn add_globals_to_variables(&mut self) -> Result<(), CodegenError> {
+        if let Some((global_val, global_struct, ref names)) = self.global_var.clone() {
+            let global_ptr = global_val.as_pointer_value();
+            for (i, (name, iec_ty)) in names.iter().enumerate() {
+                let ptr = self
+                    .builder
+                    .build_struct_gep(global_struct, global_ptr, i as u32, name)
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                self.variables
+                    .insert(name.to_uppercase(), (ptr, iec_ty.clone()));
             }
         }
         Ok(())
@@ -783,7 +990,16 @@ impl<'ctx> Compiler<'ctx> {
                     .collect();
                 self.context.struct_type(&field_types, false).into()
             }
-            // Fallback for FB instances and others
+            // FB instance — look up the compiled FB's struct type
+            IecType::FbInstance(name) => {
+                if let Some(layout) = self.compiled_fbs.get(&name.to_uppercase()) {
+                    layout.struct_type.into()
+                } else {
+                    // Fallback if FB hasn't been compiled yet
+                    self.context.i32_type().into()
+                }
+            }
+            // Fallback for others
             _ => self.context.i32_type().into(),
         }
     }
@@ -823,8 +1039,12 @@ impl<'ctx> Compiler<'ctx> {
 
         let state_ptr = function.get_nth_param(0).unwrap().into_pointer_value();
 
-        // Set up variables as GEP into the state struct
+        // Set up variables as GEP into the state struct, and detect FB instances
         self.variables.clear();
+        self.fb_instances.clear();
+        self.current_struct_type = Some(struct_type);
+        self.current_state_ptr = Some(state_ptr);
+
         for (i, (name, iec_ty)) in field_names
             .iter()
             .zip(field_iec_types.iter())
@@ -836,7 +1056,26 @@ impl<'ctx> Compiler<'ctx> {
                 .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
             self.variables
                 .insert(name.to_uppercase(), (ptr, iec_ty.clone()));
+
+            // If this is an FB instance, register it
+            if let IecType::FbInstance(fb_type_name) = iec_ty {
+                if let Some(layout) = self.compiled_fbs.get(&fb_type_name.to_uppercase()).cloned() {
+                    self.fb_instances.insert(
+                        name.to_uppercase(),
+                        FbInstanceInfo {
+                            field_index: i as u32,
+                            fb_type_name: fb_type_name.clone(),
+                            scan_fn_name: layout.scan_fn_name.clone(),
+                            fields: layout.fields.clone(),
+                            struct_type: layout.struct_type,
+                        },
+                    );
+                }
+            }
         }
+
+        // Add global variables
+        self.add_globals_to_variables()?;
 
         // Compile body
         for stmt in &prog.body {
@@ -859,18 +1098,23 @@ impl<'ctx> Compiler<'ctx> {
         for block in &prog.var_blocks {
             for decl in &block.declarations {
                 let iec_ty = self.resolve_type_spec(&decl.type_spec);
+                // Skip FB instance fields in init — they are zeroed which is fine
+                // (FB internal vars with initializers would need their own _init, but
+                // zero-init is correct default for IEC FBs)
                 let ptr = self
                     .builder
                     .build_struct_gep(struct_type, init_state_ptr, field_idx, &decl.name.name)
                     .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                 self.variables
-                    .insert(decl.name.name.to_uppercase(), (ptr, iec_ty));
+                    .insert(decl.name.name.to_uppercase(), (ptr, iec_ty.clone()));
 
-                if let Some(init_expr) = &decl.initializer {
-                    if let Some(val) = self.compile_expression(init_expr, init_fn)? {
-                        self.builder
-                            .build_store(ptr, val)
-                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                if !matches!(iec_ty, IecType::FbInstance(_)) {
+                    if let Some(init_expr) = &decl.initializer {
+                        if let Some(val) = self.compile_expression(init_expr, init_fn)? {
+                            self.builder
+                                .build_store(ptr, val)
+                                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                        }
                     }
                 }
                 field_idx += 1;
@@ -979,6 +1223,9 @@ impl<'ctx> Compiler<'ctx> {
             );
         }
 
+        // Add global variables
+        self.add_globals_to_variables()?;
+
         // Compile body
         for stmt in &func.body {
             self.compile_statement(stmt, function)?;
@@ -1032,12 +1279,28 @@ impl<'ctx> Compiler<'ctx> {
         let fn_type = self.context.void_type().fn_type(&[state_ptr_type.into()], false);
         let function = self.module.add_function(&fn_name, fn_type, None);
 
+        // Record this FB's layout for use by parent POUs that instantiate it
+        let fb_fields: Vec<(String, IecType)> = field_names
+            .iter()
+            .zip(field_iec_types.iter())
+            .map(|(n, t)| (n.clone(), t.clone()))
+            .collect();
+        self.compiled_fbs.insert(
+            fb.name.name.to_uppercase(),
+            FbLayout {
+                struct_type,
+                scan_fn_name: fn_name.clone(),
+                fields: fb_fields,
+            },
+        );
+
         let entry = self.context.append_basic_block(function, "entry");
         self.builder.position_at_end(entry);
 
         let state_ptr = function.get_nth_param(0).unwrap().into_pointer_value();
 
         self.variables.clear();
+        self.fb_instances.clear();
         for (i, (name, iec_ty)) in field_names
             .iter()
             .zip(field_iec_types.iter())
@@ -1050,6 +1313,9 @@ impl<'ctx> Compiler<'ctx> {
             self.variables
                 .insert(name.to_uppercase(), (ptr, iec_ty.clone()));
         }
+
+        // Add global variables
+        self.add_globals_to_variables()?;
 
         for stmt in &fb.body {
             self.compile_statement(stmt, function)?;
@@ -1104,15 +1370,31 @@ impl<'ctx> Compiler<'ctx> {
                 self.compile_case(selector, branches, else_body, function)?;
             }
             StatementKind::FunctionCall { callee, args } => {
-                // Try to compile as a function call expression
-                let call_expr = Expression {
-                    kind: ExpressionKind::FunctionCall {
-                        callee: Box::new(callee.clone()),
-                        args: args.clone(),
-                    },
-                    span: stmt.span,
-                };
-                self.compile_expression(&call_expr, function)?;
+                // Check if this is an FB instance call
+                if let ExpressionKind::Identifier(ident) = &callee.kind {
+                    if self.fb_instances.contains_key(&ident.name.to_uppercase()) {
+                        self.compile_fb_call(&ident.name, args, function)?;
+                    } else {
+                        // Regular function call
+                        let call_expr = Expression {
+                            kind: ExpressionKind::FunctionCall {
+                                callee: Box::new(callee.clone()),
+                                args: args.clone(),
+                            },
+                            span: stmt.span,
+                        };
+                        self.compile_expression(&call_expr, function)?;
+                    }
+                } else {
+                    let call_expr = Expression {
+                        kind: ExpressionKind::FunctionCall {
+                            callee: Box::new(callee.clone()),
+                            args: args.clone(),
+                        },
+                        span: stmt.span,
+                    };
+                    self.compile_expression(&call_expr, function)?;
+                }
             }
             StatementKind::Repeat { body, until } => {
                 self.compile_repeat(body, until, function)?;
@@ -1133,6 +1415,78 @@ impl<'ctx> Compiler<'ctx> {
                 // TODO: implement these
             }
         }
+        Ok(())
+    }
+
+    /// Compile an FB instance call: write inputs, call scan, leave outputs in place.
+    fn compile_fb_call(
+        &mut self,
+        instance_name: &str,
+        args: &[CallArg],
+        function: FunctionValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let info = self
+            .fb_instances
+            .get(&instance_name.to_uppercase())
+            .ok_or_else(|| {
+                CodegenError::UndefinedVariable(format!("FB instance '{instance_name}' not found"))
+            })?
+            .clone();
+
+        // Get pointer to the embedded FB struct within the parent state
+        let parent_struct_type = self.current_struct_type.ok_or_else(|| {
+            CodegenError::LlvmError("no parent struct type for FB instance".into())
+        })?;
+        let parent_state_ptr = self.current_state_ptr.ok_or_else(|| {
+            CodegenError::LlvmError("no parent state pointer for FB instance".into())
+        })?;
+        let fb_ptr = self
+            .builder
+            .build_struct_gep(parent_struct_type, parent_state_ptr, info.field_index, &format!("{}_ptr", instance_name))
+            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+
+        // Write named arguments (inputs) to the FB struct fields
+        for arg in args {
+            if let Some(arg_name) = &arg.name {
+                // Find the field index in the FB's struct
+                let field_idx = info
+                    .fields
+                    .iter()
+                    .position(|(name, _)| name.eq_ignore_ascii_case(&arg_name.name))
+                    .ok_or_else(|| {
+                        CodegenError::UndefinedVariable(format!(
+                            "FB field '{}' not found in '{}'",
+                            arg_name.name, info.fb_type_name
+                        ))
+                    })?;
+
+                // Compile the argument value
+                if let Some(val) = self.compile_expression(&arg.value, function)? {
+                    let field_ptr = self
+                        .builder
+                        .build_struct_gep(info.struct_type, fb_ptr, field_idx as u32, &arg_name.name)
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    self.builder
+                        .build_store(field_ptr, val)
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                }
+            }
+        }
+
+        // Call the FB's scan function
+        let scan_fn = self
+            .module
+            .get_function(&info.scan_fn_name)
+            .ok_or_else(|| {
+                CodegenError::LlvmError(format!(
+                    "FB scan function '{}' not found",
+                    info.scan_fn_name
+                ))
+            })?;
+        self.builder
+            .build_call(scan_fn, &[fb_ptr.into()], &format!("{}_call", instance_name))
+            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+
         Ok(())
     }
 
@@ -1637,6 +1991,37 @@ impl<'ctx> Compiler<'ctx> {
             }
             ExpressionKind::MemberAccess { object, member } => {
                 if let ExpressionKind::Identifier(ident) = &object.kind {
+                    // Check if this is an FB instance field access
+                    if let Some(info) = self.fb_instances.get(&ident.name.to_uppercase()).cloned() {
+                        let parent_struct_type = self.current_struct_type.ok_or_else(|| {
+                            CodegenError::LlvmError("no parent struct type".into())
+                        })?;
+                        let parent_state_ptr = self.current_state_ptr.ok_or_else(|| {
+                            CodegenError::LlvmError("no parent state pointer".into())
+                        })?;
+                        let fb_ptr = self
+                            .builder
+                            .build_struct_gep(parent_struct_type, parent_state_ptr, info.field_index, &format!("{}_fb_lv", ident.name))
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+
+                        let field_idx = info
+                            .fields
+                            .iter()
+                            .position(|(name, _)| name.eq_ignore_ascii_case(&member.name))
+                            .ok_or_else(|| {
+                                CodegenError::UndefinedVariable(format!(
+                                    "{}.{}",
+                                    ident.name, member.name
+                                ))
+                            })?;
+                        let field_ptr = self
+                            .builder
+                            .build_struct_gep(info.struct_type, fb_ptr, field_idx as u32, &member.name)
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                        return Ok(Some(field_ptr));
+                    }
+
+                    // Fall back to struct field access
                     if let Some((obj_ptr, iec_ty)) = self.variables.get(&ident.name.to_uppercase()).cloned() {
                         if let IecType::Struct { fields, .. } = &iec_ty {
                             let field_idx = fields
@@ -1811,7 +2196,44 @@ impl<'ctx> Compiler<'ctx> {
                 }
             }
             ExpressionKind::MemberAccess { object, member } => {
-                // Get the field pointer via lvalue, then load from it
+                if let ExpressionKind::Identifier(ident) = &object.kind {
+                    // Check if this is an FB instance field access
+                    if let Some(info) = self.fb_instances.get(&ident.name.to_uppercase()).cloned() {
+                        let parent_struct_type = self.current_struct_type.ok_or_else(|| {
+                            CodegenError::LlvmError("no parent struct type".into())
+                        })?;
+                        let parent_state_ptr = self.current_state_ptr.ok_or_else(|| {
+                            CodegenError::LlvmError("no parent state pointer".into())
+                        })?;
+                        let fb_ptr = self
+                            .builder
+                            .build_struct_gep(parent_struct_type, parent_state_ptr, info.field_index, &format!("{}_fb", ident.name))
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+
+                        let field_idx = info
+                            .fields
+                            .iter()
+                            .position(|(name, _)| name.eq_ignore_ascii_case(&member.name))
+                            .ok_or_else(|| {
+                                CodegenError::UndefinedVariable(format!(
+                                    "{}.{}",
+                                    ident.name, member.name
+                                ))
+                            })?;
+                        let field_ty = &info.fields[field_idx].1;
+                        let field_llvm_ty = self.iec_to_llvm_type(field_ty);
+                        let field_ptr = self
+                            .builder
+                            .build_struct_gep(info.struct_type, fb_ptr, field_idx as u32, &member.name)
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                        let val = self
+                            .builder
+                            .build_load(field_llvm_ty, field_ptr, &format!("{}.{}", ident.name, member.name))
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                        return Ok(Some(val));
+                    }
+                }
+                // Fall back to struct field access via lvalue
                 if let Some(field_ptr) = self.compile_lvalue_with_fn(expr, function)? {
                     if let ExpressionKind::Identifier(ident) = &object.kind {
                         if let Some((_, iec_ty)) = self.variables.get(&ident.name.to_uppercase()).cloned() {
