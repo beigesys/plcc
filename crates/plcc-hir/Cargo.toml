@@ -1,0 +1,9 @@
+[package]
+name = "plcc-hir"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+miette = { version = "7.6.0", features = ["fancy"] }
+thiserror = "2.0.18"
+plcc-st = { version = "0.1.0", path = "../plcc-st" }
