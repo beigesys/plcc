@@ -1,10 +1,34 @@
+# plcc demo: Water Treatment PLC + FUXA SCADA
+#
+# Usage:
+#   docker compose up -d
+#   Open http://localhost:1881 for FUXA SCADA
+#   PLC Modbus TCP available at localhost:1502
+#
+# The PLC sim compiles and runs the ST program with JIT,
+# exposes Modbus TCP registers for FUXA to read/write.
+
 services:
+  # FUXA SCADA/HMI dashboard
   fuxa:
     image: frangoteam/fuxa:latest
-    ports:
-      - "1881:1881"
+    network_mode: host
     volumes:
       - fuxa_data:/var/lib/fuxa
+      - ./fuxa-project:/opt/fuxa-project:ro
+    restart: unless-stopped
+
+  # plcc PLC simulator with Modbus TCP
+  plc:
+    build:
+      context: ..
+      dockerfile: demo/Dockerfile.plc
+    network_mode: host
+    volumes:
+      - ./st-programs:/programs:ro
+    command: >
+      /app/plcc sim /programs/water_treatment.st
+      --scans 0 --interval-ms 100 --modbus 1502
     restart: unless-stopped
 
 volumes:
