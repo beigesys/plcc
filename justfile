@@ -143,20 +143,20 @@ test-hw: test-qemu test-renode
 demo-modbus:
     bash tests/qemu/run_modbus_demo.sh
 
-# Run water treatment PLC with Modbus TCP for FUXA
-# Then open http://localhost:1881 and connect to localhost:1502
-demo-plc:
-    cargo run -- sim tests/fixtures/programs/water_treatment.st --scans 0 --interval-ms 100 --modbus 1502
-
-# Start FUXA SCADA dashboard (Docker)
-demo-fuxa-up:
+# Full demo: Renode STM32F4 PLC + FUXA SCADA (all Docker)
+# Open http://localhost:1881, connect Modbus RTU over TCP to localhost:5020
+demo-up:
     cd demo && docker compose up -d
-    @echo "FUXA SCADA running at http://localhost:1881"
-    @echo "Connect to Modbus TCP at localhost:1502"
-    @echo "Run 'just demo-plc' in another terminal"
+    @echo ""
+    @echo "FUXA SCADA:  http://localhost:1881"
+    @echo "Modbus RTU:  localhost:5020 (Renode UART bridge)"
+    @echo "Debug logs:  docker compose -f demo/docker-compose.yml logs renode"
 
-demo-fuxa-down:
+demo-down:
     cd demo && docker compose down
+
+demo-logs:
+    cd demo && docker compose logs -f renode
 
 # Clean build artifacts
 clean:

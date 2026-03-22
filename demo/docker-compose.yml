@@ -1,35 +1,46 @@
-# plcc demo: Water Treatment PLC + FUXA SCADA
+# plcc Demo: Water Treatment PLC on Renode STM32F4 + FUXA SCADA
+#
+# Architecture:
+#   Renode (STM32F4) ←── UART/Modbus RTU ──→ ser2net ──→ FUXA (Modbus TCP)
 #
 # Usage:
 #   docker compose up -d
-#   Open http://localhost:1881 for FUXA SCADA
-#   PLC Modbus TCP available at localhost:1502
-#
-# The PLC sim compiles and runs the ST program with JIT,
-# exposes Modbus TCP registers for FUXA to read/write.
+#   Open http://localhost:1881 (FUXA)
+#   Connect Modbus TCP device: host=localhost port=5020
 
 services:
-  # FUXA SCADA/HMI dashboard
+  # Build the ARM firmware from ST source
+  firmware:
+    build:
+      context: ..
+      dockerfile: demo/Dockerfile.plc
+    volumes:
+      - firmware_vol:/output
+    entrypoint: ["/bin/sh", "-c", "cp /firmware.elf /output/firmware.elf"]
+
+  # Renode: emulates STM32F4 Discovery running the PLC firmware
+  renode:
+    image: antmicro/renode:latest
+    depends_on:
+      firmware:
+        condition: service_completed_successfully
+    volumes:
+      - firmware_vol:/firmware:ro
+      - ./renode:/renode-scripts:ro
+    command: >
+      --disable-xwt --console
+      /renode-scripts/plc_demo.resc
+    network_mode: host
+    restart: unless-stopped
+
+  # FUXA SCADA dashboard
   fuxa:
     image: frangoteam/fuxa:latest
     network_mode: host
     volumes:
       - fuxa_data:/var/lib/fuxa
-      - ./fuxa-project:/opt/fuxa-project:ro
-    restart: unless-stopped
-
-  # plcc PLC simulator with Modbus TCP
-  plc:
-    build:
-      context: ..
-      dockerfile: demo/Dockerfile.plc
-    network_mode: host
-    volumes:
-      - ./st-programs:/programs:ro
-    command: >
-      /app/plcc sim /programs/water_treatment.st
-      --scans 0 --interval-ms 100 --modbus 1502
     restart: unless-stopped
 
 volumes:
+  firmware_vol:
   fuxa_data:

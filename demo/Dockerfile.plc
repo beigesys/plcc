@@ -1,9 +1,10 @@
-# Build stage: compile plcc
+# Build stage: compile plcc + build ARM firmware
 FROM rust:1.83-bookworm AS builder
 
-# Install LLVM 21
+# Install LLVM 21 + ARM cross-compiler
 RUN apt-get update && apt-get install -y \
     wget lsb-release software-properties-common gnupg \
+    gcc-arm-none-eabi \
     && wget https://apt.llvm.org/llvm.sh \
     && chmod +x llvm.sh \
     && ./llvm.sh 21 \
@@ -14,22 +15,27 @@ ENV LLVM_SYS_211_PREFIX=/usr/lib/llvm-21
 
 WORKDIR /build
 COPY . .
+
+# Build the plcc compiler
 RUN cargo build --release -p plcc
 
-# Runtime stage: just the binary + LLVM libs
-FROM debian:bookworm-slim
+# Compile water_treatment.st → ARM Cortex-M4 object
+RUN ./target/release/plcc compile \
+    tests/fixtures/programs/water_treatment.st \
+    -o /build/plc.o --target thumbv7em-unknown-none-eabihf
 
-RUN apt-get update && apt-get install -y \
-    wget lsb-release software-properties-common gnupg \
-    && wget https://apt.llvm.org/llvm.sh \
-    && chmod +x llvm.sh \
-    && ./llvm.sh 21 \
-    && apt-get install -y libllvm21 \
-    && rm -rf /var/lib/apt/lists/* /llvm.sh
+# Build firmware with Modbus RTU
+RUN arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
+    -ffreestanding -nostdlib -Itests/qemu -c \
+    tests/qemu/startup_modbus.c -o /build/startup.o \
+    && arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
+    -ffreestanding -nostdlib -Itests/qemu -c \
+    tests/qemu/modbus_rtu.c -o /build/modbus.o \
+    && arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
+    -ffreestanding -nostdlib -T tests/qemu/stm32f4.ld \
+    /build/startup.o /build/modbus.o /build/plc.o \
+    -o /build/firmware.elf -lgcc
 
-COPY --from=builder /build/target/release/plcc /app/plcc
-
-EXPOSE 1502
-
-ENTRYPOINT ["/app/plcc"]
-CMD ["sim", "--help"]
+# Output: just the firmware ELF
+FROM scratch
+COPY --from=builder /build/firmware.elf /firmware.elf
