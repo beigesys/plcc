@@ -1,8 +1,12 @@
 # plcc Demo: PLC on emulated hardware + FUXA SCADA
 #
-# Default: water treatment on STM32F4 Discovery
-# Change board/program with build args:
-#   BOARD=nucleo_h753zi PROGRAM=blink.st PLC_NAME=blink docker compose up --build
+#   just demo-up                           — default STM32F4 + water treatment
+#   just demo-up board=nucleo_h753zi       — different board
+#   just demo-down                         — stop
+#
+#   http://localhost:1881                  — FUXA SCADA
+#   telnet localhost:5021                  — PLC debug console
+#   FUXA Modbus config: host=plc port=5020
 
 services:
   plc:
@@ -13,12 +17,15 @@ services:
         BOARD: ${BOARD:-stm32f4_discovery}
         PROGRAM: ${PROGRAM:-water_treatment.st}
         PLC_NAME: ${PLC_NAME:-watertreatment}
-    network_mode: host
+    ports:
+      - "5020:5020"   # Modbus RTU
+      - "5021:5021"   # Debug console
     restart: unless-stopped
 
   fuxa:
     image: frangoteam/fuxa:latest
-    network_mode: host
+    ports:
+      - "1881:1881"
     volumes:
       - fuxa_data:/var/lib/fuxa
     restart: unless-stopped

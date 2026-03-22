@@ -151,10 +151,11 @@ demo-modbus:
 demo-up board="stm32f4_discovery" program="water_treatment.st" plc_name="watertreatment":
     cd demo && BOARD={{board}} PROGRAM={{program}} PLC_NAME={{plc_name}} docker compose up -d --build
     @echo ""
-    @echo "FUXA SCADA:  http://localhost:1881"
-    @echo "Modbus RTU:  localhost:5020 (Renode UART bridge)"
-    @echo "Board:       {{board}}"
-    @echo "Program:     {{program}}"
+    @echo "FUXA SCADA:    http://localhost:1881"
+    @echo "Modbus RTU:    localhost:5020"
+    @echo "Debug console: localhost:5021  (telnet localhost 5021)"
+    @echo "Board:         {{board}}"
+    @echo "Program:       {{program}}"
 
 demo-down:
     cd demo && docker compose down

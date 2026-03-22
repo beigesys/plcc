@@ -7,10 +7,13 @@ mach create "plc"
 machine LoadPlatformDescription @platforms/boards/stm32f4_discovery.repl
 sysbus LoadELF @/board/firmware.elf
 
-showAnalyzer usart1
+# Debug console — TCP:5021, telnet localhost 5021 to watch
+emulation CreateServerSocketTerminal 5021 "debug_console" true
+connector Connect usart1 debug_console
 
-emulation CreateServerSocketTerminal 5020 "modbus_bridge" true
-connector Connect usart2 modbus_bridge
+# Modbus RTU — TCP:5020, FUXA connects here
+emulation CreateServerSocketTerminal 5020 "modbus_rtu" true
+connector Connect usart2 modbus_rtu
 
 logLevel -1
 start

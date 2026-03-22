@@ -7,10 +7,13 @@ mach create "plc"
 machine LoadPlatformDescription @platforms/boards/nucleo_h753zi.repl
 sysbus LoadELF @/board/firmware.elf
 
-showAnalyzer usart3
+# Debug console — TCP:5021
+emulation CreateServerSocketTerminal 5021 "debug_console" true
+connector Connect usart3 debug_console
 
-emulation CreateServerSocketTerminal 5020 "modbus_bridge" true
-connector Connect usart2 modbus_bridge
+# Modbus RTU — TCP:5020
+emulation CreateServerSocketTerminal 5020 "modbus_rtu" true
+connector Connect usart2 modbus_rtu
 
 logLevel -1
 start

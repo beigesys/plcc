@@ -7,7 +7,9 @@ mach create "plc"
 machine LoadPlatformDescription @platforms/cpus/nrf52840.repl
 sysbus LoadELF @/board/firmware.elf
 
-showAnalyzer uart0
+# Debug console — TCP:5021
+emulation CreateServerSocketTerminal 5021 "debug_console" true
+connector Connect uart0 debug_console
 
 logLevel -1
 start
