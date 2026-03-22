@@ -66,6 +66,9 @@ void *memcpy(void *d, const void *s, unsigned long n) {
 #define USART2_DR    (*(volatile uint32_t *)0x40004404)
 #define USART2_BRR   (*(volatile uint32_t *)0x40004408)
 #define USART2_CR1   (*(volatile uint32_t *)0x4000440C)
+#define SYSTICK_CTRL (*(volatile uint32_t *)0xE000E010)
+#define SYSTICK_LOAD (*(volatile uint32_t *)0xE000E014)
+#define SYSTICK_VAL  (*(volatile uint32_t *)0xE000E018)
 
 static void hw_init(void) {
     RCC_AHB1ENR |= (1<<0) | (1<<3);  // GPIOA, GPIOD
@@ -82,10 +85,15 @@ static void hw_init(void) {
 
     USART1_BRR = 0x008B; USART1_CR1 = (1<<13)|(1<<3);           // 115200
     USART2_BRR = 0x0683; USART2_CR1 = (1<<13)|(1<<3)|(1<<2);    // 9600, TX+RX
+
+    // SysTick: 1ms tick @ 72MHz (Renode's systickFrequency)
+    SYSTICK_LOAD = 72000 - 1;
+    SYSTICK_VAL = 0;
+    SYSTICK_CTRL = 7;  // Enable, interrupt, processor clock
 }
 
 // ── Debug UART (USART1) ──
-static void dbg_putc(char c) { USART1_DR = c; volatile int d=50; while(d-->0); }
+static void dbg_putc(char c) { while(!(USART1_SR & (1<<7))); USART1_DR = c; }
 static void dbg(const char *s) { while (*s) dbg_putc(*s++); }
 static void dbg_i(int32_t v) {
     if (v < 0) { dbg_putc('-'); v = -v; }
@@ -131,12 +139,21 @@ static int mb_write(uint16_t addr, uint16_t val, void *ctx) {
 static int mb_coil(uint16_t a, uint8_t *v, void *c) { (void)a;(void)c;*v=0;return 0; }
 
 static void mb_tx(const uint8_t *d, uint16_t n) {
-    for (uint16_t i = 0; i < n; i++) { USART2_DR = d[i]; volatile int dd=50; while(dd-->0); }
+    for (uint16_t i = 0; i < n; i++) { while(!(USART2_SR & (1<<7))); USART2_DR = d[i]; }
 }
 #endif
 
 // ── PLC state ──
 static uint8_t plc_state[PLC_STATE_SIZE];
+
+// ── SysTick for scan timing ──
+static volatile uint32_t tick_ms = 0;
+static volatile uint8_t scan_due = 0;
+
+void SysTick_Handler(void) {
+    tick_ms++;
+    scan_due = 1;
+}
 
 // ── Vectors ──
 static uint8_t stack[4096] __attribute__((section(".stack")));
@@ -147,8 +164,13 @@ __attribute__((section(".vectors")))
 const void *vectors[] = {
     (void *)((uint8_t *)stack + sizeof(stack)),
     (void *)_start,
-    (void *)Default_Handler, // NMI
-    (void *)Default_Handler, // HardFault
+    (void *)Default_Handler,  // NMI
+    (void *)Default_Handler,  // HardFault
+    0, 0, 0, 0, 0, 0, 0,     // Reserved
+    (void *)Default_Handler,  // SVCall
+    0, 0,                     // Reserved
+    (void *)Default_Handler,  // PendSV
+    (void *)SysTick_Handler,  // SysTick (vector 15)
 };
 
 // ── Main ──
@@ -171,44 +193,49 @@ void _start(void) {
     dbg("ms\r\n");
 
     uint32_t scans = 0;
+    uint32_t last_scan_ms = 0;
 #ifdef PLC_MODBUS
-    uint32_t rx_idle = 0;
+    uint32_t last_rx_ms = 0;
 #endif
 
     while (1) {
+        // Wait for interrupt (SysTick) — lets Renode advance time properly
+        __asm__ volatile ("wfi");
+
 #ifdef PLC_MODBUS
         // Poll Modbus UART
-        if (USART2_SR & (1<<5)) {
+        while (USART2_SR & (1<<5)) {
             modbus_rtu_rx_byte(&mb, (uint8_t)(USART2_DR & 0xFF));
-            rx_idle = 0;
-        } else if (mb.rx_len > 0) {
-            rx_idle++;
-            if (rx_idle > 4000) {
-                uint16_t n = modbus_rtu_process(&mb);
-                if (n > 0) mb_tx(mb.tx_buf, n);
-                modbus_rtu_rx_reset(&mb);
-                rx_idle = 0;
-            }
+            last_rx_ms = tick_ms;
+        }
+        if (mb.rx_len > 0 && (tick_ms - last_rx_ms) > 4) {
+            uint16_t n = modbus_rtu_process(&mb);
+            if (n > 0) mb_tx(mb.tx_buf, n);
+            modbus_rtu_rx_reset(&mb);
         }
 #endif
 
-        // Run PLC scan
-        PASTE(PLC_PROGRAM, _scan)(plc_state);
-        scans++;
-        led_set(0, scans & 1);  // Blink green LED = scan alive
+        // Run PLC scan every PLC_SCAN_MS
+        if ((tick_ms - last_scan_ms) >= PLC_SCAN_MS) {
+            last_scan_ms = tick_ms;
 
-        // Debug output every 500 scans
-        if (scans % 500 == 0) {
-            dbg("scan=");
-            dbg_i((int32_t)scans);
-            dbg(" [");
-            // Print first 3 INT values from state
-            for (int i = 0; i < 3 && (i*2+1) < PLC_STATE_SIZE; i++) {
-                if (i) dbg(",");
-                int16_t v = (int16_t)(plc_state[i*2] | (plc_state[i*2+1]<<8));
-                dbg_i(v);
+            PASTE(PLC_PROGRAM, _scan)(plc_state);
+            scans++;
+            led_set(0, scans & 1);
+
+            if (scans % 100 == 0) {
+                dbg("scan=");
+                dbg_i((int32_t)scans);
+                dbg(" t=");
+                dbg_i((int32_t)tick_ms);
+                dbg("ms [");
+                for (int i = 0; i < 3 && (i*2+1) < PLC_STATE_SIZE; i++) {
+                    if (i) dbg(",");
+                    int16_t v = (int16_t)(plc_state[i*2] | (plc_state[i*2+1]<<8));
+                    dbg_i(v);
+                }
+                dbg("]\r\n");
             }
-            dbg("]\r\n");
         }
     }
 }
