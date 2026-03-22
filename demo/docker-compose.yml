@@ -27,6 +27,5 @@ services:
     ports:
       - "1881:1881"
     volumes:
-      - ./fuxa/_appdata:/usr/src/app/FUXA/server/_appdata
-      - ./fuxa/_db:/usr/src/app/FUXA/server/_db
+      - ./fuxa:/usr/src/app/FUXA/server/_appdata
     restart: unless-stopped
