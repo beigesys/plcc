@@ -1,3 +1,5 @@
 /target
 /bin
 tests/external/
+demo/fuxa-data/*
+!demo/fuxa-data/.gitkeep

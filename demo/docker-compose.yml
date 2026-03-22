@@ -5,7 +5,7 @@
 #   just demo-down                         — stop
 #
 #   http://localhost:1881                  — FUXA SCADA
-#   telnet localhost:5021                  — PLC debug console
+#   telnet localhost 5021                  — PLC debug console
 #   FUXA Modbus config: host=plc port=5020
 
 services:
@@ -27,8 +27,5 @@ services:
     ports:
       - "1881:1881"
     volumes:
-      - fuxa_data:/var/lib/fuxa
+      - ./fuxa-data:/var/lib/fuxa
     restart: unless-stopped
-
-volumes:
-  fuxa_data:
