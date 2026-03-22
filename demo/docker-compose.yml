@@ -1,0 +1,11 @@
+services:
+  fuxa:
+    image: frangoteam/fuxa:latest
+    ports:
+      - "1881:1881"
+    volumes:
+      - fuxa_data:/var/lib/fuxa
+    restart: unless-stopped
+
+volumes:
+  fuxa_data:

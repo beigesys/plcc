@@ -139,6 +139,18 @@ test-renode:
 # Run both hardware emulation tests
 test-hw: test-qemu test-renode
 
+# Run Modbus RTU demo: water treatment PLC on STM32F4 + Renode
+demo-modbus:
+    bash tests/qemu/run_modbus_demo.sh
+
+# Start FUXA SCADA dashboard (Docker)
+demo-fuxa-up:
+    cd demo && docker compose up -d
+    @echo "FUXA SCADA running at http://localhost:1881"
+
+demo-fuxa-down:
+    cd demo && docker compose down
+
 # Clean build artifacts
 clean:
     cargo clean
