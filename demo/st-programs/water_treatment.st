@@ -301,13 +301,14 @@ END_VAR
     alm_count := alm_raw_high + alm_raw_low + alm_clean_high + alm_clean_low
                + alm_inlet_fault + alm_xfer_fault + alm_outlet_fault;
 
-    (* Trip to fault if too many alarms persist *)
-    IF running = 1 AND alm_count > 0 THEN
-        IF alarm_word > 0 THEN
+    (* Trip to fault only on critical alarms: high level or pump faults *)
+    (* Low level alarms are informational — not a fault condition *)
+    IF running = 1 THEN
+        IF alm_raw_high = 1 OR alm_clean_high = 1 OR alm_inlet_fault = 1 OR alm_xfer_fault = 1 OR alm_outlet_fault = 1 THEN
             faulted := 1;
             running := 0;
             system_ok := 0;
-            PRINT('FAULT: alarms active, process stopped');
+            PRINT('FAULT: critical alarm, process stopped');
         END_IF;
     END_IF;
 
