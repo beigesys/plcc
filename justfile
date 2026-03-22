@@ -161,7 +161,17 @@ demo-down:
     cd demo && docker compose down
 
 demo-logs:
-    cd demo && docker compose logs -f renode
+    cd demo && docker compose logs -f plc
+
+# Save FUXA dashboard to demo/fuxa/project.json (git-committable)
+demo-save:
+    curl -s http://localhost:1881/api/project | python3 -m json.tool > demo/fuxa/project.json
+    @echo "Saved to demo/fuxa/project.json"
+
+# Load FUXA dashboard from demo/fuxa/project.json
+demo-load:
+    curl -s -X POST -H "Content-Type: application/json" -d @demo/fuxa/project.json http://localhost:1881/api/project
+    @echo "Loaded demo/fuxa/project.json"
 
 # Clean build artifacts
 clean:
