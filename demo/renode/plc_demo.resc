@@ -5,19 +5,12 @@ using sysbus
 
 mach create "plc"
 machine LoadPlatformDescription @platforms/boards/stm32f4_discovery.repl
-
-# Load the compiled firmware
 sysbus LoadELF @/firmware/firmware.elf
 
-# USART1 = debug console (visible in Renode console)
 showAnalyzer usart1
 
-# USART2 = Modbus RTU (exposed as socket server on port 5020)
-# External tools can connect via TCP to read/write Modbus RTU frames
 emulation CreateServerSocketTerminal 5020 "modbus_bridge" true
 connector Connect usart2 modbus_bridge
 
 logLevel -1
-
-# Run
 start

@@ -1,51 +1,33 @@
-# Stage 1: Build plcc compiler (cached — only rebuilds when Rust source changes)
-FROM rust:1.83-bookworm AS plcc-build
-
-RUN apt-get update && apt-get install -y \
-    wget lsb-release software-properties-common gnupg \
-    && wget -q https://apt.llvm.org/llvm.sh && chmod +x llvm.sh \
-    && ./llvm.sh 21 && apt-get install -y llvm-21-dev \
-    && rm -rf /var/lib/apt/lists/* /llvm.sh
-
+# Step 1: Build plcc compiler
+FROM rust:1.83-bookworm AS plcc
+RUN apt-get update && apt-get install -y wget lsb-release software-properties-common gnupg \
+    && wget -q https://apt.llvm.org/llvm.sh && chmod +x llvm.sh && ./llvm.sh 21 \
+    && apt-get install -y llvm-21-dev && rm -rf /var/lib/apt/lists/*
 ENV LLVM_SYS_211_PREFIX=/usr/lib/llvm-21
-
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 RUN cargo build --release -p plcc
 
-# Stage 2: Compile ST → ARM object (rebuilds when .st files change)
-FROM debian:bookworm-slim AS st-compile
-
-RUN apt-get update && apt-get install -y libffi8 zlib1g libzstd1 \
+# Step 2: Build ARM firmware from ST source
+FROM debian:bookworm-slim AS firmware
+RUN apt-get update && apt-get install -y gcc-arm-none-eabi libffi8 zlib1g libzstd1 \
     && rm -rf /var/lib/apt/lists/*
-
-COPY --from=plcc-build /build/target/release/plcc /usr/local/bin/plcc
-
+COPY --from=plcc /build/target/release/plcc /usr/local/bin/plcc
 WORKDIR /src
 COPY demo/st-programs/water_treatment.st program.st
-RUN plcc compile program.st -o plc.o --target thumbv7em-unknown-none-eabihf
-
-# Stage 3: Link firmware (rebuilds when C platform code changes)
-FROM debian:bookworm-slim AS firmware-link
-
-RUN apt-get update && apt-get install -y gcc-arm-none-eabi \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /src
-COPY --from=st-compile /src/plc.o .
-COPY tests/qemu/startup_modbus.c .
-COPY tests/qemu/modbus_rtu.c .
-COPY tests/qemu/modbus_rtu.h .
-COPY tests/qemu/stm32f4.ld .
-
-RUN arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
-    -ffreestanding -nostdlib -I. -c startup_modbus.c -o startup.o \
+COPY tests/qemu/startup_modbus.c tests/qemu/modbus_rtu.c tests/qemu/modbus_rtu.h tests/qemu/stm32f4.ld ./
+RUN plcc compile program.st -o plc.o --target thumbv7em-unknown-none-eabihf \
     && arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
-    -ffreestanding -nostdlib -I. -c modbus_rtu.c -o modbus.o \
+       -ffreestanding -nostdlib -I. -c startup_modbus.c -o startup.o \
     && arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
-    -ffreestanding -nostdlib -T stm32f4.ld startup.o modbus.o plc.o -o firmware.elf -lgcc
+       -ffreestanding -nostdlib -I. -c modbus_rtu.c -o modbus.o \
+    && arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
+       -ffreestanding -nostdlib -T stm32f4.ld startup.o modbus.o plc.o -o firmware.elf -lgcc
 
-# Output: just the firmware
-FROM scratch
-COPY --from=firmware-link /src/firmware.elf /firmware.elf
+# Step 3: Setup Renode, put firmware on it, run
+FROM antmicro/renode:latest
+COPY --from=firmware /src/firmware.elf /firmware/firmware.elf
+COPY demo/renode/plc_demo.resc /firmware/plc_demo.resc
+EXPOSE 5020
+CMD ["--disable-xwt", "--console", "/firmware/plc_demo.resc"]
