@@ -1,12 +1,8 @@
-# Build ARM firmware from ST source.
-# Stage 1: build plcc compiler (LLVM statically linked)
-# Stage 2: compile ST + link firmware (just needs arm-none-eabi-gcc)
-
-FROM rust:1.83-bookworm AS compiler
+# Stage 1: Build plcc compiler (cached — only rebuilds when Rust source changes)
+FROM rust:1.83-bookworm AS plcc-build
 
 RUN apt-get update && apt-get install -y \
     wget lsb-release software-properties-common gnupg \
-    gcc-arm-none-eabi \
     && wget -q https://apt.llvm.org/llvm.sh && chmod +x llvm.sh \
     && ./llvm.sh 21 && apt-get install -y llvm-21-dev \
     && rm -rf /var/lib/apt/lists/* /llvm.sh
@@ -18,19 +14,31 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 RUN cargo build --release -p plcc
 
-# Copy ST source and platform code
-COPY demo/st-programs/water_treatment.st /src/program.st
-COPY tests/qemu/startup_modbus.c /src/
-COPY tests/qemu/modbus_rtu.c /src/
-COPY tests/qemu/modbus_rtu.h /src/
-COPY tests/qemu/stm32f4.ld /src/
+# Stage 2: Compile ST → ARM object (rebuilds when .st files change)
+FROM debian:bookworm-slim AS st-compile
+
+RUN apt-get update && apt-get install -y libffi8 zlib1g libzstd1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=plcc-build /build/target/release/plcc /usr/local/bin/plcc
 
 WORKDIR /src
+COPY demo/st-programs/water_treatment.st program.st
+RUN plcc compile program.st -o plc.o --target thumbv7em-unknown-none-eabihf
 
-# Compile ST → ARM object
-RUN /build/target/release/plcc compile program.st -o plc.o --target thumbv7em-unknown-none-eabihf
+# Stage 3: Link firmware (rebuilds when C platform code changes)
+FROM debian:bookworm-slim AS firmware-link
 
-# Link firmware
+RUN apt-get update && apt-get install -y gcc-arm-none-eabi \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY --from=st-compile /src/plc.o .
+COPY tests/qemu/startup_modbus.c .
+COPY tests/qemu/modbus_rtu.c .
+COPY tests/qemu/modbus_rtu.h .
+COPY tests/qemu/stm32f4.ld .
+
 RUN arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
     -ffreestanding -nostdlib -I. -c startup_modbus.c -o startup.o \
     && arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
@@ -38,6 +46,6 @@ RUN arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16
     && arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
     -ffreestanding -nostdlib -T stm32f4.ld startup.o modbus.o plc.o -o firmware.elf -lgcc
 
-# Output: just the 19KB firmware
+# Output: just the firmware
 FROM scratch
-COPY --from=compiler /src/firmware.elf /firmware.elf
+COPY --from=firmware-link /src/firmware.elf /firmware.elf
