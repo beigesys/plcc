@@ -3,6 +3,7 @@
 #   just demo-up                           — default STM32F4 + water treatment
 #   just demo-up board=nucleo_h753zi       — different board
 #   just demo-down                         — stop
+#   just demo-save                         — export FUXA dashboard to JSON
 #
 #   http://localhost:1881                  — FUXA SCADA
 #   telnet localhost 5021                  — PLC debug console
@@ -26,4 +27,9 @@ services:
     image: frangoteam/fuxa:latest
     ports:
       - "1881:1881"
+    volumes:
+      - ./fuxa/project.json:/project/project.json:ro
+      - ./fuxa/entrypoint.sh:/entrypoint.sh:ro
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    working_dir: /usr/src/app/FUXA/server
     restart: unless-stopped
