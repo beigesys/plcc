@@ -5,7 +5,7 @@ using sysbus
 
 mach create "plc"
 machine LoadPlatformDescription @platforms/boards/stm32f4_discovery.repl
-sysbus LoadELF @/firmware/firmware.elf
+sysbus LoadELF @/demo/firmware.elf
 
 showAnalyzer usart1
 

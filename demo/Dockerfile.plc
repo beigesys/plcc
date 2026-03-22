@@ -2,32 +2,26 @@
 FROM rust:1.83-bookworm AS plcc
 RUN apt-get update && apt-get install -y wget lsb-release software-properties-common gnupg \
     && wget -q https://apt.llvm.org/llvm.sh && chmod +x llvm.sh && ./llvm.sh 21 \
-    && apt-get install -y llvm-21-dev && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y llvm-21-dev gcc-arm-none-eabi && rm -rf /var/lib/apt/lists/*
 ENV LLVM_SYS_211_PREFIX=/usr/lib/llvm-21
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 RUN cargo build --release -p plcc
 
-# Step 2: Build ARM firmware from ST source
-FROM debian:bookworm-slim AS firmware
-RUN apt-get update && apt-get install -y gcc-arm-none-eabi libffi8 zlib1g libzstd1 \
-    && rm -rf /var/lib/apt/lists/*
-COPY --from=plcc /build/target/release/plcc /usr/local/bin/plcc
+# Step 2: Build firmware
+FROM plcc AS firmware
+COPY tests/qemu/ /src/qemu/
+COPY demo/st-programs/ /src/st-programs/
 WORKDIR /src
-COPY demo/st-programs/water_treatment.st program.st
-COPY tests/qemu/startup_modbus.c tests/qemu/modbus_rtu.c tests/qemu/modbus_rtu.h tests/qemu/stm32f4.ld ./
-RUN plcc compile program.st -o plc.o --target thumbv7em-unknown-none-eabihf \
+RUN target/release/plcc compile st-programs/water_treatment.st -o plc.o --target thumbv7em-unknown-none-eabihf \
     && arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
-       -ffreestanding -nostdlib -I. -c startup_modbus.c -o startup.o \
+       -ffreestanding -nostdlib -Iqemu -c qemu/startup_stm32f4.c -o startup.o \
     && arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
-       -ffreestanding -nostdlib -I. -c modbus_rtu.c -o modbus.o \
-    && arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
-       -ffreestanding -nostdlib -T stm32f4.ld startup.o modbus.o plc.o -o firmware.elf -lgcc
+       -ffreestanding -nostdlib -T qemu/stm32f4.ld startup.o plc.o -o firmware.elf -lgcc
 
-# Step 3: Setup Renode, put firmware on it, run
+# Step 3: Renode
 FROM antmicro/renode:latest
-COPY --from=firmware /src/firmware.elf /firmware/firmware.elf
-COPY demo/renode/plc_demo.resc /firmware/plc_demo.resc
-EXPOSE 5020
-CMD ["--disable-xwt", "--console", "/firmware/plc_demo.resc"]
+COPY --from=firmware /src/firmware.elf /demo/firmware.elf
+COPY demo/renode/ /demo/
+CMD ["--disable-xwt", "--console", "/demo/plc_demo.resc"]
