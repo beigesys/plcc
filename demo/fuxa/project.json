@@ -1,0 +1,43 @@
+{
+    "devices": {
+        "0": {
+            "id": "0", "name": "FUXA Server", "type": "FuxaServer",
+            "property": {}, "enabled": true, "tags": {}, "polling": 1000
+        },
+        "d_plc": {
+            "id": "d_plc", "name": "WaterTreatmentPLC", "enabled": true,
+            "property": {
+                "address": "plc:502", "port": null, "slaveid": "1",
+                "baudrate": 9600, "databits": 8, "stopbits": 1,
+                "parity": "None", "connectionOption": "TcpPort"
+            },
+            "type": "ModbusTCP",
+            "tags": {
+                "t0":  { "id": "t0",  "name": "mode",             "type": "Int16", "memaddress": "400000", "address": 1, "divisor": 1, "description": "0=Stop 1=Run 2=Flush 3=Alarm" },
+                "t1":  { "id": "t1",  "name": "alarm_reset",      "type": "Int16", "memaddress": "400001", "address": 2, "divisor": 1, "description": "Write 1 to reset alarm" },
+                "t2":  { "id": "t2",  "name": "raw_tank_sp",      "type": "Int16", "memaddress": "400002", "address": 3, "divisor": 1, "description": "Raw tank setpoint %" },
+                "t3":  { "id": "t3",  "name": "clean_tank_sp",    "type": "Int16", "memaddress": "400003", "address": 4, "divisor": 1, "description": "Clean tank setpoint %" },
+                "t4":  { "id": "t4",  "name": "inlet_speed",      "type": "Int16", "memaddress": "400004", "address": 5, "divisor": 1, "description": "Inlet pump speed %" },
+                "t5":  { "id": "t5",  "name": "transfer_speed",   "type": "Int16", "memaddress": "400005", "address": 6, "divisor": 1, "description": "Transfer pump speed %" },
+                "t6":  { "id": "t6",  "name": "outlet_speed",     "type": "Int16", "memaddress": "400006", "address": 7, "divisor": 1, "description": "Outlet pump speed %" },
+                "t7":  { "id": "t7",  "name": "cycle_count",      "type": "Int16", "memaddress": "400007", "address": 8, "divisor": 1, "description": "Scan counter" },
+                "t8":  { "id": "t8",  "name": "raw_level",        "type": "Int16", "memaddress": "400008", "address": 9, "divisor": 1, "description": "Raw tank level %" },
+                "t9":  { "id": "t9",  "name": "clean_level",      "type": "Int16", "memaddress": "400009", "address": 10, "divisor": 1, "description": "Clean tank level %" },
+                "t10": { "id": "t10", "name": "inlet_running",    "type": "Int16", "memaddress": "400010", "address": 11, "divisor": 1, "description": "Inlet pump ON/OFF" },
+                "t11": { "id": "t11", "name": "transfer_running", "type": "Int16", "memaddress": "400011", "address": 12, "divisor": 1, "description": "Transfer pump ON/OFF" },
+                "t12": { "id": "t12", "name": "outlet_running",   "type": "Int16", "memaddress": "400012", "address": 13, "divisor": 1, "description": "Outlet pump ON/OFF" },
+                "t13": { "id": "t13", "name": "inlet_valve",      "type": "Int16", "memaddress": "400013", "address": 14, "divisor": 1, "description": "Inlet valve position %" },
+                "t14": { "id": "t14", "name": "outlet_valve",     "type": "Int16", "memaddress": "400014", "address": 15, "divisor": 1, "description": "Outlet valve position %" },
+                "t15": { "id": "t15", "name": "drain_valve",      "type": "Int16", "memaddress": "400015", "address": 16, "divisor": 1, "description": "Drain valve position %" },
+                "t16": { "id": "t16", "name": "alarm_active",     "type": "Int16", "memaddress": "400016", "address": 17, "divisor": 1, "description": "Alarm active" },
+                "t17": { "id": "t17", "name": "alarm_count",      "type": "Int16", "memaddress": "400017", "address": 18, "divisor": 1, "description": "Alarm counter" },
+                "t18": { "id": "t18", "name": "system_ok",        "type": "Int16", "memaddress": "400018", "address": 19, "divisor": 1, "description": "System healthy" },
+                "t19": { "id": "t19", "name": "total_flow",       "type": "Int16", "memaddress": "400019", "address": 20, "divisor": 1, "description": "Total output flow" }
+            },
+            "polling": 1000
+        }
+    },
+    "hmi": { "views": [] },
+    "version": "1.00",
+    "server": { "id": "0", "name": "FUXA Server", "type": "FuxaServer", "property": {} }
+}
