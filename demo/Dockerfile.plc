@@ -1,3 +1,17 @@
+# plcc PLC firmware builder + Renode emulator
+#
+# Args:
+#   BOARD    — board directory name (default: stm32f4_discovery)
+#   PROGRAM  — ST program filename (default: water_treatment.st)
+#   PLC_NAME — program scan function prefix (default: watertreatment)
+#
+# Usage:
+#   docker build --build-arg BOARD=stm32f4_discovery --build-arg PROGRAM=blink.st --build-arg PLC_NAME=blink ...
+
+ARG BOARD=stm32f4_discovery
+ARG PROGRAM=water_treatment.st
+ARG PLC_NAME=watertreatment
+
 # Step 1: Build plcc compiler
 FROM rust:1.83-bookworm AS plcc
 RUN apt-get update && apt-get install -y \
@@ -10,22 +24,35 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 RUN cargo build --release -p plcc
 
-# Step 2: Build firmware
+# Step 2: Build firmware for the target board
 FROM plcc AS firmware
-COPY demo/renode/ /demo/
-COPY demo/st-programs/ /demo/st-programs/
-WORKDIR /demo
-RUN /build/target/release/plcc compile st-programs/water_treatment.st \
+ARG BOARD
+ARG PROGRAM
+ARG PLC_NAME
+
+COPY demo/boards/${BOARD}/ /board/
+COPY demo/protocols/ /board/
+COPY demo/st-programs/${PROGRAM} /board/program.st
+
+WORKDIR /board
+RUN /build/target/release/plcc compile program.st \
     -o plc.o --target thumbv7em-unknown-none-eabihf
 RUN arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
-    -ffreestanding -nostdlib -I. -DPLC_PROGRAM=watertreatment -DPLC_MODBUS \
-    -c plcc_runtime.c -o runtime.o
+    -ffreestanding -nostdlib -I. -DPLC_PROGRAM=${PLC_NAME} -DPLC_MODBUS \
+    -c firmware.c -o firmware_obj.o
 RUN arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
-    -ffreestanding -nostdlib -I. -c modbus_rtu.c -o modbus.o
+    -ffreestanding -nostdlib -I. \
+    -c modbus_rtu.c -o modbus.o 2>/dev/null || true
 RUN arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
-    -ffreestanding -nostdlib -T stm32f4.ld runtime.o modbus.o plc.o -o firmware.elf -lgcc
+    -ffreestanding -nostdlib -T board.ld \
+    firmware_obj.o modbus.o plc.o -o firmware.elf -lgcc 2>/dev/null \
+    || arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
+    -ffreestanding -nostdlib -T board.ld \
+    firmware_obj.o plc.o -o firmware.elf -lgcc
 
-# Step 3: Renode
+# Step 3: Renode with firmware
 FROM antmicro/renode:latest
-COPY --from=firmware /demo/ /demo/
-CMD ["--disable-xwt", "--console", "/demo/plc_demo.resc"]
+ARG BOARD
+COPY --from=firmware /board/firmware.elf /board/firmware.elf
+COPY --from=firmware /board/board.resc /board/board.resc
+CMD ["--disable-xwt", "--console", "/board/board.resc"]

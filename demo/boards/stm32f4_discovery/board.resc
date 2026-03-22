@@ -1,11 +1,11 @@
-:name: plcc-plc-demo
-:description: Water Treatment PLC on STM32F4 with Modbus RTU
+:name: plcc-stm32f4-discovery
+:description: STM32F4 Discovery — Cortex-M4, UART, CAN, Modbus RTU
 
 using sysbus
 
 mach create "plc"
 machine LoadPlatformDescription @platforms/boards/stm32f4_discovery.repl
-sysbus LoadELF @/demo/firmware.elf
+sysbus LoadELF @/board/firmware.elf
 
 showAnalyzer usart1
 

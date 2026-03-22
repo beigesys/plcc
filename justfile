@@ -143,14 +143,18 @@ test-hw: test-qemu test-renode
 demo-modbus:
     bash tests/qemu/run_modbus_demo.sh
 
-# Full demo: Renode STM32F4 PLC + FUXA SCADA (all Docker)
-# Open http://localhost:1881, connect Modbus RTU over TCP to localhost:5020
-demo-up:
-    cd demo && docker compose up -d
+# Full demo: PLC on Renode + FUXA SCADA (all Docker)
+# Default: water treatment on STM32F4 Discovery
+# Other boards:
+#   just demo-up BOARD=nucleo_h753zi
+#   just demo-up BOARD=nrf52840dk PROGRAM=blink.st PLC_NAME=blink
+demo-up board="stm32f4_discovery" program="water_treatment.st" plc_name="watertreatment":
+    cd demo && BOARD={{board}} PROGRAM={{program}} PLC_NAME={{plc_name}} docker compose up -d --build
     @echo ""
     @echo "FUXA SCADA:  http://localhost:1881"
     @echo "Modbus RTU:  localhost:5020 (Renode UART bridge)"
-    @echo "Debug logs:  docker compose -f demo/docker-compose.yml logs renode"
+    @echo "Board:       {{board}}"
+    @echo "Program:     {{program}}"
 
 demo-down:
     cd demo && docker compose down

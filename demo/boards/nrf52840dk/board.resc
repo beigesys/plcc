@@ -1,0 +1,13 @@
+:name: plcc-nrf52840dk
+:description: nRF52840 DK — Cortex-M4F, BLE, GPIO
+
+using sysbus
+
+mach create "plc"
+machine LoadPlatformDescription @platforms/cpus/nrf52840.repl
+sysbus LoadELF @/board/firmware.elf
+
+showAnalyzer uart0
+
+logLevel -1
+start

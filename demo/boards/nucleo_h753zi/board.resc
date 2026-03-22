@@ -1,0 +1,16 @@
+:name: plcc-nucleo-h753zi
+:description: Nucleo H753ZI — Cortex-M7, Ethernet, Modbus RTU
+
+using sysbus
+
+mach create "plc"
+machine LoadPlatformDescription @platforms/boards/nucleo_h753zi.repl
+sysbus LoadELF @/board/firmware.elf
+
+showAnalyzer usart3
+
+emulation CreateServerSocketTerminal 5020 "modbus_bridge" true
+connector Connect usart2 modbus_bridge
+
+logLevel -1
+start

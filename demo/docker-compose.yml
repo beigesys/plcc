@@ -1,17 +1,18 @@
-# plcc Demo: Water Treatment PLC on emulated STM32F4 + FUXA SCADA
+# plcc Demo: PLC on emulated hardware + FUXA SCADA
 #
-#   just demo-up     → start everything
-#   just demo-down   → stop
-#   just demo-logs   → PLC debug console
-#
-#   http://localhost:1881   → FUXA SCADA
-#   localhost:5020          → Modbus RTU (Renode UART bridge)
+# Default: water treatment on STM32F4 Discovery
+# Change board/program with build args:
+#   BOARD=nucleo_h753zi PROGRAM=blink.st PLC_NAME=blink docker compose up --build
 
 services:
   plc:
     build:
       context: ..
       dockerfile: demo/Dockerfile.plc
+      args:
+        BOARD: ${BOARD:-stm32f4_discovery}
+        PROGRAM: ${PROGRAM:-water_treatment.st}
+        PLC_NAME: ${PLC_NAME:-watertreatment}
     network_mode: host
     restart: unless-stopped
 
