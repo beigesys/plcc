@@ -128,6 +128,10 @@ test-summary:
     echo "=== HAL ==="
     cargo test -p plcc-hal 2>&1 | grep "test result:"
 
+# Run QEMU ARM Cortex-M3 test (requires qemu-system-arm + arm-none-eabi-gcc)
+test-qemu:
+    bash tests/qemu/run_qemu_test.sh
+
 # Clean build artifacts
 clean:
     cargo clean
