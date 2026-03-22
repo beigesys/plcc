@@ -5,8 +5,13 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-default = ["simulator"]
+default = ["simulator", "runner"]
 simulator = []
+runner = ["dep:inkwell", "dep:plcc-st", "dep:plcc-codegen", "dep:clap"]
 
 [dependencies]
+clap = { version = "4.6.0", features = ["derive"], optional = true }
+inkwell = { version = "0.8.0", features = ["llvm21-1"], optional = true }
 thiserror = "2.0.18"
+plcc-codegen = { version = "0.1.0", path = "../plcc-codegen", optional = true }
+plcc-st = { version = "0.1.0", path = "../plcc-st", optional = true }

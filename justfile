@@ -51,9 +51,13 @@ test-oscat:
 test-hal:
     cargo test -p plcc-hal
 
-# Run the Linux simulator example
-sim:
-    cargo run --example linux_sim -p plcc-hal
+# Run any ST program with JIT simulation
+# Examples:
+#   just sim tests/fixtures/programs/blink.st
+#   just sim tests/fixtures/programs/pid_simple.st --scans 50
+#   just sim tests/fixtures/programs/batch_process.st --scans 70
+sim +args:
+    cargo run -- sim {{args}}
 
 # Compile an ST file to LLVM IR
 compile-ir file:
