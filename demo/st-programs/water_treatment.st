@@ -25,8 +25,8 @@ END_VAR
     IF level < 0.0 THEN level := 0.0; END_IF;
     IF level > max_capacity THEN level := max_capacity; END_IF;
     level_pct := REAL_TO_INT(level * 100.0 / max_capacity);
-    high_alarm := level_pct > REAL_TO_INT(high_sp);
-    low_alarm := level_pct < REAL_TO_INT(low_sp);
+    high_alarm := level_pct > 90;
+    low_alarm := level_pct < 10;
 END_FUNCTION_BLOCK
 
 FUNCTION_BLOCK PumpControl
@@ -251,14 +251,15 @@ END_VAR
     END_IF;
 
     (* ── Tank simulation ── *)
+    (* Flow rates scaled for demo speed — tanks fill in ~30 seconds *)
     raw_tank(
-        inlet_flow := INT_TO_REAL(p_inlet.speed) * 0.5,
-        outlet_flow := INT_TO_REAL(p_transfer.speed) * 0.3,
+        inlet_flow := INT_TO_REAL(p_inlet.speed) * 50.0,
+        outlet_flow := INT_TO_REAL(p_transfer.speed) * 30.0,
         max_capacity := 1000.0
     );
     clean_tank(
-        inlet_flow := INT_TO_REAL(p_transfer.speed) * 0.3,
-        outlet_flow := INT_TO_REAL(p_outlet.speed) * 0.2,
+        inlet_flow := INT_TO_REAL(p_transfer.speed) * 30.0,
+        outlet_flow := INT_TO_REAL(p_outlet.speed) * 20.0,
         max_capacity := 500.0
     );
 

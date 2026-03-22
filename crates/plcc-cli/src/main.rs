@@ -254,10 +254,14 @@ fn main() -> Result<()> {
 
                 if cycle % 100 == 0 {
                     let s = state.lock().unwrap();
-                    let v0 = i16::from_ne_bytes([s[0], s[1]]);
-                    let v1 = i16::from_ne_bytes([s[2], s[3]]);
-                    let v2 = i16::from_ne_bytes([s[4], s[5]]);
-                    println!("scan {cycle:>6} | [{v0}, {v1}, {v2}, ...]");
+                    // Show useful status: R10=running R15=raw_lvl R16=clean_lvl R14=cycle
+                    let rd = |off: usize| -> i16 {
+                        if off * 2 + 1 < s.len() {
+                            i16::from_ne_bytes([s[off * 2], s[off * 2 + 1]])
+                        } else { 0 }
+                    };
+                    println!("scan {cycle:>6} | run={} raw={}% clean={}% cycle={}",
+                        rd(10), rd(15), rd(16), rd(14));
                 }
 
                 cycle += 1;
