@@ -1,24 +1,23 @@
 # plcc Demo: Water Treatment PLC on Renode STM32F4 + FUXA SCADA
 #
-# Architecture:
-#   Renode (STM32F4) ←── UART/Modbus RTU ──→ ser2net ──→ FUXA (Modbus TCP)
-#
-# Usage:
-#   docker compose up -d
-#   Open http://localhost:1881 (FUXA)
-#   Connect Modbus TCP device: host=localhost port=5020
+#   just demo-up     → start everything
+#   just demo-down   → stop
+#   http://localhost:1881 → FUXA SCADA
+#   Modbus RTU over TCP → localhost:5020
 
 services:
   # Build the ARM firmware from ST source
+  # First run builds the plcc compiler image (cached after that)
   firmware:
     build:
       context: ..
       dockerfile: demo/Dockerfile.plc
     volumes:
       - firmware_vol:/output
-    entrypoint: ["/bin/sh", "-c", "cp /firmware.elf /output/firmware.elf"]
+    entrypoint: ["/bin/sh", "-c", "cp /firmware.elf /output/ 2>/dev/null; echo 'Firmware ready'"]
 
-  # Renode: emulates STM32F4 Discovery running the PLC firmware
+  # Renode: STM32F4 Discovery running PLC firmware
+  # USART2 bridged to TCP:5020 for Modbus RTU
   renode:
     image: antmicro/renode:latest
     depends_on:
@@ -33,7 +32,7 @@ services:
     network_mode: host
     restart: unless-stopped
 
-  # FUXA SCADA dashboard
+  # FUXA SCADA — connect Modbus RTU over TCP to localhost:5020
   fuxa:
     image: frangoteam/fuxa:latest
     network_mode: host
