@@ -1,0 +1,19 @@
+:name: plcc-stm32f4-test
+:description: Run plcc-compiled ST program on STM32F4 Discovery
+
+using sysbus
+
+mach create
+machine LoadPlatformDescription @platforms/boards/stm32f4_discovery.repl
+
+# Load the firmware
+sysbus LoadELF $firmware_elf
+
+# Log UART output
+showAnalyzer usart2
+
+# Run for a few seconds then quit
+machine StartGdbServer 3333
+start
+sleep 3
+quit

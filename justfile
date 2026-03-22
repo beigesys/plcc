@@ -132,6 +132,13 @@ test-summary:
 test-qemu:
     bash tests/qemu/run_qemu_test.sh
 
+# Run Renode STM32F4 Discovery test (requires renode + arm-none-eabi-gcc)
+test-renode:
+    bash tests/qemu/run_renode_test.sh
+
+# Run both hardware emulation tests
+test-hw: test-qemu test-renode
+
 # Clean build artifacts
 clean:
     cargo clean
