@@ -1,5 +1,7 @@
 /target
 /bin
 tests/external/
-demo/fuxa-data/*
-!demo/fuxa-data/.gitkeep
+demo/fuxa/*
+!demo/fuxa/.gitkeep
+demo/fuxa/_db/
+demo/fuxa/_appdata/_upload_files/
