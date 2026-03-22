@@ -41,12 +41,15 @@ enum Commands {
     Sim {
         /// Input .st file(s)
         inputs: Vec<PathBuf>,
-        /// Number of scan cycles
+        /// Number of scan cycles (0 = run forever)
         #[arg(long, default_value = "20")]
         scans: usize,
         /// Interval between scans in milliseconds (0 = no delay)
         #[arg(long, default_value = "0")]
         interval_ms: u64,
+        /// Start Modbus TCP server on this port (e.g. 502 for FUXA/SCADA)
+        #[arg(long)]
+        modbus: Option<u16>,
     },
 }
 
@@ -189,9 +192,10 @@ fn main() -> Result<()> {
             inputs,
             scans,
             interval_ms,
+            modbus,
         } => {
             if inputs.is_empty() {
-                eprintln!("Usage: plcc sim <program.st> [--scans N] [--interval-ms MS]");
+                eprintln!("Usage: plcc sim <program.st> [--scans N] [--interval-ms MS] [--modbus PORT]");
                 std::process::exit(1);
             }
 
@@ -225,7 +229,7 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
 
-            // Find program scan functions
+            // Find the LAST program scan function (the main program, not FBs)
             let ir = compiler.emit_ir();
             let scan_fns: Vec<String> = ir
                 .lines()
@@ -247,68 +251,223 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
 
+            // Use the last scan function (main program)
+            let scan_name = scan_fns.last().unwrap();
+            let init_name = scan_name.replace("_scan", "_init");
+            let prog_name = scan_name.trim_end_matches("_scan").to_string();
+
             // JIT execute
             let ee = compiler
                 .module()
                 .create_jit_execution_engine(inkwell::OptimizationLevel::None)
                 .map_err(|e| miette::miette!("JIT error: {e}"))?;
 
-            for scan_name in &scan_fns {
-                let init_name = scan_name.replace("_scan", "_init");
-                let prog_name = scan_name.trim_end_matches("_scan");
+            let state_size = 4096;
+            let state = std::sync::Arc::new(std::sync::Mutex::new(vec![0u8; state_size]));
 
-                let state_size = 4096;
-                let mut state = vec![0u8; state_size];
-                let state_ptr = state.as_mut_ptr();
-
-                // Init
+            // Init
+            {
+                let mut s = state.lock().unwrap();
                 if let Ok(init_ptr) = ee.get_function_address(&init_name) {
                     let init: extern "C" fn(*mut u8) = unsafe { std::mem::transmute(init_ptr) };
-                    init(state_ptr);
+                    init(s.as_mut_ptr());
                 }
-
-                let scan_ptr = ee
-                    .get_function_address(scan_name)
-                    .map_err(|_| miette::miette!("Function {scan_name} not found"))?;
-                let scan_fn: extern "C" fn(*mut u8) = unsafe { std::mem::transmute(scan_ptr) };
-
-                eprintln!("Running {prog_name} for {scans} scans...\n");
-
-                for cycle in 0..scans {
-                    scan_fn(state_ptr);
-
-                    // Print state snapshot
-                    let n = 16.min(state_size);
-                    let hex: String = state[..n]
-                        .iter()
-                        .map(|b| format!("{b:02x}"))
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    let v0 = if state_size >= 2 {
-                        i16::from_ne_bytes([state[0], state[1]])
-                    } else {
-                        0
-                    };
-                    let v1 = if state_size >= 4 {
-                        i16::from_ne_bytes([state[2], state[3]])
-                    } else {
-                        0
-                    };
-                    let v2 = if state_size >= 6 {
-                        i16::from_ne_bytes([state[4], state[5]])
-                    } else {
-                        0
-                    };
-                    println!("scan {cycle:>4} | {hex} | [{v0}, {v1}, {v2}, ...]");
-
-                    if interval_ms > 0 {
-                        std::thread::sleep(std::time::Duration::from_millis(interval_ms));
-                    }
-                }
-
-                eprintln!("\n{prog_name} done.");
             }
+
+            let scan_ptr = ee
+                .get_function_address(scan_name)
+                .map_err(|_| miette::miette!("Function {scan_name} not found"))?;
+            let scan_fn: extern "C" fn(*mut u8) = unsafe { std::mem::transmute(scan_ptr) };
+
+            // Start Modbus TCP server if requested
+            if let Some(port) = modbus {
+                let mb_state = state.clone();
+                std::thread::spawn(move || {
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    rt.block_on(async move {
+                        run_modbus_tcp_server(port, mb_state).await;
+                    });
+                });
+                eprintln!("Modbus TCP server on port {port}");
+                eprintln!("Connect FUXA SCADA to localhost:{port}\n");
+            }
+
+            let run_forever = scans == 0;
+            if run_forever {
+                eprintln!("Running {prog_name} continuously (Ctrl+C to stop)...\n");
+            } else {
+                eprintln!("Running {prog_name} for {scans} scans...\n");
+            }
+
+            let scan_interval = if interval_ms > 0 {
+                std::time::Duration::from_millis(interval_ms)
+            } else {
+                std::time::Duration::from_millis(10) // default 10ms = 100Hz
+            };
+
+            let mut cycle: u64 = 0;
+            loop {
+                {
+                    let mut s = state.lock().unwrap();
+                    scan_fn(s.as_mut_ptr());
+                }
+
+                if cycle % 100 == 0 {
+                    let s = state.lock().unwrap();
+                    let v0 = i16::from_ne_bytes([s[0], s[1]]);
+                    let v1 = i16::from_ne_bytes([s[2], s[3]]);
+                    let v2 = i16::from_ne_bytes([s[4], s[5]]);
+                    println!("scan {cycle:>6} | mode={v0} cycle={v1} [{v2}, ...]");
+                }
+
+                cycle += 1;
+                if !run_forever && cycle >= scans as u64 {
+                    break;
+                }
+
+                std::thread::sleep(scan_interval);
+            }
+
+            eprintln!("\n{prog_name} done.");
             Ok(())
         }
+    }
+}
+
+/// Modbus TCP server — serves PLC state as Modbus holding registers.
+/// MBAP header (7 bytes) + Modbus PDU. Registers map to i16 values
+/// at 2-byte offsets in the state buffer.
+async fn run_modbus_tcp_server(port: u16, state: std::sync::Arc<std::sync::Mutex<Vec<u8>>>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let addr = format!("0.0.0.0:{port}");
+    let listener = TcpListener::bind(&addr).await.unwrap_or_else(|e| {
+        eprintln!("Modbus TCP: failed to bind {addr}: {e}");
+        std::process::exit(1);
+    });
+    eprintln!("Modbus TCP listening on {addr}");
+
+    loop {
+        let (mut socket, peer) = match listener.accept().await {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        eprintln!("Modbus TCP: client connected from {peer}");
+        let st = state.clone();
+
+        tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            loop {
+                let n = match socket.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(_) => break,
+                };
+                if n < 12 { continue; } // MBAP(7) + unit(1) + FC(1) + data(min 3)
+
+                // MBAP header
+                let tx_id = u16::from_be_bytes([buf[0], buf[1]]);
+                let _proto = u16::from_be_bytes([buf[2], buf[3]]); // should be 0
+                let _length = u16::from_be_bytes([buf[4], buf[5]]);
+                let unit_id = buf[6];
+                let fc = buf[7];
+
+                match fc {
+                    0x03 => {
+                        // Read Holding Registers
+                        let start = u16::from_be_bytes([buf[8], buf[9]]) as usize;
+                        let count = u16::from_be_bytes([buf[10], buf[11]]) as usize;
+                        let byte_count = (count * 2) as u8;
+
+                        let resp = {
+                            let mut r = Vec::with_capacity(9 + count * 2);
+                            r.extend_from_slice(&tx_id.to_be_bytes());
+                            r.extend_from_slice(&0u16.to_be_bytes());
+                            r.extend_from_slice(&((3 + count * 2) as u16).to_be_bytes());
+                            r.push(unit_id);
+                            r.push(0x03);
+                            r.push(byte_count);
+                            let s = st.lock().unwrap();
+                            for i in 0..count {
+                                let offset = (start + i) * 2;
+                                if offset + 1 < s.len() {
+                                    let val = i16::from_ne_bytes([s[offset], s[offset + 1]]);
+                                    r.extend_from_slice(&(val as u16).to_be_bytes());
+                                } else {
+                                    r.extend_from_slice(&0u16.to_be_bytes());
+                                }
+                            }
+                            r
+                        };
+                        let _ = socket.write_all(&resp).await;
+                    }
+                    0x06 => {
+                        // Write Single Register
+                        let addr = u16::from_be_bytes([buf[8], buf[9]]) as usize;
+                        let value = u16::from_be_bytes([buf[10], buf[11]]);
+                        let offset = addr * 2;
+
+                        {
+                            let mut s = st.lock().unwrap();
+                            if offset + 1 < s.len() {
+                                let bytes = (value as i16).to_ne_bytes();
+                                s[offset] = bytes[0];
+                                s[offset + 1] = bytes[1];
+                            }
+                        }
+
+                        // Echo request as response
+                        let mut resp = Vec::with_capacity(12);
+                        resp.extend_from_slice(&tx_id.to_be_bytes());
+                        resp.extend_from_slice(&0u16.to_be_bytes());
+                        resp.extend_from_slice(&6u16.to_be_bytes());
+                        resp.extend_from_slice(&buf[6..12]);
+                        let _ = socket.write_all(&resp).await;
+                    }
+                    0x10 => {
+                        // Write Multiple Registers
+                        let start = u16::from_be_bytes([buf[8], buf[9]]) as usize;
+                        let count = u16::from_be_bytes([buf[10], buf[11]]) as usize;
+                        let _byte_count = buf[12];
+
+                        {
+                            let mut s = st.lock().unwrap();
+                            for i in 0..count {
+                                let offset = (start + i) * 2;
+                                let val = u16::from_be_bytes([buf[13 + i*2], buf[14 + i*2]]);
+                                if offset + 1 < s.len() {
+                                    let bytes = (val as i16).to_ne_bytes();
+                                    s[offset] = bytes[0];
+                                    s[offset + 1] = bytes[1];
+                                }
+                            }
+                        }
+
+                        // Response: echo address and count
+                        let mut resp = Vec::with_capacity(12);
+                        resp.extend_from_slice(&tx_id.to_be_bytes());
+                        resp.extend_from_slice(&0u16.to_be_bytes());
+                        resp.extend_from_slice(&6u16.to_be_bytes());
+                        resp.push(unit_id);
+                        resp.push(0x10);
+                        resp.extend_from_slice(&buf[8..12]);
+                        let _ = socket.write_all(&resp).await;
+                    }
+                    _ => {
+                        // Exception: illegal function
+                        let mut resp = Vec::with_capacity(9);
+                        resp.extend_from_slice(&tx_id.to_be_bytes());
+                        resp.extend_from_slice(&0u16.to_be_bytes());
+                        resp.extend_from_slice(&3u16.to_be_bytes());
+                        resp.push(unit_id);
+                        resp.push(fc | 0x80);
+                        resp.push(0x01);
+                        let _ = socket.write_all(&resp).await;
+                    }
+                }
+            }
+            eprintln!("Modbus TCP: client {peer} disconnected");
+        });
     }
 }
