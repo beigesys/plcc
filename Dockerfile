@@ -1,4 +1,9 @@
-# plcc compiler image — build once, reuse for all ST compilations
+# plcc: IEC 61131-3 Structured Text compiler
+# LLVM is statically linked — the binary is self-contained.
+#
+# Build: docker build -t plcc .
+# Use:   docker run plcc compile program.st -o out.o --target thumbv7em-unknown-none-eabihf
+
 FROM rust:1.83-bookworm AS builder
 
 RUN apt-get update && apt-get install -y \
@@ -14,10 +19,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 RUN cargo build --release -p plcc
 
+# Runtime: just the binary. No LLVM needed — it's statically linked.
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y \
-    gcc-arm-none-eabi libllvm21 \
-    && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /build/target/release/plcc /usr/local/bin/plcc
-
 ENTRYPOINT ["plcc"]

@@ -1,8 +1,25 @@
-# Build firmware from ST source using the plcc compiler image
-FROM plcc AS compiler
+# Build ARM firmware from ST source.
+# Stage 1: build plcc compiler (LLVM statically linked)
+# Stage 2: compile ST + link firmware (just needs arm-none-eabi-gcc)
 
-# Copy ST source and platform firmware code
-COPY tests/fixtures/programs/water_treatment.st /src/program.st
+FROM rust:1.83-bookworm AS compiler
+
+RUN apt-get update && apt-get install -y \
+    wget lsb-release software-properties-common gnupg \
+    gcc-arm-none-eabi \
+    && wget -q https://apt.llvm.org/llvm.sh && chmod +x llvm.sh \
+    && ./llvm.sh 21 && apt-get install -y llvm-21-dev \
+    && rm -rf /var/lib/apt/lists/* /llvm.sh
+
+ENV LLVM_SYS_211_PREFIX=/usr/lib/llvm-21
+
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+RUN cargo build --release -p plcc
+
+# Copy ST source and platform code
+COPY demo/st-programs/water_treatment.st /src/program.st
 COPY tests/qemu/startup_modbus.c /src/
 COPY tests/qemu/modbus_rtu.c /src/
 COPY tests/qemu/modbus_rtu.h /src/
@@ -11,9 +28,9 @@ COPY tests/qemu/stm32f4.ld /src/
 WORKDIR /src
 
 # Compile ST → ARM object
-RUN plcc compile program.st -o plc.o --target thumbv7em-unknown-none-eabihf
+RUN /build/target/release/plcc compile program.st -o plc.o --target thumbv7em-unknown-none-eabihf
 
-# Build firmware
+# Link firmware
 RUN arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
     -ffreestanding -nostdlib -I. -c startup_modbus.c -o startup.o \
     && arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
@@ -21,5 +38,6 @@ RUN arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16
     && arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
     -ffreestanding -nostdlib -T stm32f4.ld startup.o modbus.o plc.o -o firmware.elf -lgcc
 
+# Output: just the 19KB firmware
 FROM scratch
 COPY --from=compiler /src/firmware.elf /firmware.elf

@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 clap = { version = "4.6.0", features = ["derive"] }
-inkwell = { version = "0.8.0", features = ["llvm21-1"] }
+inkwell = { version = "0.8.0", features = ["llvm21-1", "llvm21-1-force-static"] }
 miette = { version = "7.6.0", features = ["fancy"] }
 serde_json = "1.0.149"
 plcc-codegen = { version = "0.1.0", path = "../plcc-codegen" }
