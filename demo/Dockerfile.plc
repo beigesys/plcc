@@ -55,4 +55,4 @@ FROM antmicro/renode:latest
 ARG BOARD
 COPY --from=firmware /board/firmware.elf /board/firmware.elf
 COPY --from=firmware /board/board.resc /board/board.resc
-CMD ["--disable-xwt", "--console", "/board/board.resc"]
+CMD ["/bin/sh", "-c", "renode --disable-xwt --plain /board/board.resc; sleep infinity"]
