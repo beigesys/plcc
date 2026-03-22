@@ -213,6 +213,12 @@ void _start(void) {
     }
 }
 
+// Called by compiled ST code — PRINT('message')
+void plcc_print(const char *msg) {
+    dbg(msg);
+    dbg("\r\n");
+}
+
 // Stubs
 void __exidx_start(void) {}
 void __exidx_end(void) {}

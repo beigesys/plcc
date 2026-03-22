@@ -13,11 +13,11 @@ ARG PROGRAM=water_treatment.st
 ARG PLC_NAME=watertreatment
 
 # Step 1: Build plcc compiler
-FROM rust:1.83-bookworm AS plcc
+FROM rust:1.85-bookworm AS plcc
 RUN apt-get update && apt-get install -y \
     wget lsb-release software-properties-common gnupg gcc-arm-none-eabi \
     && wget -q https://apt.llvm.org/llvm.sh && chmod +x llvm.sh && ./llvm.sh 21 \
-    && apt-get install -y llvm-21-dev && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y llvm-21-dev libpolly-21-dev && rm -rf /var/lib/apt/lists/*
 ENV LLVM_SYS_211_PREFIX=/usr/lib/llvm-21
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./

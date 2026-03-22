@@ -1120,6 +1120,75 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
+    /// Get or declare the extern `plcc_print(i8*)` function.
+    /// This is provided by the firmware runtime (writes to debug UART).
+    fn get_or_declare_plcc_print(&self) -> FunctionValue<'ctx> {
+        if let Some(f) = self.module.get_function("plcc_print") {
+            return f;
+        }
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let void_ty = self.context.void_type();
+        let fn_type = void_ty.fn_type(&[ptr_ty.into()], false);
+        self.module.add_function(
+            "plcc_print",
+            fn_type,
+            Some(inkwell::module::Linkage::External),
+        )
+    }
+
+    /// Compile a PRINT('literal') or PRINT(string_var) call.
+    /// Emits: call void @plcc_print(ptr)
+    fn compile_print_call(
+        &mut self,
+        args: &[CallArg],
+        function: FunctionValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::LlvmError(format!(
+                "PRINT expects 1 argument, got {}",
+                args.len()
+            )));
+        }
+
+        let print_fn = self.get_or_declare_plcc_print();
+        let arg_expr = &args[0].value;
+
+        // Check if the argument is a string literal
+        let str_ptr = match &arg_expr.kind {
+            ExpressionKind::StringLiteral(s) | ExpressionKind::WstringLiteral(s) => {
+                // Create a global constant string and get a pointer to it
+                let bytes = s.as_bytes();
+                let i8_ty = self.context.i8_type();
+                let arr_ty = i8_ty.array_type((bytes.len() + 1) as u32);
+                let mut vals: Vec<inkwell::values::IntValue> = bytes
+                    .iter()
+                    .map(|&b| i8_ty.const_int(b as u64, false))
+                    .collect();
+                vals.push(i8_ty.const_zero()); // null terminator
+                let const_arr = i8_ty.const_array(&vals);
+                let global = self.module.add_global(arr_ty, None, "print_str");
+                global.set_initializer(&const_arr);
+                global.set_constant(true);
+                global.as_pointer_value()
+            }
+            _ => {
+                // Assume it's a STRING variable — get its pointer via lvalue
+                self.compile_lvalue_with_fn(arg_expr, function)?
+                    .ok_or_else(|| {
+                        CodegenError::LlvmError(
+                            "PRINT: argument must be a string literal or STRING variable".into(),
+                        )
+                    })?
+            }
+        };
+
+        self.builder
+            .build_call(print_fn, &[str_ptr.into()], "")
+            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+
+        Ok(())
+    }
+
     /// Get or create a `plcc_strlen` helper function that counts non-null bytes.
     /// Signature: i16 plcc_strlen(ptr) -- scans bytes until null, returns count as i16.
     fn get_or_create_strlen_fn(&self) -> FunctionValue<'ctx> {
@@ -2712,6 +2781,10 @@ impl<'ctx> Compiler<'ctx> {
                 if let ExpressionKind::Identifier(ident) = &callee.kind {
                     if self.fb_instances.contains_key(&ident.name.to_uppercase()) {
                         self.compile_fb_call(&ident.name, args, function)?;
+                    } else if ident.name.to_uppercase() == "PRINT" {
+                        // PRINT('string literal') or PRINT(string_var)
+                        // Emits a call to extern void plcc_print(i8*)
+                        self.compile_print_call(args, function)?;
                     } else {
                         // Regular function call
                         let call_expr = Expression {

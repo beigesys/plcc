@@ -104,7 +104,17 @@ VAR
     system_ok : BOOL := TRUE;
     alarm_count : INT := 0;
     total_flow : INT := 0;
+
+    (* Track mode changes for debug output *)
+    prev_mode : INT := -1;
+    started : BOOL := FALSE;
 END_VAR
+    (* Startup message — first scan only *)
+    IF NOT started THEN
+        PRINT('Water treatment PLC started');
+        started := TRUE;
+    END_IF;
+
     cycle_count := cycle_count + 1;
 
     CASE mode OF
@@ -161,6 +171,20 @@ END_VAR
             drain_valve(open_cmd := FALSE, close_cmd := TRUE);
     END_CASE;
 
+    (* Debug: report mode changes *)
+    IF mode <> prev_mode THEN
+        IF mode = 0 THEN
+            PRINT('Mode changed to STOP');
+        ELSIF mode = 1 THEN
+            PRINT('Mode changed to RUN');
+        ELSIF mode = 2 THEN
+            PRINT('Mode changed to FLUSH');
+        ELSIF mode = 3 THEN
+            PRINT('Mode changed to ALARM');
+        END_IF;
+        prev_mode := mode;
+    END_IF;
+
     (* Update tank levels *)
     raw_tank(
         inlet_flow := INT_TO_REAL(inlet_pump.actual_speed) * 0.5,
@@ -175,8 +199,12 @@ END_VAR
 
     (* Alarm handling *)
     IF raw_tank.high_alarm OR clean_tank.high_alarm THEN
+        IF alarm_count = 0 THEN
+            PRINT('ALARM: tank high level detected');
+        END_IF;
         alarm_count := alarm_count + 1;
         IF alarm_count > 100 THEN
+            PRINT('ALARM: threshold exceeded, entering alarm mode');
             mode := 3;
             system_ok := FALSE;
         END_IF;

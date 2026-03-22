@@ -4,12 +4,12 @@
 # Build: docker build -t plcc .
 # Use:   docker run plcc compile program.st -o out.o --target thumbv7em-unknown-none-eabihf
 
-FROM rust:1.83-bookworm AS builder
+FROM rust:1.85-bookworm AS builder
 
 RUN apt-get update && apt-get install -y \
     wget lsb-release software-properties-common gnupg \
     && wget -q https://apt.llvm.org/llvm.sh && chmod +x llvm.sh \
-    && ./llvm.sh 21 && apt-get install -y llvm-21-dev \
+    && ./llvm.sh 21 && apt-get install -y llvm-21-dev libpolly-21-dev \
     && rm -rf /var/lib/apt/lists/* /llvm.sh
 
 ENV LLVM_SYS_211_PREFIX=/usr/lib/llvm-21

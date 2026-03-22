@@ -106,6 +106,12 @@ void _start(void) {
     }
 }
 
+// Called by compiled ST code — PRINT('message')
+void plcc_print(const char *msg) {
+    dbg(msg);
+    dbg("\r\n");
+}
+
 void __exidx_start(void) {}
 void __exidx_end(void) {}
 void abort(void) { while(1); }
