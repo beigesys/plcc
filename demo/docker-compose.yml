@@ -1,26 +1,19 @@
-# plcc Demo: PLC on emulated hardware + FUXA SCADA
+# plcc Demo: Water Treatment PLC + FUXA SCADA
 #
-#   just demo-up                           — default STM32F4 + water treatment
-#   just demo-up board=nucleo_h753zi       — different board
-#   just demo-down                         — stop
-#   just demo-save                         — export FUXA dashboard to JSON
+#   just demo-up       — start PLC + FUXA
+#   just demo-down     — stop
+#   just demo-save     — export FUXA dashboard to JSON
 #
-#   http://localhost:1881                  — FUXA SCADA
-#   telnet localhost 5021                  — PLC debug console
-#   FUXA Modbus config: host=plc port=5020
+#   http://localhost:1881       — FUXA SCADA dashboard
+#   PLC Modbus TCP on port 502 — FUXA connects to plc:502
 
 services:
   plc:
     build:
       context: ..
       dockerfile: demo/Dockerfile.plc
-      args:
-        BOARD: ${BOARD:-stm32f4_discovery}
-        PROGRAM: ${PROGRAM:-water_treatment.st}
-        PLC_NAME: ${PLC_NAME:-watertreatment}
     ports:
-      - "5020:5020"   # Modbus RTU
-      - "5021:5021"   # Debug console
+      - "502:502"
     restart: unless-stopped
 
   fuxa:
@@ -32,4 +25,6 @@ services:
       - ./fuxa/entrypoint.sh:/entrypoint.sh:ro
     entrypoint: ["/bin/sh", "/entrypoint.sh"]
     working_dir: /usr/src/app/FUXA/server
+    depends_on:
+      - plc
     restart: unless-stopped
