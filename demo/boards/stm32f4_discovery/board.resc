@@ -15,5 +15,9 @@ connector Connect usart1 debug_console
 emulation CreateServerSocketTerminal 5020 "modbus_rtu" false
 connector Connect usart2 modbus_rtu
 
+# Set CPU performance to maximum
+cpu PerformanceInMips 1000
+emulation SetAdvanceImmediately true
+
 logLevel -1
 start

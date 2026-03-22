@@ -93,7 +93,7 @@ static void hw_init(void) {
 }
 
 // ── Debug UART (USART1) ──
-static void dbg_putc(char c) { while(!(USART1_SR & (1<<7))); USART1_DR = c; }
+static void dbg_putc(char c) { USART1_DR = c; }
 static void dbg(const char *s) { while (*s) dbg_putc(*s++); }
 static void dbg_i(int32_t v) {
     if (v < 0) { dbg_putc('-'); v = -v; }
@@ -139,7 +139,7 @@ static int mb_write(uint16_t addr, uint16_t val, void *ctx) {
 static int mb_coil(uint16_t a, uint8_t *v, void *c) { (void)a;(void)c;*v=0;return 0; }
 
 static void mb_tx(const uint8_t *d, uint16_t n) {
-    for (uint16_t i = 0; i < n; i++) { while(!(USART2_SR & (1<<7))); USART2_DR = d[i]; }
+    for (uint16_t i = 0; i < n; i++) { USART2_DR = d[i]; }
 }
 #endif
 
@@ -199,9 +199,6 @@ void _start(void) {
 #endif
 
     while (1) {
-        // Wait for interrupt (SysTick) — lets Renode advance time properly
-        __asm__ volatile ("wfi");
-
 #ifdef PLC_MODBUS
         // Poll Modbus UART
         while (USART2_SR & (1<<5)) {
@@ -215,28 +212,25 @@ void _start(void) {
         }
 #endif
 
-        // Run PLC scan every PLC_SCAN_MS
-        if ((tick_ms - last_scan_ms) >= PLC_SCAN_MS) {
-            last_scan_ms = tick_ms;
+        // Run PLC scan
+        PASTE(PLC_PROGRAM, _scan)(plc_state);
+        scans++;
+        led_set(0, scans & 1);
 
-            PASTE(PLC_PROGRAM, _scan)(plc_state);
-            scans++;
-            led_set(0, scans & 1);
-
-            if (scans % 100 == 0) {
-                dbg("scan=");
-                dbg_i((int32_t)scans);
-                dbg(" t=");
-                dbg_i((int32_t)tick_ms);
-                dbg("ms [");
-                for (int i = 0; i < 3 && (i*2+1) < PLC_STATE_SIZE; i++) {
-                    if (i) dbg(",");
-                    int16_t v = (int16_t)(plc_state[i*2] | (plc_state[i*2+1]<<8));
-                    dbg_i(v);
-                }
-                dbg("]\r\n");
+        if (scans % 100 == 0) {
+            dbg("scan=");
+            dbg_i((int32_t)scans);
+            dbg(" [");
+            for (int i = 0; i < 3 && (i*2+1) < PLC_STATE_SIZE; i++) {
+                if (i) dbg(",");
+                int16_t v = (int16_t)(plc_state[i*2] | (plc_state[i*2+1]<<8));
+                dbg_i(v);
             }
+            dbg("]\r\n");
         }
+
+        // Brief yield — let Renode process other events
+        __asm__ volatile ("nop\nnop\nnop\nnop");
     }
 }
 
