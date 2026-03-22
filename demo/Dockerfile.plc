@@ -18,9 +18,12 @@ WORKDIR /demo
 RUN /build/target/release/plcc compile st-programs/water_treatment.st \
     -o plc.o --target thumbv7em-unknown-none-eabihf
 RUN arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
-    -ffreestanding -nostdlib -I. -c startup_stm32f4.c -o startup.o
+    -ffreestanding -nostdlib -I. -DPLC_PROGRAM=watertreatment -DPLC_MODBUS \
+    -c plcc_runtime.c -o runtime.o
 RUN arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
-    -ffreestanding -nostdlib -T stm32f4.ld startup.o plc.o -o firmware.elf -lgcc
+    -ffreestanding -nostdlib -I. -c modbus_rtu.c -o modbus.o
+RUN arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
+    -ffreestanding -nostdlib -T stm32f4.ld runtime.o modbus.o plc.o -o firmware.elf -lgcc
 
 # Step 3: Renode
 FROM antmicro/renode:latest
