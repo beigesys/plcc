@@ -6,7 +6,24 @@
       "type": "FuxaServer",
       "property": {},
       "enabled": true,
-      "tags": {},
+      "tags": {
+        "t_bdf7c07f-12034d98": {
+          "id": "t_bdf7c07f-12034d98",
+          "name": "WaterTreatmentPLC Connection Status",
+          "label": "WaterTreatmentPLC Connection Status",
+          "value": "",
+          "type": "number",
+          "memaddress": "d_plc",
+          "daq": {
+            "enabled": false,
+            "interval": 60,
+            "changed": false,
+            "restored": false
+          },
+          "init": "",
+          "sysType": 1
+        }
+      },
       "polling": 1000
     },
     "d_plc": {
@@ -30,7 +47,7 @@
           "name": "cmd_start",
           "type": "Bool",
           "memaddress": "400000",
-          "address": 1,
+          "address": 0,
           "divisor": 1,
           "description": "Start process"
         },
@@ -39,7 +56,7 @@
           "name": "cmd_stop",
           "type": "Bool",
           "memaddress": "400000",
-          "address": 2,
+          "address": 1,
           "divisor": 1,
           "description": "Stop process"
         },
@@ -48,7 +65,7 @@
           "name": "cmd_flush",
           "type": "Bool",
           "memaddress": "400000",
-          "address": 3,
+          "address": 2,
           "divisor": 1,
           "description": "Flush/drain"
         },
@@ -57,7 +74,7 @@
           "name": "cmd_alarm_ack",
           "type": "Bool",
           "memaddress": "400000",
-          "address": 4,
+          "address": 3,
           "divisor": 1,
           "description": "Acknowledge alarms"
         },
@@ -66,7 +83,7 @@
           "name": "cmd_alarm_reset",
           "type": "Bool",
           "memaddress": "400000",
-          "address": 5,
+          "address": 4,
           "divisor": 1,
           "description": "Reset faults"
         },
@@ -75,7 +92,7 @@
           "name": "sp_raw_tank",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 6,
+          "address": 5,
           "divisor": 1,
           "description": "Raw tank setpoint %"
         },
@@ -84,7 +101,7 @@
           "name": "sp_clean_tank",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 7,
+          "address": 6,
           "divisor": 1,
           "description": "Clean tank setpoint %"
         },
@@ -93,7 +110,7 @@
           "name": "sp_inlet_pump",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 8,
+          "address": 7,
           "divisor": 1,
           "description": "Inlet pump speed %"
         },
@@ -102,7 +119,7 @@
           "name": "sp_transfer_pump",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 9,
+          "address": 8,
           "divisor": 1,
           "description": "Transfer pump speed %"
         },
@@ -111,7 +128,7 @@
           "name": "sp_outlet_pump",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 10,
+          "address": 9,
           "divisor": 1,
           "description": "Outlet pump speed %"
         },
@@ -120,7 +137,7 @@
           "name": "running",
           "type": "Bool",
           "memaddress": "400000",
-          "address": 11,
+          "address": 10,
           "divisor": 1,
           "description": "Process running"
         },
@@ -129,7 +146,7 @@
           "name": "stopped",
           "type": "Bool",
           "memaddress": "400000",
-          "address": 12,
+          "address": 11,
           "divisor": 1,
           "description": "Process stopped"
         },
@@ -138,7 +155,7 @@
           "name": "flushing",
           "type": "Bool",
           "memaddress": "400000",
-          "address": 13,
+          "address": 12,
           "divisor": 1,
           "description": "Flush active"
         },
@@ -147,7 +164,7 @@
           "name": "faulted",
           "type": "Bool",
           "memaddress": "400000",
-          "address": 14,
+          "address": 13,
           "divisor": 1,
           "description": "Fault state"
         },
@@ -156,7 +173,7 @@
           "name": "cycle_count",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 15,
+          "address": 14,
           "divisor": 1,
           "description": "Scan counter"
         },
@@ -165,7 +182,7 @@
           "name": "raw_level",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 16,
+          "address": 15,
           "divisor": 1,
           "description": "Raw tank %"
         },
@@ -174,7 +191,7 @@
           "name": "clean_level",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 17,
+          "address": 16,
           "divisor": 1,
           "description": "Clean tank %"
         },
@@ -183,7 +200,7 @@
           "name": "system_ok",
           "type": "Bool",
           "memaddress": "400000",
-          "address": 18,
+          "address": 17,
           "divisor": 1,
           "description": "System healthy"
         },
@@ -192,7 +209,7 @@
           "name": "alarm_word",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 19,
+          "address": 18,
           "divisor": 1,
           "description": "Alarm bitmask"
         },
@@ -201,7 +218,7 @@
           "name": "total_flow",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 20,
+          "address": 19,
           "divisor": 1,
           "description": "Total flow"
         },
@@ -210,7 +227,7 @@
           "name": "inlet_pump_run",
           "type": "Bool",
           "memaddress": "400000",
-          "address": 21,
+          "address": 20,
           "divisor": 1,
           "description": "Inlet pump ON"
         },
@@ -219,7 +236,7 @@
           "name": "inlet_pump_speed",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 22,
+          "address": 21,
           "divisor": 1,
           "description": "Inlet pump speed"
         },
@@ -228,7 +245,7 @@
           "name": "inlet_pump_fault",
           "type": "Bool",
           "memaddress": "400000",
-          "address": 23,
+          "address": 22,
           "divisor": 1,
           "description": "Inlet pump fault"
         },
@@ -237,7 +254,7 @@
           "name": "xfer_pump_run",
           "type": "Bool",
           "memaddress": "400000",
-          "address": 24,
+          "address": 23,
           "divisor": 1,
           "description": "Transfer pump ON"
         },
@@ -246,7 +263,7 @@
           "name": "xfer_pump_speed",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 25,
+          "address": 24,
           "divisor": 1,
           "description": "Transfer pump speed"
         },
@@ -255,7 +272,7 @@
           "name": "xfer_pump_fault",
           "type": "Bool",
           "memaddress": "400000",
-          "address": 26,
+          "address": 25,
           "divisor": 1,
           "description": "Transfer pump fault"
         },
@@ -264,7 +281,7 @@
           "name": "outlet_pump_run",
           "type": "Bool",
           "memaddress": "400000",
-          "address": 27,
+          "address": 26,
           "divisor": 1,
           "description": "Outlet pump ON"
         },
@@ -273,7 +290,7 @@
           "name": "outlet_pump_speed",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 28,
+          "address": 27,
           "divisor": 1,
           "description": "Outlet pump speed"
         },
@@ -282,7 +299,7 @@
           "name": "outlet_pump_fault",
           "type": "Bool",
           "memaddress": "400000",
-          "address": 29,
+          "address": 28,
           "divisor": 1,
           "description": "Outlet pump fault"
         },
@@ -291,7 +308,7 @@
           "name": "inlet_vlv_pos",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 30,
+          "address": 29,
           "divisor": 1,
           "description": "Inlet valve %"
         },
@@ -300,7 +317,7 @@
           "name": "outlet_vlv_pos",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 31,
+          "address": 30,
           "divisor": 1,
           "description": "Outlet valve %"
         },
@@ -309,7 +326,7 @@
           "name": "drain_vlv_pos",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 32,
+          "address": 31,
           "divisor": 1,
           "description": "Drain valve %"
         },
@@ -318,7 +335,7 @@
           "name": "alm_raw_high",
           "type": "Bool",
           "memaddress": "400000",
-          "address": 33,
+          "address": 32,
           "divisor": 1,
           "description": "Raw tank HIGH"
         },
@@ -327,7 +344,7 @@
           "name": "alm_raw_low",
           "type": "Bool",
           "memaddress": "400000",
-          "address": 34,
+          "address": 33,
           "divisor": 1,
           "description": "Raw tank LOW"
         },
@@ -336,7 +353,7 @@
           "name": "alm_clean_high",
           "type": "Bool",
           "memaddress": "400000",
-          "address": 35,
+          "address": 34,
           "divisor": 1,
           "description": "Clean tank HIGH"
         },
@@ -345,7 +362,7 @@
           "name": "alm_clean_low",
           "type": "Bool",
           "memaddress": "400000",
-          "address": 36,
+          "address": 35,
           "divisor": 1,
           "description": "Clean tank LOW"
         },
@@ -354,7 +371,7 @@
           "name": "alm_inlet_fault",
           "type": "Bool",
           "memaddress": "400000",
-          "address": 37,
+          "address": 36,
           "divisor": 1,
           "description": "Inlet pump fault"
         },
@@ -363,7 +380,7 @@
           "name": "alm_xfer_fault",
           "type": "Bool",
           "memaddress": "400000",
-          "address": 38,
+          "address": 37,
           "divisor": 1,
           "description": "Transfer pump fault"
         },
@@ -372,7 +389,7 @@
           "name": "alm_outlet_fault",
           "type": "Bool",
           "memaddress": "400000",
-          "address": 39,
+          "address": 38,
           "divisor": 1,
           "description": "Outlet pump fault"
         },
@@ -381,7 +398,7 @@
           "name": "alm_count",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 40,
+          "address": 39,
           "divisor": 1,
           "description": "Active alarm count"
         }
@@ -390,7 +407,121 @@
     }
   },
   "hmi": {
-    "views": []
+    "views": [
+      {
+        "id": "v_49224bb12-1898",
+        "name": "MainView",
+        "profile": {
+          "width": 1024,
+          "height": 768,
+          "bkcolor": "#ffffffff",
+          "margin": 10,
+          "align": "topCenter",
+          "gridType": "fixed",
+          "viewRenderDelay": 0
+        },
+        "items": {
+          "HXB_0343e0a7-5bd840e4": {
+            "id": "HXB_0343e0a7-5bd840e4",
+            "type": "svg-ext-html_button",
+            "name": "start",
+            "property": {
+              "ranges": [
+                {
+                  "min": 0,
+                  "max": 0,
+                  "color": "#92d050ff",
+                  "type": 2,
+                  "stroke": ""
+                }
+              ],
+              "events": [
+                {
+                  "type": "click",
+                  "action": "onSetValue",
+                  "actparam": "1",
+                  "actoptions": {
+                    "variable": {
+                      "variableId": "t1",
+                      "variableRaw": {
+                        "id": "t1",
+                        "name": "cmd_start",
+                        "type": "Bool",
+                        "memaddress": "400000",
+                        "address": 1,
+                        "divisor": 1,
+                        "description": "Start process"
+                      }
+                    },
+                    "function": "set"
+                  }
+                }
+              ],
+              "actions": [
+                {
+                  "variableId": "t1",
+                  "range": {
+                    "min": 1
+                  },
+                  "type": "hide",
+                  "options": {}
+                }
+              ],
+              "text": "START",
+              "variableId": "t11"
+            },
+            "label": "HtmlButton",
+            "hide": false,
+            "lock": false
+          },
+          "HXB_bb4bac2d-52144559": {
+            "id": "HXB_bb4bac2d-52144559",
+            "type": "svg-ext-html_button",
+            "name": "button_1",
+            "property": {
+              "ranges": [
+                {
+                  "min": 20,
+                  "max": 80,
+                  "color": "",
+                  "type": 2,
+                  "stroke": ""
+                }
+              ],
+              "events": [
+                {
+                  "type": "click",
+                  "action": "onSetValue",
+                  "actparam": "1",
+                  "actoptions": {
+                    "function": "set",
+                    "variable": {
+                      "variableId": "t2",
+                      "variableRaw": {
+                        "id": "t2",
+                        "name": "cmd_stop",
+                        "type": "Bool",
+                        "memaddress": "400000",
+                        "address": 2,
+                        "divisor": 1,
+                        "description": "Stop process"
+                      }
+                    }
+                  }
+                }
+              ],
+              "actions": []
+            },
+            "label": "HtmlButton",
+            "hide": false,
+            "lock": false
+          }
+        },
+        "variables": {},
+        "svgcontent": "<svg width=\"1024\" height=\"768\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:svg=\"http://www.w3.org/2000/svg\" xmlns:html=\"http://www.w3.org/1999/xhtml\">\n <filter height=\"200\" width=\"200\" y=\"-3\" x=\"-3\" id=\"blur-filter\">\n  <feGaussianBlur stdDeviation=\"3\"/>\n </filter>\n <g>\n  <title>Layer 1</title>\n  <g stroke=\"rgba(0,0,0,0)\" fill=\"rgba(0,0,0,0)\" type=\"svg-ext-html_button\" id=\"HXB_0343e0a7-5bd840e4\">\n   <rect stroke=\"null\" id=\"svg_d7a40c8d-a5df4f38\" height=\"50\" width=\"110\" y=\"40\" x=\"62\" stroke-width=\"0\"/>\n   <foreignObject font-size=\"24\" id=\"H-HXB_35cef257-a19648ee\" width=\"110\" height=\"50\" y=\"40\" x=\"62\">\n    <BUTTON style=\"width: calc(100% - 6px); height: calc(100% - 6px); text-align: center; background-color: rgb(255, 255, 255); color: rgb(0, 0, 0); font-size: 24px; font-family: sans-serif; vector-effect: non-scaling-stroke;\" class=\"md-btn  md-btn-raised\" id=\"B-HXB_35cef257-a19648ee\">START</BUTTON>\n   </foreignObject>\n  </g>\n  <g id=\"HXB_bb4bac2d-52144559\" stroke=\"rgba(0,0,0,0)\" fill=\"rgba(0,0,0,0)\" type=\"svg-ext-html_button\">\n   <rect data-name=\"shape_1\" id=\"svg_db124d9f-2b0d4646\" stroke=\"null\" height=\"50\" width=\"110\" y=\"39.5\" x=\"179\" stroke-width=\"0\"/>\n   <foreignObject id=\"H-HXB_ed58af26-844b472a\" font-size=\"24\" width=\"110\" height=\"50\" y=\"39.5\" x=\"179\">\n    <BUTTON id=\"B-HXB_dc3400b7-e9f54452\" style=\"width: calc(100% - 6px); height: calc(100% - 6px); text-align: center; background-color: rgb(255, 255, 255); color: rgb(0, 0, 0); font-size: 24px; font-family: sans-serif; vector-effect: non-scaling-stroke;\" class=\"md-btn  md-btn-raised\">button_1</BUTTON>\n   </foreignObject>\n  </g>\n  <g xml:space=\"preserve\" text-anchor=\"middle\" font-family=\"sans-serif\" stroke-width=\"0\" font-size=\"14\" stroke=\"#000000\" fill=\"#000000\" y=\"204\" x=\"170\" type=\"svg-ext-value\" id=\"VAL_21e119db-4ee04353\">\n   <text y=\"204\" x=\"170\" xml:space=\"preserve\" text-anchor=\"middle\" font-family=\"sans-serif\" font-size=\"14\" stroke=\"#000000\" fill=\"#000000\" id=\"VAL_304757c5-b2df4e7c\" stroke-width=\"0\">##.##</text>\n  </g>\n </g>\n</svg>",
+        "type": "svg"
+      }
+    ]
   },
   "version": "1.00",
   "server": {
