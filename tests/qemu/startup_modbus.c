@@ -50,7 +50,7 @@ static void hw_init(void) {
     SYSTICK_LOAD = 16000 - 1; SYSTICK_VAL = 0; SYSTICK_CTRL = 7; // 1ms tick
 }
 
-static void dbg(const char *s) { while(*s) { while(!(USART1_SR&(1<<7))); USART1_DR=*s++; } }
+static void dbg(const char *s) { while(*s) { USART1_DR=*s++; volatile int d=100; while(d-->0); } }
 static void dbg_i(int16_t v) {
     if(v<0){while(!(USART1_SR&(1<<7)));USART1_DR='-';v=-v;}
     char t[8];int i=0;if(!v)t[i++]='0';while(v>0){t[i++]='0'+v%10;v/=10;}
@@ -107,24 +107,32 @@ void _start(void) {
 
     dbg("plcc PLC: water treatment + Modbus RTU\r\n");
     dbg("Slave=1 USART2@9600  Debug=USART1@115200\r\n");
+    dbg("Entering scan loop...\r\n");
 
-    uint32_t last_scan=0, last_rx=0, scans=0;
+    uint32_t scans=0, loop_count=0, rx_idle=0;
 
     while (1) {
+        // Poll Modbus UART
         if (USART2_SR & (1<<5)) {
             modbus_rtu_rx_byte(&mb, (uint8_t)(USART2_DR & 0xFF));
-            last_rx = tick_ms;
+            rx_idle = 0;
+        } else if (mb.rx_len > 0) {
+            rx_idle++;
+            // Frame timeout: ~4000 loop iterations ≈ 4ms at emulated speed
+            if (rx_idle > 4000) {
+                uint16_t n = modbus_rtu_process(&mb);
+                if (n > 0) mb_tx(mb.tx_buf, n);
+                modbus_rtu_rx_reset(&mb);
+                rx_idle = 0;
+            }
         }
-        if (mb.rx_len > 0 && (tick_ms - last_rx) > 4) {
-            uint16_t n = modbus_rtu_process(&mb);
-            if (n > 0) mb_tx(mb.tx_buf, n);
-            modbus_rtu_rx_reset(&mb);
-        }
-        if ((tick_ms - last_scan) >= 10) {
-            last_scan = tick_ms;
+
+        // Run PLC scan every loop iteration (emulation is slow)
+        {
+            loop_count = 0;
             watertreatment_scan(plc_state);
             scans++;
-            if (scans % 100 == 0) {
+            if (scans <= 5 || scans % 50 == 0) {
                 dbg("s="); dbg_i((int16_t)(scans&0x7FFF));
                 dbg(" m="); dbg_i(rd16(0));
                 dbg(" c="); dbg_i(rd16(2));
