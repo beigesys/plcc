@@ -489,32 +489,76 @@
   "hmi": {
     "views": [
       {
-        "id": "v_49224bb12-1898",
+        "id": "v_main",
         "name": "MainView",
         "profile": {
-          "width": 1024,
-          "height": 768,
-          "bkcolor": "#ffffffff",
+          "width": 900,
+          "height": 650,
+          "bkcolor": "#ffffff",
           "margin": 10,
           "align": "topCenter",
-          "gridType": "fixed",
-          "viewRenderDelay": 0
+          "gridType": "fixed"
         },
         "items": {
-          "HXB_0343e0a7-5bd840e4": {
-            "id": "HXB_0343e0a7-5bd840e4",
-            "type": "svg-ext-html_button",
-            "name": "start",
+          "HXB_c747bffe-a2a721dd": {
+            "id": "HXB_c747bffe-a2a721dd",
+            "type": "svg-ext-html_label",
+            "name": "Water Treatment Plant",
             "property": {
-              "ranges": [
-                {
-                  "min": 0,
-                  "max": 0,
-                  "color": "#92d050ff",
-                  "type": 2,
-                  "stroke": ""
-                }
-              ],
+              "x": 20,
+              "y": 10,
+              "w": 200,
+              "h": 30,
+              "text": "Water Treatment Plant",
+              "fontSize": 24,
+              "color": "#1565C0",
+              "fontWeight": "bold"
+            }
+          },
+          "HXB_677aaef6-2a3c97c5": {
+            "id": "HXB_677aaef6-2a3c97c5",
+            "type": "svg-ext-html_label",
+            "name": "plcc PLC \u2014 FUXA SCADA Demo",
+            "property": {
+              "x": 20,
+              "y": 45,
+              "w": 200,
+              "h": 30,
+              "text": "plcc PLC \u2014 FUXA SCADA Demo",
+              "fontSize": 12,
+              "color": "#666666",
+              "fontWeight": "normal"
+            }
+          },
+          "HXB_197379d3-8a9e16ea": {
+            "id": "HXB_197379d3-8a9e16ea",
+            "type": "svg-ext-html_label",
+            "name": "Commands",
+            "property": {
+              "x": 20,
+              "y": 90,
+              "w": 200,
+              "h": 30,
+              "text": "Commands",
+              "fontSize": 16,
+              "color": "#333",
+              "fontWeight": "bold"
+            }
+          },
+          "HXB_ff3d5b7c-16b97f23": {
+            "id": "HXB_ff3d5b7c-16b97f23",
+            "type": "svg-ext-html_button",
+            "name": "\u25b6 START",
+            "property": {
+              "x": 20,
+              "y": 120,
+              "w": 120,
+              "h": 40,
+              "text": "\u25b6 START",
+              "fontSize": 14,
+              "bkcolor": "#4CAF50",
+              "color": "#ffffff",
+              "borderRadius": 6,
               "events": [
                 {
                   "type": "click",
@@ -522,83 +566,1063 @@
                   "actparam": "1",
                   "actoptions": {
                     "variable": {
-                      "variableId": "t1",
-                      "variableRaw": {
-                        "id": "t1",
-                        "name": "cmd_start",
-                        "type": "Bool",
-                        "memaddress": "400000",
-                        "address": 1,
-                        "divisor": 1,
-                        "description": "Start process"
-                      }
+                      "variableId": "t1"
                     },
                     "function": "set"
                   }
                 }
-              ],
-              "actions": [
-                {
-                  "variableId": "t1",
-                  "range": {
-                    "min": 1
-                  },
-                  "type": "hide",
-                  "options": {}
-                }
-              ],
-              "text": "START",
-              "variableId": "t11"
-            },
-            "label": "HtmlButton",
-            "hide": false,
-            "lock": false
+              ]
+            }
           },
-          "HXB_bb4bac2d-52144559": {
-            "id": "HXB_bb4bac2d-52144559",
+          "HXB_7004a4b7-59968526": {
+            "id": "HXB_7004a4b7-59968526",
             "type": "svg-ext-html_button",
-            "name": "button_1",
+            "name": "\u23f9 STOP",
             "property": {
-              "ranges": [
-                {
-                  "min": 20,
-                  "max": 80,
-                  "color": "",
-                  "type": 2,
-                  "stroke": ""
-                }
-              ],
+              "x": 150,
+              "y": 120,
+              "w": 120,
+              "h": 40,
+              "text": "\u23f9 STOP",
+              "fontSize": 14,
+              "bkcolor": "#f44336",
+              "color": "#ffffff",
+              "borderRadius": 6,
               "events": [
                 {
                   "type": "click",
                   "action": "onSetValue",
                   "actparam": "1",
                   "actoptions": {
-                    "function": "set",
                     "variable": {
-                      "variableId": "t2",
-                      "variableRaw": {
-                        "id": "t2",
-                        "name": "cmd_stop",
-                        "type": "Bool",
-                        "memaddress": "400000",
-                        "address": 2,
-                        "divisor": 1,
-                        "description": "Stop process"
-                      }
-                    }
+                      "variableId": "t2"
+                    },
+                    "function": "set"
                   }
                 }
-              ],
-              "actions": []
-            },
-            "label": "HtmlButton",
-            "hide": false,
-            "lock": false
+              ]
+            }
+          },
+          "HXB_b5b6d15f-6a7ff89a": {
+            "id": "HXB_b5b6d15f-6a7ff89a",
+            "type": "svg-ext-html_button",
+            "name": "\ud83d\udd04 FLUSH",
+            "property": {
+              "x": 280,
+              "y": 120,
+              "w": 120,
+              "h": 40,
+              "text": "\ud83d\udd04 FLUSH",
+              "fontSize": 14,
+              "bkcolor": "#FF9800",
+              "color": "#ffffff",
+              "borderRadius": 6,
+              "events": [
+                {
+                  "type": "click",
+                  "action": "onSetValue",
+                  "actparam": "1",
+                  "actoptions": {
+                    "variable": {
+                      "variableId": "t3"
+                    },
+                    "function": "set"
+                  }
+                }
+              ]
+            }
+          },
+          "HXB_3225a8d3-888b2739": {
+            "id": "HXB_3225a8d3-888b2739",
+            "type": "svg-ext-html_button",
+            "name": "\ud83d\udd27 RESET",
+            "property": {
+              "x": 410,
+              "y": 120,
+              "w": 120,
+              "h": 40,
+              "text": "\ud83d\udd27 RESET",
+              "fontSize": 14,
+              "bkcolor": "#9E9E9E",
+              "color": "#ffffff",
+              "borderRadius": 6,
+              "events": [
+                {
+                  "type": "click",
+                  "action": "onSetValue",
+                  "actparam": "1",
+                  "actoptions": {
+                    "variable": {
+                      "variableId": "t5"
+                    },
+                    "function": "set"
+                  }
+                }
+              ]
+            }
+          },
+          "HXB_fe831dfd-604c168a": {
+            "id": "HXB_fe831dfd-604c168a",
+            "type": "svg-ext-html_label",
+            "name": "Process Status",
+            "property": {
+              "x": 20,
+              "y": 180,
+              "w": 200,
+              "h": 30,
+              "text": "Process Status",
+              "fontSize": 16,
+              "color": "#333",
+              "fontWeight": "bold"
+            }
+          },
+          "HXB_2306a9cd-2182f7fe": {
+            "id": "HXB_2306a9cd-2182f7fe",
+            "type": "svg-ext-html_led",
+            "name": "Running",
+            "property": {
+              "x": 20,
+              "y": 210,
+              "w": 24,
+              "h": 24,
+              "variableValue": "t11",
+              "label": "Running",
+              "onColor": "#4CAF50",
+              "offColor": "#cccccc",
+              "borderRadius": 12
+            }
+          },
+          "HXB_beba4bf2-d0a63870": {
+            "id": "HXB_beba4bf2-d0a63870",
+            "type": "svg-ext-html_label",
+            "name": "Running",
+            "property": {
+              "x": 50,
+              "y": 210,
+              "w": 200,
+              "h": 30,
+              "text": "Running",
+              "fontSize": 14,
+              "color": "#333333",
+              "fontWeight": "normal"
+            }
+          },
+          "HXB_ca9dabf5-eff2813a": {
+            "id": "HXB_ca9dabf5-eff2813a",
+            "type": "svg-ext-html_led",
+            "name": "Stopped",
+            "property": {
+              "x": 150,
+              "y": 210,
+              "w": 24,
+              "h": 24,
+              "variableValue": "t12",
+              "label": "Stopped",
+              "onColor": "#f44336",
+              "offColor": "#cccccc",
+              "borderRadius": 12
+            }
+          },
+          "HXB_8f6cf9ec-1341a2d5": {
+            "id": "HXB_8f6cf9ec-1341a2d5",
+            "type": "svg-ext-html_label",
+            "name": "Stopped",
+            "property": {
+              "x": 180,
+              "y": 210,
+              "w": 200,
+              "h": 30,
+              "text": "Stopped",
+              "fontSize": 14,
+              "color": "#333333",
+              "fontWeight": "normal"
+            }
+          },
+          "HXB_40d1283a-dbc601f8": {
+            "id": "HXB_40d1283a-dbc601f8",
+            "type": "svg-ext-html_led",
+            "name": "Flushing",
+            "property": {
+              "x": 280,
+              "y": 210,
+              "w": 24,
+              "h": 24,
+              "variableValue": "t13",
+              "label": "Flushing",
+              "onColor": "#FF9800",
+              "offColor": "#cccccc",
+              "borderRadius": 12
+            }
+          },
+          "HXB_abc67fca-01ea2a2a": {
+            "id": "HXB_abc67fca-01ea2a2a",
+            "type": "svg-ext-html_label",
+            "name": "Flushing",
+            "property": {
+              "x": 310,
+              "y": 210,
+              "w": 200,
+              "h": 30,
+              "text": "Flushing",
+              "fontSize": 14,
+              "color": "#333333",
+              "fontWeight": "normal"
+            }
+          },
+          "HXB_13fba6b0-d19ed6c4": {
+            "id": "HXB_13fba6b0-d19ed6c4",
+            "type": "svg-ext-html_led",
+            "name": "Faulted",
+            "property": {
+              "x": 410,
+              "y": 210,
+              "w": 24,
+              "h": 24,
+              "variableValue": "t14",
+              "label": "Faulted",
+              "onColor": "#f44336",
+              "offColor": "#cccccc",
+              "borderRadius": 12
+            }
+          },
+          "HXB_a18fbd31-2cc382c4": {
+            "id": "HXB_a18fbd31-2cc382c4",
+            "type": "svg-ext-html_label",
+            "name": "Faulted",
+            "property": {
+              "x": 440,
+              "y": 210,
+              "w": 200,
+              "h": 30,
+              "text": "Faulted",
+              "fontSize": 14,
+              "color": "#333333",
+              "fontWeight": "normal"
+            }
+          },
+          "HXB_bdc77204-3300850d": {
+            "id": "HXB_bdc77204-3300850d",
+            "type": "svg-ext-html_led",
+            "name": "System OK",
+            "property": {
+              "x": 540,
+              "y": 210,
+              "w": 24,
+              "h": 24,
+              "variableValue": "t18",
+              "label": "System OK",
+              "onColor": "#4CAF50",
+              "offColor": "#cccccc",
+              "borderRadius": 12
+            }
+          },
+          "HXB_ea6580fb-78491c96": {
+            "id": "HXB_ea6580fb-78491c96",
+            "type": "svg-ext-html_label",
+            "name": "System OK",
+            "property": {
+              "x": 570,
+              "y": 210,
+              "w": 200,
+              "h": 30,
+              "text": "System OK",
+              "fontSize": 14,
+              "color": "#333333",
+              "fontWeight": "normal"
+            }
+          },
+          "HXB_c1d5f5e8-97ebf9eb": {
+            "id": "HXB_c1d5f5e8-97ebf9eb",
+            "type": "svg-ext-html_label",
+            "name": "Tank Levels",
+            "property": {
+              "x": 20,
+              "y": 260,
+              "w": 200,
+              "h": 30,
+              "text": "Tank Levels",
+              "fontSize": 16,
+              "color": "#333",
+              "fontWeight": "bold"
+            }
+          },
+          "HXB_5d85bc9e-897ff535": {
+            "id": "HXB_5d85bc9e-897ff535",
+            "type": "svg-ext-html_label",
+            "name": "Raw Tank",
+            "property": {
+              "x": 20,
+              "y": 290,
+              "w": 200,
+              "h": 30,
+              "text": "Raw Tank",
+              "fontSize": 14,
+              "color": "#333333",
+              "fontWeight": "normal"
+            }
+          },
+          "HXB_d4ac5bdd-95a455ff": {
+            "id": "HXB_d4ac5bdd-95a455ff",
+            "type": "svg-ext-html_value",
+            "name": "raw_level",
+            "property": {
+              "x": 120,
+              "y": 290,
+              "w": 60,
+              "h": 30,
+              "variableValue": "t16",
+              "label": "",
+              "suffix": "%",
+              "fontSize": 16,
+              "color": "#000000",
+              "bkcolor": "#e8e8e8",
+              "borderRadius": 4
+            }
+          },
+          "HXB_242b01a7-10610d0a": {
+            "id": "HXB_242b01a7-10610d0a",
+            "type": "svg-ext-html_progress",
+            "name": "Raw",
+            "property": {
+              "x": 20,
+              "y": 320,
+              "w": 150,
+              "h": 150,
+              "variableValue": "t16",
+              "min": 0,
+              "max": 100,
+              "label": "Raw",
+              "shape": "circular",
+              "barColor": "#2196F3",
+              "bkcolor": "#f0f0f0",
+              "fontSize": 12
+            }
+          },
+          "HXB_51ccac55-f19c5b24": {
+            "id": "HXB_51ccac55-f19c5b24",
+            "type": "svg-ext-html_label",
+            "name": "Clean Tank",
+            "property": {
+              "x": 200,
+              "y": 290,
+              "w": 200,
+              "h": 30,
+              "text": "Clean Tank",
+              "fontSize": 14,
+              "color": "#333333",
+              "fontWeight": "normal"
+            }
+          },
+          "HXB_0421e3ae-ce0e471c": {
+            "id": "HXB_0421e3ae-ce0e471c",
+            "type": "svg-ext-html_value",
+            "name": "clean_level",
+            "property": {
+              "x": 300,
+              "y": 290,
+              "w": 60,
+              "h": 30,
+              "variableValue": "t17",
+              "label": "",
+              "suffix": "%",
+              "fontSize": 16,
+              "color": "#000000",
+              "bkcolor": "#e8e8e8",
+              "borderRadius": 4
+            }
+          },
+          "HXB_84dcb547-2b0bb282": {
+            "id": "HXB_84dcb547-2b0bb282",
+            "type": "svg-ext-html_progress",
+            "name": "Clean",
+            "property": {
+              "x": 200,
+              "y": 320,
+              "w": 150,
+              "h": 150,
+              "variableValue": "t17",
+              "min": 0,
+              "max": 100,
+              "label": "Clean",
+              "shape": "circular",
+              "barColor": "#2196F3",
+              "bkcolor": "#f0f0f0",
+              "fontSize": 12
+            }
+          },
+          "HXB_4d2a9c1b-89d1d723": {
+            "id": "HXB_4d2a9c1b-89d1d723",
+            "type": "svg-ext-html_label",
+            "name": "Setpoints",
+            "property": {
+              "x": 400,
+              "y": 260,
+              "w": 200,
+              "h": 30,
+              "text": "Setpoints",
+              "fontSize": 16,
+              "color": "#333",
+              "fontWeight": "bold"
+            }
+          },
+          "HXB_9daea7e5-4b07d232": {
+            "id": "HXB_9daea7e5-4b07d232",
+            "type": "svg-ext-html_label",
+            "name": "Raw Tank SP",
+            "property": {
+              "x": 400,
+              "y": 290,
+              "w": 200,
+              "h": 30,
+              "text": "Raw Tank SP",
+              "fontSize": 14,
+              "color": "#333333",
+              "fontWeight": "normal"
+            }
+          },
+          "HXB_b6faf4e3-afa60e80": {
+            "id": "HXB_b6faf4e3-afa60e80",
+            "type": "svg-ext-html_value",
+            "name": "sp_raw_tank",
+            "property": {
+              "x": 520,
+              "y": 290,
+              "w": 60,
+              "h": 30,
+              "variableValue": "t6",
+              "label": "",
+              "suffix": "%",
+              "fontSize": 16,
+              "color": "#000000",
+              "bkcolor": "#e8e8e8",
+              "borderRadius": 4
+            }
+          },
+          "HXB_b6f802cb-2e6bafa8": {
+            "id": "HXB_b6f802cb-2e6bafa8",
+            "type": "svg-ext-html_label",
+            "name": "Clean Tank SP",
+            "property": {
+              "x": 400,
+              "y": 320,
+              "w": 200,
+              "h": 30,
+              "text": "Clean Tank SP",
+              "fontSize": 14,
+              "color": "#333333",
+              "fontWeight": "normal"
+            }
+          },
+          "HXB_46a36eb0-0b7eb401": {
+            "id": "HXB_46a36eb0-0b7eb401",
+            "type": "svg-ext-html_value",
+            "name": "sp_clean_tank",
+            "property": {
+              "x": 520,
+              "y": 320,
+              "w": 60,
+              "h": 30,
+              "variableValue": "t7",
+              "label": "",
+              "suffix": "%",
+              "fontSize": 16,
+              "color": "#000000",
+              "bkcolor": "#e8e8e8",
+              "borderRadius": 4
+            }
+          },
+          "HXB_0409721a-08606f98": {
+            "id": "HXB_0409721a-08606f98",
+            "type": "svg-ext-html_label",
+            "name": "Pumps",
+            "property": {
+              "x": 20,
+              "y": 490,
+              "w": 200,
+              "h": 30,
+              "text": "Pumps",
+              "fontSize": 16,
+              "color": "#333",
+              "fontWeight": "bold"
+            }
+          },
+          "HXB_c0655fac-f5ca142b": {
+            "id": "HXB_c0655fac-f5ca142b",
+            "type": "svg-ext-html_led",
+            "name": "Inlet",
+            "property": {
+              "x": 20,
+              "y": 520,
+              "w": 24,
+              "h": 24,
+              "variableValue": "t21",
+              "label": "Inlet",
+              "onColor": "#4CAF50",
+              "offColor": "#cccccc",
+              "borderRadius": 12
+            }
+          },
+          "HXB_1b355f7d-a18b292b": {
+            "id": "HXB_1b355f7d-a18b292b",
+            "type": "svg-ext-html_label",
+            "name": "Inlet Pump",
+            "property": {
+              "x": 50,
+              "y": 520,
+              "w": 200,
+              "h": 30,
+              "text": "Inlet Pump",
+              "fontSize": 14,
+              "color": "#333333",
+              "fontWeight": "normal"
+            }
+          },
+          "HXB_bc6f74cb-14fa78c7": {
+            "id": "HXB_bc6f74cb-14fa78c7",
+            "type": "svg-ext-html_value",
+            "name": "inlet_pump_speed",
+            "property": {
+              "x": 160,
+              "y": 520,
+              "w": 50,
+              "h": 30,
+              "variableValue": "t22",
+              "label": "",
+              "suffix": "%",
+              "fontSize": 16,
+              "color": "#000000",
+              "bkcolor": "#e8e8e8",
+              "borderRadius": 4
+            }
+          },
+          "HXB_c3719858-0b43cae6": {
+            "id": "HXB_c3719858-0b43cae6",
+            "type": "svg-ext-html_led",
+            "name": "Xfer",
+            "property": {
+              "x": 230,
+              "y": 520,
+              "w": 24,
+              "h": 24,
+              "variableValue": "t24",
+              "label": "Xfer",
+              "onColor": "#4CAF50",
+              "offColor": "#cccccc",
+              "borderRadius": 12
+            }
+          },
+          "HXB_fd32bfb1-0a21f24d": {
+            "id": "HXB_fd32bfb1-0a21f24d",
+            "type": "svg-ext-html_label",
+            "name": "Transfer",
+            "property": {
+              "x": 260,
+              "y": 520,
+              "w": 200,
+              "h": 30,
+              "text": "Transfer",
+              "fontSize": 14,
+              "color": "#333333",
+              "fontWeight": "normal"
+            }
+          },
+          "HXB_25e05321-c551112e": {
+            "id": "HXB_25e05321-c551112e",
+            "type": "svg-ext-html_value",
+            "name": "xfer_pump_speed",
+            "property": {
+              "x": 360,
+              "y": 520,
+              "w": 50,
+              "h": 30,
+              "variableValue": "t25",
+              "label": "",
+              "suffix": "%",
+              "fontSize": 16,
+              "color": "#000000",
+              "bkcolor": "#e8e8e8",
+              "borderRadius": 4
+            }
+          },
+          "HXB_b4ad93c6-a8215e2c": {
+            "id": "HXB_b4ad93c6-a8215e2c",
+            "type": "svg-ext-html_led",
+            "name": "Outlet",
+            "property": {
+              "x": 430,
+              "y": 520,
+              "w": 24,
+              "h": 24,
+              "variableValue": "t27",
+              "label": "Outlet",
+              "onColor": "#4CAF50",
+              "offColor": "#cccccc",
+              "borderRadius": 12
+            }
+          },
+          "HXB_3da26355-352d7bbe": {
+            "id": "HXB_3da26355-352d7bbe",
+            "type": "svg-ext-html_label",
+            "name": "Outlet Pump",
+            "property": {
+              "x": 460,
+              "y": 520,
+              "w": 200,
+              "h": 30,
+              "text": "Outlet Pump",
+              "fontSize": 14,
+              "color": "#333333",
+              "fontWeight": "normal"
+            }
+          },
+          "HXB_4b2a86a0-50cd9653": {
+            "id": "HXB_4b2a86a0-50cd9653",
+            "type": "svg-ext-html_value",
+            "name": "outlet_pump_speed",
+            "property": {
+              "x": 570,
+              "y": 520,
+              "w": 50,
+              "h": 30,
+              "variableValue": "t28",
+              "label": "",
+              "suffix": "%",
+              "fontSize": 16,
+              "color": "#000000",
+              "bkcolor": "#e8e8e8",
+              "borderRadius": 4
+            }
+          },
+          "HXB_f1f0ee69-ee2e7207": {
+            "id": "HXB_f1f0ee69-ee2e7207",
+            "type": "svg-ext-html_label",
+            "name": "Valves",
+            "property": {
+              "x": 20,
+              "y": 560,
+              "w": 200,
+              "h": 30,
+              "text": "Valves",
+              "fontSize": 16,
+              "color": "#333",
+              "fontWeight": "bold"
+            }
+          },
+          "HXB_1222567c-3ffdfe30": {
+            "id": "HXB_1222567c-3ffdfe30",
+            "type": "svg-ext-html_label",
+            "name": "Inlet",
+            "property": {
+              "x": 20,
+              "y": 590,
+              "w": 200,
+              "h": 30,
+              "text": "Inlet",
+              "fontSize": 14,
+              "color": "#333333",
+              "fontWeight": "normal"
+            }
+          },
+          "HXB_e653c01d-4f2388a0": {
+            "id": "HXB_e653c01d-4f2388a0",
+            "type": "svg-ext-html_value",
+            "name": "inlet_vlv",
+            "property": {
+              "x": 80,
+              "y": 590,
+              "w": 50,
+              "h": 30,
+              "variableValue": "t30",
+              "label": "",
+              "suffix": "%",
+              "fontSize": 16,
+              "color": "#000000",
+              "bkcolor": "#e8e8e8",
+              "borderRadius": 4
+            }
+          },
+          "HXB_a1f9c35a-4ff1766f": {
+            "id": "HXB_a1f9c35a-4ff1766f",
+            "type": "svg-ext-html_label",
+            "name": "Outlet",
+            "property": {
+              "x": 160,
+              "y": 590,
+              "w": 200,
+              "h": 30,
+              "text": "Outlet",
+              "fontSize": 14,
+              "color": "#333333",
+              "fontWeight": "normal"
+            }
+          },
+          "HXB_5ac4a284-4b1f4568": {
+            "id": "HXB_5ac4a284-4b1f4568",
+            "type": "svg-ext-html_value",
+            "name": "outlet_vlv",
+            "property": {
+              "x": 230,
+              "y": 590,
+              "w": 50,
+              "h": 30,
+              "variableValue": "t31",
+              "label": "",
+              "suffix": "%",
+              "fontSize": 16,
+              "color": "#000000",
+              "bkcolor": "#e8e8e8",
+              "borderRadius": 4
+            }
+          },
+          "HXB_5141596d-bebe5eef": {
+            "id": "HXB_5141596d-bebe5eef",
+            "type": "svg-ext-html_label",
+            "name": "Drain",
+            "property": {
+              "x": 310,
+              "y": 590,
+              "w": 200,
+              "h": 30,
+              "text": "Drain",
+              "fontSize": 14,
+              "color": "#333333",
+              "fontWeight": "normal"
+            }
+          },
+          "HXB_47118d0b-7a6c5fe6": {
+            "id": "HXB_47118d0b-7a6c5fe6",
+            "type": "svg-ext-html_value",
+            "name": "drain_vlv",
+            "property": {
+              "x": 370,
+              "y": 590,
+              "w": 50,
+              "h": 30,
+              "variableValue": "t32",
+              "label": "",
+              "suffix": "%",
+              "fontSize": 16,
+              "color": "#000000",
+              "bkcolor": "#e8e8e8",
+              "borderRadius": 4
+            }
+          },
+          "HXB_de631f27-28d4a71a": {
+            "id": "HXB_de631f27-28d4a71a",
+            "type": "svg-ext-html_label",
+            "name": "Alarms",
+            "property": {
+              "x": 650,
+              "y": 90,
+              "w": 200,
+              "h": 30,
+              "text": "Alarms",
+              "fontSize": 16,
+              "color": "#f44336",
+              "fontWeight": "bold"
+            }
+          },
+          "HXB_c57389f4-4007f3c9": {
+            "id": "HXB_c57389f4-4007f3c9",
+            "type": "svg-ext-html_led",
+            "name": "Raw HIGH",
+            "property": {
+              "x": 650,
+              "y": 120,
+              "w": 24,
+              "h": 24,
+              "variableValue": "t33",
+              "label": "Raw HIGH",
+              "onColor": "#f44336",
+              "offColor": "#cccccc",
+              "borderRadius": 12
+            }
+          },
+          "HXB_e193027e-af36da17": {
+            "id": "HXB_e193027e-af36da17",
+            "type": "svg-ext-html_label",
+            "name": "Raw Tank HIGH",
+            "property": {
+              "x": 680,
+              "y": 120,
+              "w": 200,
+              "h": 30,
+              "text": "Raw Tank HIGH",
+              "fontSize": 14,
+              "color": "#333333",
+              "fontWeight": "normal"
+            }
+          },
+          "HXB_cdcf2ff8-bef03e82": {
+            "id": "HXB_cdcf2ff8-bef03e82",
+            "type": "svg-ext-html_led",
+            "name": "Raw LOW",
+            "property": {
+              "x": 650,
+              "y": 150,
+              "w": 24,
+              "h": 24,
+              "variableValue": "t34",
+              "label": "Raw LOW",
+              "onColor": "#FF9800",
+              "offColor": "#cccccc",
+              "borderRadius": 12
+            }
+          },
+          "HXB_28ec8b26-6e252670": {
+            "id": "HXB_28ec8b26-6e252670",
+            "type": "svg-ext-html_label",
+            "name": "Raw Tank LOW",
+            "property": {
+              "x": 680,
+              "y": 150,
+              "w": 200,
+              "h": 30,
+              "text": "Raw Tank LOW",
+              "fontSize": 14,
+              "color": "#333333",
+              "fontWeight": "normal"
+            }
+          },
+          "HXB_7f54dcf7-37fd956b": {
+            "id": "HXB_7f54dcf7-37fd956b",
+            "type": "svg-ext-html_led",
+            "name": "Clean HIGH",
+            "property": {
+              "x": 650,
+              "y": 180,
+              "w": 24,
+              "h": 24,
+              "variableValue": "t35",
+              "label": "Clean HIGH",
+              "onColor": "#f44336",
+              "offColor": "#cccccc",
+              "borderRadius": 12
+            }
+          },
+          "HXB_8e56dfcd-e138b288": {
+            "id": "HXB_8e56dfcd-e138b288",
+            "type": "svg-ext-html_label",
+            "name": "Clean Tank HIGH",
+            "property": {
+              "x": 680,
+              "y": 180,
+              "w": 200,
+              "h": 30,
+              "text": "Clean Tank HIGH",
+              "fontSize": 14,
+              "color": "#333333",
+              "fontWeight": "normal"
+            }
+          },
+          "HXB_78b498eb-8a031271": {
+            "id": "HXB_78b498eb-8a031271",
+            "type": "svg-ext-html_led",
+            "name": "Clean LOW",
+            "property": {
+              "x": 650,
+              "y": 210,
+              "w": 24,
+              "h": 24,
+              "variableValue": "t36",
+              "label": "Clean LOW",
+              "onColor": "#FF9800",
+              "offColor": "#cccccc",
+              "borderRadius": 12
+            }
+          },
+          "HXB_d4a5f702-5227ebba": {
+            "id": "HXB_d4a5f702-5227ebba",
+            "type": "svg-ext-html_label",
+            "name": "Clean Tank LOW",
+            "property": {
+              "x": 680,
+              "y": 210,
+              "w": 200,
+              "h": 30,
+              "text": "Clean Tank LOW",
+              "fontSize": 14,
+              "color": "#333333",
+              "fontWeight": "normal"
+            }
+          },
+          "HXB_4e8f45fd-1b1d49d5": {
+            "id": "HXB_4e8f45fd-1b1d49d5",
+            "type": "svg-ext-html_led",
+            "name": "Inlet Fault",
+            "property": {
+              "x": 650,
+              "y": 240,
+              "w": 24,
+              "h": 24,
+              "variableValue": "t37",
+              "label": "Inlet Fault",
+              "onColor": "#f44336",
+              "offColor": "#cccccc",
+              "borderRadius": 12
+            }
+          },
+          "HXB_90902727-4b9063d0": {
+            "id": "HXB_90902727-4b9063d0",
+            "type": "svg-ext-html_label",
+            "name": "Inlet Pump Fault",
+            "property": {
+              "x": 680,
+              "y": 240,
+              "w": 200,
+              "h": 30,
+              "text": "Inlet Pump Fault",
+              "fontSize": 14,
+              "color": "#333333",
+              "fontWeight": "normal"
+            }
+          },
+          "HXB_a75eccc4-886df633": {
+            "id": "HXB_a75eccc4-886df633",
+            "type": "svg-ext-html_led",
+            "name": "Xfer Fault",
+            "property": {
+              "x": 650,
+              "y": 270,
+              "w": 24,
+              "h": 24,
+              "variableValue": "t38",
+              "label": "Xfer Fault",
+              "onColor": "#f44336",
+              "offColor": "#cccccc",
+              "borderRadius": 12
+            }
+          },
+          "HXB_65e513a5-9a3de641": {
+            "id": "HXB_65e513a5-9a3de641",
+            "type": "svg-ext-html_label",
+            "name": "Transfer Pump Fault",
+            "property": {
+              "x": 680,
+              "y": 270,
+              "w": 200,
+              "h": 30,
+              "text": "Transfer Pump Fault",
+              "fontSize": 14,
+              "color": "#333333",
+              "fontWeight": "normal"
+            }
+          },
+          "HXB_4a1e4d2c-c9194fab": {
+            "id": "HXB_4a1e4d2c-c9194fab",
+            "type": "svg-ext-html_led",
+            "name": "Outlet Fault",
+            "property": {
+              "x": 650,
+              "y": 300,
+              "w": 24,
+              "h": 24,
+              "variableValue": "t39",
+              "label": "Outlet Fault",
+              "onColor": "#f44336",
+              "offColor": "#cccccc",
+              "borderRadius": 12
+            }
+          },
+          "HXB_c9cfcf6a-68a0f945": {
+            "id": "HXB_c9cfcf6a-68a0f945",
+            "type": "svg-ext-html_label",
+            "name": "Outlet Pump Fault",
+            "property": {
+              "x": 680,
+              "y": 300,
+              "w": 200,
+              "h": 30,
+              "text": "Outlet Pump Fault",
+              "fontSize": 14,
+              "color": "#333333",
+              "fontWeight": "normal"
+            }
+          },
+          "HXB_02071807-54bc95f2": {
+            "id": "HXB_02071807-54bc95f2",
+            "type": "svg-ext-html_label",
+            "name": "Counters",
+            "property": {
+              "x": 650,
+              "y": 350,
+              "w": 200,
+              "h": 30,
+              "text": "Counters",
+              "fontSize": 16,
+              "color": "#333",
+              "fontWeight": "bold"
+            }
+          },
+          "HXB_47586f87-dc81e6c6": {
+            "id": "HXB_47586f87-dc81e6c6",
+            "type": "svg-ext-html_label",
+            "name": "Cycle Count",
+            "property": {
+              "x": 650,
+              "y": 380,
+              "w": 200,
+              "h": 30,
+              "text": "Cycle Count",
+              "fontSize": 14,
+              "color": "#333333",
+              "fontWeight": "normal"
+            }
+          },
+          "HXB_b141cbac-065bc10f": {
+            "id": "HXB_b141cbac-065bc10f",
+            "type": "svg-ext-html_value",
+            "name": "cycle_count",
+            "property": {
+              "x": 780,
+              "y": 380,
+              "w": 80,
+              "h": 30,
+              "variableValue": "t15",
+              "label": "",
+              "suffix": "",
+              "fontSize": 16,
+              "color": "#000000",
+              "bkcolor": "#e8e8e8",
+              "borderRadius": 4
+            }
+          },
+          "HXB_21ebf965-349d516c": {
+            "id": "HXB_21ebf965-349d516c",
+            "type": "svg-ext-html_label",
+            "name": "Total Flow",
+            "property": {
+              "x": 650,
+              "y": 410,
+              "w": 200,
+              "h": 30,
+              "text": "Total Flow",
+              "fontSize": 14,
+              "color": "#333333",
+              "fontWeight": "normal"
+            }
+          },
+          "HXB_083d59cc-6e0abd24": {
+            "id": "HXB_083d59cc-6e0abd24",
+            "type": "svg-ext-html_value",
+            "name": "total_flow",
+            "property": {
+              "x": 780,
+              "y": 410,
+              "w": 80,
+              "h": 30,
+              "variableValue": "t20",
+              "label": "",
+              "suffix": "",
+              "fontSize": 16,
+              "color": "#000000",
+              "bkcolor": "#e8e8e8",
+              "borderRadius": 4
+            }
           }
         },
         "variables": {},
-        "svgcontent": "<svg width=\"1024\" height=\"768\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:svg=\"http://www.w3.org/2000/svg\" xmlns:html=\"http://www.w3.org/1999/xhtml\">\n <filter height=\"200\" width=\"200\" y=\"-3\" x=\"-3\" id=\"blur-filter\">\n  <feGaussianBlur stdDeviation=\"3\"/>\n </filter>\n <g>\n  <title>Layer 1</title>\n  <g stroke=\"rgba(0,0,0,0)\" fill=\"rgba(0,0,0,0)\" type=\"svg-ext-html_button\" id=\"HXB_0343e0a7-5bd840e4\">\n   <rect stroke=\"null\" id=\"svg_d7a40c8d-a5df4f38\" height=\"50\" width=\"110\" y=\"40\" x=\"62\" stroke-width=\"0\"/>\n   <foreignObject font-size=\"24\" id=\"H-HXB_35cef257-a19648ee\" width=\"110\" height=\"50\" y=\"40\" x=\"62\">\n    <BUTTON style=\"width: calc(100% - 6px); height: calc(100% - 6px); text-align: center; background-color: rgb(255, 255, 255); color: rgb(0, 0, 0); font-size: 24px; font-family: sans-serif; vector-effect: non-scaling-stroke;\" class=\"md-btn  md-btn-raised\" id=\"B-HXB_35cef257-a19648ee\">START</BUTTON>\n   </foreignObject>\n  </g>\n  <g id=\"HXB_bb4bac2d-52144559\" stroke=\"rgba(0,0,0,0)\" fill=\"rgba(0,0,0,0)\" type=\"svg-ext-html_button\">\n   <rect data-name=\"shape_1\" id=\"svg_db124d9f-2b0d4646\" stroke=\"null\" height=\"50\" width=\"110\" y=\"39.5\" x=\"179\" stroke-width=\"0\"/>\n   <foreignObject id=\"H-HXB_ed58af26-844b472a\" font-size=\"24\" width=\"110\" height=\"50\" y=\"39.5\" x=\"179\">\n    <BUTTON id=\"B-HXB_dc3400b7-e9f54452\" style=\"width: calc(100% - 6px); height: calc(100% - 6px); text-align: center; background-color: rgb(255, 255, 255); color: rgb(0, 0, 0); font-size: 24px; font-family: sans-serif; vector-effect: non-scaling-stroke;\" class=\"md-btn  md-btn-raised\">button_1</BUTTON>\n   </foreignObject>\n  </g>\n  <g xml:space=\"preserve\" text-anchor=\"middle\" font-family=\"sans-serif\" stroke-width=\"0\" font-size=\"14\" stroke=\"#000000\" fill=\"#000000\" y=\"204\" x=\"170\" type=\"svg-ext-value\" id=\"VAL_21e119db-4ee04353\">\n   <text y=\"204\" x=\"170\" xml:space=\"preserve\" text-anchor=\"middle\" font-family=\"sans-serif\" font-size=\"14\" stroke=\"#000000\" fill=\"#000000\" id=\"VAL_304757c5-b2df4e7c\" stroke-width=\"0\">##.##</text>\n  </g>\n </g>\n</svg>",
+        "svgcontent": "<svg width=\"900\" height=\"650\" xmlns=\"http://www.w3.org/2000/svg\"><g><title>Water Treatment</title></g></svg>",
         "type": "svg"
       }
     ]
