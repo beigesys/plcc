@@ -364,8 +364,7 @@ fn modbus_tcp_server(port: u16, state: std::sync::Arc<std::sync::Mutex<Vec<u8>>>
                         let _ = sock.write_all(&resp);
                     }
                     0x03 => { // Read Holding Registers (FC03)
-                        let raw_start = u16::from_be_bytes([buf[8], buf[9]]) as usize;
-                        let start = if raw_start > 0 { raw_start - 1 } else { 0 };
+                        let start = u16::from_be_bytes([buf[8], buf[9]]) as usize;
                         let count = u16::from_be_bytes([buf[10], buf[11]]) as usize;
                         let mut resp = Vec::with_capacity(9 + count * 2);
                         resp.extend_from_slice(&tx_id);
@@ -386,8 +385,7 @@ fn modbus_tcp_server(port: u16, state: std::sync::Arc<std::sync::Mutex<Vec<u8>>>
                         let _ = sock.write_all(&resp);
                     }
                     0x06 => { // Write Single Register (FC06)
-                        let raw_addr = u16::from_be_bytes([buf[8], buf[9]]) as usize;
-                        let addr = if raw_addr > 0 { raw_addr - 1 } else { 0 };
+                        let addr = u16::from_be_bytes([buf[8], buf[9]]) as usize;
                         let value = u16::from_be_bytes([buf[10], buf[11]]);
                         let off = addr * 2;
                         { let mut s = st.lock().unwrap();

@@ -1,1637 +1,600 @@
 {
-  "devices": {
-    "0": {
-      "id": "0",
-      "name": "FUXA Server",
-      "type": "FuxaServer",
-      "property": {},
-      "enabled": true,
-      "tags": {
-        "t_bdf7c07f-12034d98": {
-          "id": "t_bdf7c07f-12034d98",
-          "name": "WaterTreatmentPLC Connection Status",
-          "label": "WaterTreatmentPLC Connection Status",
-          "value": "",
-          "type": "number",
-          "memaddress": "d_plc",
-          "daq": {
-            "enabled": false,
-            "interval": 60,
-            "changed": false,
-            "restored": false
-          },
-          "init": "",
-          "sysType": 1
+    "devices": {
+        "0": {
+            "id": "0",
+            "name": "FUXA Server",
+            "type": "FuxaServer",
+            "property": {},
+            "enabled": true,
+            "tags": {
+                "t_bdf7c07f-12034d98": {
+                    "id": "t_bdf7c07f-12034d98",
+                    "name": "WaterTreatmentPLC Connection Status",
+                    "label": "WaterTreatmentPLC Connection Status",
+                    "value": "",
+                    "type": "number",
+                    "memaddress": "d_plc",
+                    "daq": {
+                        "enabled": false,
+                        "interval": 60,
+                        "changed": false,
+                        "restored": false
+                    },
+                    "init": "",
+                    "sysType": 1
+                }
+            },
+            "polling": 1000
+        },
+        "d_plc": {
+            "id": "d_plc",
+            "name": "WaterTreatmentPLC",
+            "enabled": true,
+            "property": {
+                "address": "plc:502",
+                "port": null,
+                "slaveid": "1",
+                "baudrate": 9600,
+                "databits": 8,
+                "stopbits": 1,
+                "parity": "None",
+                "connectionOption": "TcpPort"
+            },
+            "type": "ModbusTCP",
+            "tags": {
+                "t1": {
+                    "id": "t1",
+                    "name": "cmd_start",
+                    "type": "Bool",
+                    "memaddress": "000000",
+                    "address": 1,
+                    "divisor": 1,
+                    "description": "Start process",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                },
+                "t2": {
+                    "id": "t2",
+                    "name": "cmd_stop",
+                    "type": "Bool",
+                    "memaddress": "000000",
+                    "address": 2,
+                    "divisor": 1,
+                    "description": "Stop process",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                },
+                "t3": {
+                    "id": "t3",
+                    "name": "cmd_flush",
+                    "type": "Bool",
+                    "memaddress": "000000",
+                    "address": 3,
+                    "divisor": 1,
+                    "description": "Flush/drain",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                },
+                "t4": {
+                    "id": "t4",
+                    "name": "cmd_alarm_ack",
+                    "type": "Bool",
+                    "memaddress": "000000",
+                    "address": 4,
+                    "divisor": 1,
+                    "description": "Acknowledge alarms",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                },
+                "t5": {
+                    "id": "t5",
+                    "name": "cmd_alarm_reset",
+                    "type": "Bool",
+                    "memaddress": "000000",
+                    "address": 5,
+                    "divisor": 1,
+                    "description": "Reset faults",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                },
+                "t6": {
+                    "id": "t6",
+                    "name": "sp_raw_tank",
+                    "type": "UInt16",
+                    "memaddress": "400000",
+                    "address": 6,
+                    "divisor": 1,
+                    "description": "Raw tank setpoint %",
+                    "value": 50,
+                    "timestamp": 1774224029083
+                },
+                "t7": {
+                    "id": "t7",
+                    "name": "sp_clean_tank",
+                    "type": "UInt16",
+                    "memaddress": "400000",
+                    "address": 7,
+                    "divisor": 1,
+                    "description": "Clean tank setpoint %",
+                    "value": 70,
+                    "timestamp": 1774224029083
+                },
+                "t8": {
+                    "id": "t8",
+                    "name": "sp_inlet_pump",
+                    "type": "UInt16",
+                    "memaddress": "400000",
+                    "address": 8,
+                    "divisor": 1,
+                    "description": "Inlet pump speed %",
+                    "value": 60,
+                    "timestamp": 1774224029083
+                },
+                "t9": {
+                    "id": "t9",
+                    "name": "sp_transfer_pump",
+                    "type": "UInt16",
+                    "memaddress": "400000",
+                    "address": 9,
+                    "divisor": 1,
+                    "description": "Transfer pump speed %",
+                    "value": 40,
+                    "timestamp": 1774224029083
+                },
+                "t10": {
+                    "id": "t10",
+                    "name": "sp_outlet_pump",
+                    "type": "UInt16",
+                    "memaddress": "400000",
+                    "address": 10,
+                    "divisor": 1,
+                    "description": "Outlet pump speed %",
+                    "value": 30,
+                    "timestamp": 1774224029083
+                },
+                "t11": {
+                    "id": "t11",
+                    "name": "running",
+                    "type": "Bool",
+                    "memaddress": "000000",
+                    "address": 11,
+                    "divisor": 1,
+                    "description": "Process running",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                },
+                "t12": {
+                    "id": "t12",
+                    "name": "stopped",
+                    "type": "Bool",
+                    "memaddress": "000000",
+                    "address": 12,
+                    "divisor": 1,
+                    "description": "Process stopped",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                },
+                "t13": {
+                    "id": "t13",
+                    "name": "flushing",
+                    "type": "Bool",
+                    "memaddress": "000000",
+                    "address": 13,
+                    "divisor": 1,
+                    "description": "Flush active",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                },
+                "t14": {
+                    "id": "t14",
+                    "name": "faulted",
+                    "type": "Bool",
+                    "memaddress": "000000",
+                    "address": 14,
+                    "divisor": 1,
+                    "description": "Fault state",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                },
+                "t15": {
+                    "id": "t15",
+                    "name": "cycle_count",
+                    "type": "UInt16",
+                    "memaddress": "400000",
+                    "address": 15,
+                    "divisor": 1,
+                    "description": "Scan counter",
+                    "value": 6708,
+                    "timestamp": 1774224029083
+                },
+                "t16": {
+                    "id": "t16",
+                    "name": "raw_level",
+                    "type": "UInt16",
+                    "memaddress": "400000",
+                    "address": 16,
+                    "divisor": 1,
+                    "description": "Raw tank %",
+                    "value": 50,
+                    "timestamp": 1774224029083
+                },
+                "t17": {
+                    "id": "t17",
+                    "name": "clean_level",
+                    "type": "UInt16",
+                    "memaddress": "400000",
+                    "address": 17,
+                    "divisor": 1,
+                    "description": "Clean tank %",
+                    "value": 70,
+                    "timestamp": 1774224029083
+                },
+                "t18": {
+                    "id": "t18",
+                    "name": "system_ok",
+                    "type": "Bool",
+                    "memaddress": "000000",
+                    "address": 18,
+                    "divisor": 1,
+                    "description": "System healthy",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                },
+                "t19": {
+                    "id": "t19",
+                    "name": "alarm_word",
+                    "type": "UInt16",
+                    "memaddress": "400000",
+                    "address": 19,
+                    "divisor": 1,
+                    "description": "Alarm bitmask",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                },
+                "t20": {
+                    "id": "t20",
+                    "name": "total_flow",
+                    "type": "UInt16",
+                    "memaddress": "400000",
+                    "address": 20,
+                    "divisor": 1,
+                    "description": "Total flow",
+                    "value": 61828,
+                    "timestamp": 1774224029083
+                },
+                "t21": {
+                    "id": "t21",
+                    "name": "inlet_pump_run",
+                    "type": "Bool",
+                    "memaddress": "000000",
+                    "address": 21,
+                    "divisor": 1,
+                    "description": "Inlet pump ON",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                },
+                "t22": {
+                    "id": "t22",
+                    "name": "inlet_pump_speed",
+                    "type": "UInt16",
+                    "memaddress": "400000",
+                    "address": 22,
+                    "divisor": 1,
+                    "description": "Inlet pump speed",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                },
+                "t23": {
+                    "id": "t23",
+                    "name": "inlet_pump_fault",
+                    "type": "Bool",
+                    "memaddress": "000000",
+                    "address": 23,
+                    "divisor": 1,
+                    "description": "Inlet pump fault",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                },
+                "t24": {
+                    "id": "t24",
+                    "name": "xfer_pump_run",
+                    "type": "Bool",
+                    "memaddress": "000000",
+                    "address": 24,
+                    "divisor": 1,
+                    "description": "Transfer pump ON",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                },
+                "t25": {
+                    "id": "t25",
+                    "name": "xfer_pump_speed",
+                    "type": "UInt16",
+                    "memaddress": "400000",
+                    "address": 25,
+                    "divisor": 1,
+                    "description": "Transfer pump speed",
+                    "value": 40,
+                    "timestamp": 1774224029083
+                },
+                "t26": {
+                    "id": "t26",
+                    "name": "xfer_pump_fault",
+                    "type": "Bool",
+                    "memaddress": "000000",
+                    "address": 26,
+                    "divisor": 1,
+                    "description": "Transfer pump fault",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                },
+                "t27": {
+                    "id": "t27",
+                    "name": "outlet_pump_run",
+                    "type": "Bool",
+                    "memaddress": "000000",
+                    "address": 27,
+                    "divisor": 1,
+                    "description": "Outlet pump ON",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                },
+                "t28": {
+                    "id": "t28",
+                    "name": "outlet_pump_speed",
+                    "type": "UInt16",
+                    "memaddress": "400000",
+                    "address": 28,
+                    "divisor": 1,
+                    "description": "Outlet pump speed",
+                    "value": 30,
+                    "timestamp": 1774224029083
+                },
+                "t29": {
+                    "id": "t29",
+                    "name": "outlet_pump_fault",
+                    "type": "Bool",
+                    "memaddress": "000000",
+                    "address": 29,
+                    "divisor": 1,
+                    "description": "Outlet pump fault",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                },
+                "t30": {
+                    "id": "t30",
+                    "name": "inlet_vlv_pos",
+                    "type": "UInt16",
+                    "memaddress": "400000",
+                    "address": 30,
+                    "divisor": 1,
+                    "description": "Inlet valve %",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                },
+                "t31": {
+                    "id": "t31",
+                    "name": "outlet_vlv_pos",
+                    "type": "UInt16",
+                    "memaddress": "400000",
+                    "address": 31,
+                    "divisor": 1,
+                    "description": "Outlet valve %",
+                    "value": 100,
+                    "timestamp": 1774224029083
+                },
+                "t32": {
+                    "id": "t32",
+                    "name": "drain_vlv_pos",
+                    "type": "UInt16",
+                    "memaddress": "400000",
+                    "address": 32,
+                    "divisor": 1,
+                    "description": "Drain valve %",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                },
+                "t33": {
+                    "id": "t33",
+                    "name": "alm_raw_high",
+                    "type": "Bool",
+                    "memaddress": "000000",
+                    "address": 33,
+                    "divisor": 1,
+                    "description": "Raw tank HIGH",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                },
+                "t34": {
+                    "id": "t34",
+                    "name": "alm_raw_low",
+                    "type": "Bool",
+                    "memaddress": "000000",
+                    "address": 34,
+                    "divisor": 1,
+                    "description": "Raw tank LOW",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                },
+                "t35": {
+                    "id": "t35",
+                    "name": "alm_clean_high",
+                    "type": "Bool",
+                    "memaddress": "000000",
+                    "address": 35,
+                    "divisor": 1,
+                    "description": "Clean tank HIGH",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                },
+                "t36": {
+                    "id": "t36",
+                    "name": "alm_clean_low",
+                    "type": "Bool",
+                    "memaddress": "000000",
+                    "address": 36,
+                    "divisor": 1,
+                    "description": "Clean tank LOW",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                },
+                "t37": {
+                    "id": "t37",
+                    "name": "alm_inlet_fault",
+                    "type": "Bool",
+                    "memaddress": "000000",
+                    "address": 37,
+                    "divisor": 1,
+                    "description": "Inlet pump fault",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                },
+                "t38": {
+                    "id": "t38",
+                    "name": "alm_xfer_fault",
+                    "type": "Bool",
+                    "memaddress": "000000",
+                    "address": 38,
+                    "divisor": 1,
+                    "description": "Transfer pump fault",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                },
+                "t39": {
+                    "id": "t39",
+                    "name": "alm_outlet_fault",
+                    "type": "Bool",
+                    "memaddress": "000000",
+                    "address": 39,
+                    "divisor": 1,
+                    "description": "Outlet pump fault",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                },
+                "t40": {
+                    "id": "t40",
+                    "name": "alm_count",
+                    "type": "UInt16",
+                    "memaddress": "400000",
+                    "address": 40,
+                    "divisor": 1,
+                    "description": "Active alarm count",
+                    "value": 0,
+                    "timestamp": 1774224029083
+                }
+            },
+            "polling": 1000
         }
-      },
-      "polling": 1000
     },
-    "d_plc": {
-      "id": "d_plc",
-      "name": "WaterTreatmentPLC",
-      "enabled": true,
-      "property": {
-        "address": "plc:502",
-        "port": null,
-        "slaveid": "1",
-        "baudrate": 9600,
-        "databits": 8,
-        "stopbits": 1,
-        "parity": "None",
-        "connectionOption": "TcpPort"
-      },
-      "type": "ModbusTCP",
-      "tags": {
-        "t1": {
-          "id": "t1",
-          "name": "cmd_start",
-          "type": "Bool",
-          "memaddress": "000000",
-          "address": 1,
-          "divisor": 1,
-          "description": "Start process",
-          "value": 0,
-          "timestamp": 1774224029083
-        },
-        "t2": {
-          "id": "t2",
-          "name": "cmd_stop",
-          "type": "Bool",
-          "memaddress": "000000",
-          "address": 2,
-          "divisor": 1,
-          "description": "Stop process",
-          "value": 0,
-          "timestamp": 1774224029083
-        },
-        "t3": {
-          "id": "t3",
-          "name": "cmd_flush",
-          "type": "Bool",
-          "memaddress": "000000",
-          "address": 3,
-          "divisor": 1,
-          "description": "Flush/drain",
-          "value": 0,
-          "timestamp": 1774224029083
-        },
-        "t4": {
-          "id": "t4",
-          "name": "cmd_alarm_ack",
-          "type": "Bool",
-          "memaddress": "000000",
-          "address": 4,
-          "divisor": 1,
-          "description": "Acknowledge alarms",
-          "value": 0,
-          "timestamp": 1774224029083
-        },
-        "t5": {
-          "id": "t5",
-          "name": "cmd_alarm_reset",
-          "type": "Bool",
-          "memaddress": "000000",
-          "address": 5,
-          "divisor": 1,
-          "description": "Reset faults",
-          "value": 0,
-          "timestamp": 1774224029083
-        },
-        "t6": {
-          "id": "t6",
-          "name": "sp_raw_tank",
-          "type": "UInt16",
-          "memaddress": "400000",
-          "address": 6,
-          "divisor": 1,
-          "description": "Raw tank setpoint %",
-          "value": 50,
-          "timestamp": 1774224029083
-        },
-        "t7": {
-          "id": "t7",
-          "name": "sp_clean_tank",
-          "type": "UInt16",
-          "memaddress": "400000",
-          "address": 7,
-          "divisor": 1,
-          "description": "Clean tank setpoint %",
-          "value": 70,
-          "timestamp": 1774224029083
-        },
-        "t8": {
-          "id": "t8",
-          "name": "sp_inlet_pump",
-          "type": "UInt16",
-          "memaddress": "400000",
-          "address": 8,
-          "divisor": 1,
-          "description": "Inlet pump speed %",
-          "value": 60,
-          "timestamp": 1774224029083
-        },
-        "t9": {
-          "id": "t9",
-          "name": "sp_transfer_pump",
-          "type": "UInt16",
-          "memaddress": "400000",
-          "address": 9,
-          "divisor": 1,
-          "description": "Transfer pump speed %",
-          "value": 40,
-          "timestamp": 1774224029083
-        },
-        "t10": {
-          "id": "t10",
-          "name": "sp_outlet_pump",
-          "type": "UInt16",
-          "memaddress": "400000",
-          "address": 10,
-          "divisor": 1,
-          "description": "Outlet pump speed %",
-          "value": 30,
-          "timestamp": 1774224029083
-        },
-        "t11": {
-          "id": "t11",
-          "name": "running",
-          "type": "Bool",
-          "memaddress": "000000",
-          "address": 11,
-          "divisor": 1,
-          "description": "Process running",
-          "value": 0,
-          "timestamp": 1774224029083
-        },
-        "t12": {
-          "id": "t12",
-          "name": "stopped",
-          "type": "Bool",
-          "memaddress": "000000",
-          "address": 12,
-          "divisor": 1,
-          "description": "Process stopped",
-          "value": 0,
-          "timestamp": 1774224029083
-        },
-        "t13": {
-          "id": "t13",
-          "name": "flushing",
-          "type": "Bool",
-          "memaddress": "000000",
-          "address": 13,
-          "divisor": 1,
-          "description": "Flush active",
-          "value": 0,
-          "timestamp": 1774224029083
-        },
-        "t14": {
-          "id": "t14",
-          "name": "faulted",
-          "type": "Bool",
-          "memaddress": "000000",
-          "address": 14,
-          "divisor": 1,
-          "description": "Fault state",
-          "value": 0,
-          "timestamp": 1774224029083
-        },
-        "t15": {
-          "id": "t15",
-          "name": "cycle_count",
-          "type": "UInt16",
-          "memaddress": "400000",
-          "address": 15,
-          "divisor": 1,
-          "description": "Scan counter",
-          "value": 6708,
-          "timestamp": 1774224029083
-        },
-        "t16": {
-          "id": "t16",
-          "name": "raw_level",
-          "type": "UInt16",
-          "memaddress": "400000",
-          "address": 16,
-          "divisor": 1,
-          "description": "Raw tank %",
-          "value": 50,
-          "timestamp": 1774224029083
-        },
-        "t17": {
-          "id": "t17",
-          "name": "clean_level",
-          "type": "UInt16",
-          "memaddress": "400000",
-          "address": 17,
-          "divisor": 1,
-          "description": "Clean tank %",
-          "value": 70,
-          "timestamp": 1774224029083
-        },
-        "t18": {
-          "id": "t18",
-          "name": "system_ok",
-          "type": "Bool",
-          "memaddress": "000000",
-          "address": 18,
-          "divisor": 1,
-          "description": "System healthy",
-          "value": 0,
-          "timestamp": 1774224029083
-        },
-        "t19": {
-          "id": "t19",
-          "name": "alarm_word",
-          "type": "UInt16",
-          "memaddress": "400000",
-          "address": 19,
-          "divisor": 1,
-          "description": "Alarm bitmask",
-          "value": 0,
-          "timestamp": 1774224029083
-        },
-        "t20": {
-          "id": "t20",
-          "name": "total_flow",
-          "type": "UInt16",
-          "memaddress": "400000",
-          "address": 20,
-          "divisor": 1,
-          "description": "Total flow",
-          "value": 61828,
-          "timestamp": 1774224029083
-        },
-        "t21": {
-          "id": "t21",
-          "name": "inlet_pump_run",
-          "type": "Bool",
-          "memaddress": "000000",
-          "address": 21,
-          "divisor": 1,
-          "description": "Inlet pump ON",
-          "value": 0,
-          "timestamp": 1774224029083
-        },
-        "t22": {
-          "id": "t22",
-          "name": "inlet_pump_speed",
-          "type": "UInt16",
-          "memaddress": "400000",
-          "address": 22,
-          "divisor": 1,
-          "description": "Inlet pump speed",
-          "value": 0,
-          "timestamp": 1774224029083
-        },
-        "t23": {
-          "id": "t23",
-          "name": "inlet_pump_fault",
-          "type": "Bool",
-          "memaddress": "000000",
-          "address": 23,
-          "divisor": 1,
-          "description": "Inlet pump fault",
-          "value": 0,
-          "timestamp": 1774224029083
-        },
-        "t24": {
-          "id": "t24",
-          "name": "xfer_pump_run",
-          "type": "Bool",
-          "memaddress": "000000",
-          "address": 24,
-          "divisor": 1,
-          "description": "Transfer pump ON",
-          "value": 0,
-          "timestamp": 1774224029083
-        },
-        "t25": {
-          "id": "t25",
-          "name": "xfer_pump_speed",
-          "type": "UInt16",
-          "memaddress": "400000",
-          "address": 25,
-          "divisor": 1,
-          "description": "Transfer pump speed",
-          "value": 40,
-          "timestamp": 1774224029083
-        },
-        "t26": {
-          "id": "t26",
-          "name": "xfer_pump_fault",
-          "type": "Bool",
-          "memaddress": "000000",
-          "address": 26,
-          "divisor": 1,
-          "description": "Transfer pump fault",
-          "value": 0,
-          "timestamp": 1774224029083
-        },
-        "t27": {
-          "id": "t27",
-          "name": "outlet_pump_run",
-          "type": "Bool",
-          "memaddress": "000000",
-          "address": 27,
-          "divisor": 1,
-          "description": "Outlet pump ON",
-          "value": 0,
-          "timestamp": 1774224029083
-        },
-        "t28": {
-          "id": "t28",
-          "name": "outlet_pump_speed",
-          "type": "UInt16",
-          "memaddress": "400000",
-          "address": 28,
-          "divisor": 1,
-          "description": "Outlet pump speed",
-          "value": 30,
-          "timestamp": 1774224029083
-        },
-        "t29": {
-          "id": "t29",
-          "name": "outlet_pump_fault",
-          "type": "Bool",
-          "memaddress": "000000",
-          "address": 29,
-          "divisor": 1,
-          "description": "Outlet pump fault",
-          "value": 0,
-          "timestamp": 1774224029083
-        },
-        "t30": {
-          "id": "t30",
-          "name": "inlet_vlv_pos",
-          "type": "UInt16",
-          "memaddress": "400000",
-          "address": 30,
-          "divisor": 1,
-          "description": "Inlet valve %",
-          "value": 0,
-          "timestamp": 1774224029083
-        },
-        "t31": {
-          "id": "t31",
-          "name": "outlet_vlv_pos",
-          "type": "UInt16",
-          "memaddress": "400000",
-          "address": 31,
-          "divisor": 1,
-          "description": "Outlet valve %",
-          "value": 100,
-          "timestamp": 1774224029083
-        },
-        "t32": {
-          "id": "t32",
-          "name": "drain_vlv_pos",
-          "type": "UInt16",
-          "memaddress": "400000",
-          "address": 32,
-          "divisor": 1,
-          "description": "Drain valve %",
-          "value": 0,
-          "timestamp": 1774224029083
-        },
-        "t33": {
-          "id": "t33",
-          "name": "alm_raw_high",
-          "type": "Bool",
-          "memaddress": "000000",
-          "address": 33,
-          "divisor": 1,
-          "description": "Raw tank HIGH",
-          "value": 0,
-          "timestamp": 1774224029083
-        },
-        "t34": {
-          "id": "t34",
-          "name": "alm_raw_low",
-          "type": "Bool",
-          "memaddress": "000000",
-          "address": 34,
-          "divisor": 1,
-          "description": "Raw tank LOW",
-          "value": 0,
-          "timestamp": 1774224029083
-        },
-        "t35": {
-          "id": "t35",
-          "name": "alm_clean_high",
-          "type": "Bool",
-          "memaddress": "000000",
-          "address": 35,
-          "divisor": 1,
-          "description": "Clean tank HIGH",
-          "value": 0,
-          "timestamp": 1774224029083
-        },
-        "t36": {
-          "id": "t36",
-          "name": "alm_clean_low",
-          "type": "Bool",
-          "memaddress": "000000",
-          "address": 36,
-          "divisor": 1,
-          "description": "Clean tank LOW",
-          "value": 0,
-          "timestamp": 1774224029083
-        },
-        "t37": {
-          "id": "t37",
-          "name": "alm_inlet_fault",
-          "type": "Bool",
-          "memaddress": "000000",
-          "address": 37,
-          "divisor": 1,
-          "description": "Inlet pump fault",
-          "value": 0,
-          "timestamp": 1774224029083
-        },
-        "t38": {
-          "id": "t38",
-          "name": "alm_xfer_fault",
-          "type": "Bool",
-          "memaddress": "000000",
-          "address": 38,
-          "divisor": 1,
-          "description": "Transfer pump fault",
-          "value": 0,
-          "timestamp": 1774224029083
-        },
-        "t39": {
-          "id": "t39",
-          "name": "alm_outlet_fault",
-          "type": "Bool",
-          "memaddress": "000000",
-          "address": 39,
-          "divisor": 1,
-          "description": "Outlet pump fault",
-          "value": 0,
-          "timestamp": 1774224029083
-        },
-        "t40": {
-          "id": "t40",
-          "name": "alm_count",
-          "type": "UInt16",
-          "memaddress": "400000",
-          "address": 40,
-          "divisor": 1,
-          "description": "Active alarm count",
-          "value": 0,
-          "timestamp": 1774224029083
-        }
-      },
-      "polling": 1000
+    "hmi": {
+        "views": [
+            {
+                "id": "v_403440b1-411110",
+                "name": "MainView",
+                "profile": {
+                    "width": 1024,
+                    "height": 768,
+                    "bkcolor": "#ffffffff",
+                    "margin": 10,
+                    "align": "topCenter",
+                    "gridType": "fixed",
+                    "viewRenderDelay": 0
+                },
+                "items": {
+                    "OXC_40601faf-9c33439d": {
+                        "id": "OXC_40601faf-9c33439d",
+                        "type": "svg-ext-own_ctrl-image",
+                        "name": "shape_1",
+                        "property": {
+                            "events": [],
+                            "actions": [],
+                            "address": "http://localhost:1881/_widgets/Tanks/squareTankLevel-v2.svg",
+                            "type": "widget",
+                            "svgGuid": "7ab11413ab_6aa11",
+                            "svgContent": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"150\" height=\"150\" viewBox=\"0 0 150 150\" preserveAspectRatio=\"none\">\n  <!-- Livello acqua con path -->\n  <path id=\"waterShape_7ab11413ab_6aa11\" fill=\"#74b1e6ff\" d=\"M 9 101.4 Q 25.5 97.4, 42 101.4 Q 58.5 105.4, 75 101.4 Q 91.5 97.4, 108 101.4 Q 124.5 105.4, 141 101.4 V 141 H 9 Z\" stroke=\"#74b1e6ff\" stroke-linecap=\"round\" style=\"fill: rgb(116, 177, 230);\"></path>\n  <path id=\"waterShapeBorder_7ab11413ab_6aa11\" fill=\"none\" stroke=\"#3781d8ff\" stroke-width=\"4\" stroke-linecap=\"round\" d=\"M 9 101.4 Q 25.5 97.4, 42 101.4 Q 58.5 105.4, 75 101.4 Q 91.5 97.4, 108 101.4 Q 124.5 105.4, 141 101.4 V 141 H 9 Z\"></path>\n  <rect id=\"tankBorder_7ab11413ab_6aa11\" x=\"7\" y=\"7\" width=\"136\" height=\"136\" stroke=\"#888888\" stroke-width=\"4\" fill=\"none\" style=\"stroke: rgb(137, 137, 137);\"></rect>\n\n  <!-- Static preview (used in <img>) -->\n  <path id=\"previewWater_7ab11413ab_6aa11\" fill=\"#74b1e6\" d=\"M9 70 Q42 66, 75 70 Q108 74, 141 70 V141 H9 Z\" style=\"display: none;\"></path>\n\n  <text id=\"tankText_7ab11413ab_6aa11\" x=\"75\" y=\"85\" text-anchor=\"middle\" font-size=\"24\" fill=\"#000000\" font-family=\"Arial\" style=\"fill: rgb(0, 0, 0); font-size: 24px;\">30%</text>\n\n  \n</svg>",
+                            "scriptContent": {
+                                "moduleId": "wModule_7ab11413ab_6aa11",
+                                "content": "var wModule_7ab11413ab_6aa11 = window.wModule_7ab11413ab_6aa11 || {};\n(function() {\n    \n    let initValue = 30;\n    //!export-start\n    let _pc_borderColor = \"#898989ff\";\n    let _pc_waterColor = \"#74b1e6ff\";\n    let _pc_waterBorderColor = \"#3781d8ff\";\n    let _pc_textColor = \"#000000ff\";\n    let _pn_textSize = 24;\n    let _pn_value = initValue;\n    let _pn_min = 0;\n    let _pn_max = 100;\n    \nwModule_7ab11413ab_6aa11._pc_borderColor = _pc_borderColor;\nwModule_7ab11413ab_6aa11._pc_waterColor = _pc_waterColor;\nwModule_7ab11413ab_6aa11._pc_waterBorderColor = _pc_waterBorderColor;\nwModule_7ab11413ab_6aa11._pc_textColor = _pc_textColor;\nwModule_7ab11413ab_6aa11._pn_textSize = _pn_textSize;\nwModule_7ab11413ab_6aa11._pn_value = _pn_value;\nwModule_7ab11413ab_6aa11._pn_min = _pn_min;\nwModule_7ab11413ab_6aa11._pn_max = _pn_max;//!export-end\n\n    function init() {\n      const pw = document.getElementById('previewWater_7ab11413ab_6aa11');\n      if (pw) pw.style.display = \"none\";\n\n      document.getElementById('tankBorder_7ab11413ab_6aa11').style.stroke = _pc_borderColor;\n      document.getElementById('waterShape_7ab11413ab_6aa11').style.fill = _pc_waterColor;\n      document.getElementById('tankText_7ab11413ab_6aa11').style.fill = _pc_textColor;\n      document.getElementById('tankText_7ab11413ab_6aa11').style.fontSize = _pn_textSize + 'px';\n      updateWaterLevel(_pn_value);\n    }\n\n    let animationFrame = null;\n\n    function updateWaterLevel(pct) {\n      const shape = document.getElementById('waterShape_7ab11413ab_6aa11');\n      const shapeBorder = document.getElementById('waterShapeBorder_7ab11413ab_6aa11');\n      pct = Math.max(_pn_min, Math.min(_pn_max, pct));\n      const relativePct = Math.round(((pct - _pn_min) / (_pn_max - _pn_min)) * 100);\n      const displayPct = Math.max(0, Math.min(100, relativePct));\n      document.getElementById('tankText_7ab11413ab_6aa11').textContent = displayPct + '%';\n\n      const x = 9;\n      const y = 9;\n      const width = 132;\n      const height = 132;\n      const fillHeight = height * (pct - _pn_min) / (_pn_max - _pn_min);\n      const topY = y + height - fillHeight;\n\n      const waveCount = 4;\n      const waveAmp = 4;\n      const waveWidth = width / waveCount;\n\n      let wavePath = `M ${x} ${topY}`;\n      for (let i = 0; i < waveCount; i++) {\n        const xStart = x + i * waveWidth;\n        const xMid = xStart + waveWidth / 2;\n        const xEnd = xStart + waveWidth;\n        const yCtrl = topY + (i % 2 === 0 ? -waveAmp : waveAmp);\n        wavePath += ` Q ${xMid} ${yCtrl}, ${xEnd} ${topY}`;\n      }\n      wavePath += ` V ${y + height} H ${x} Z`;\n\n      let waveBorderPath = `M ${x} ${topY}`;\n      for (let i = 0; i < waveCount; i++) {\n        const xStart = x + i * waveWidth;\n        const xMid = xStart + waveWidth / 2;\n        const xEnd = xStart + waveWidth;\n        const yCtrl = topY + (i % 2 === 0 ? -waveAmp : waveAmp);\n        waveBorderPath += ` Q ${xMid} ${yCtrl}, ${xEnd} ${topY}`;\n      }\n      waveBorderPath += ` V ${y + height} H ${x} Z`;\n\n      shape.setAttribute('d', wavePath);\n      shapeBorder.setAttribute('d', waveBorderPath);\n\n      shape.setAttribute('fill', _pc_waterColor);\n      shape.setAttribute('stroke', _pc_waterColor);\n      shape.setAttribute('stroke-width', '1');\n      shapeBorder.setAttribute('stroke', _pc_waterBorderColor);\n      shapeBorder.setAttribute('stroke-width', '4');\n      shape.setAttribute('stroke-linecap', 'round');\n      shapeBorder.setAttribute('stroke-linecap', 'round');\n    }\n\n    let animationTimer = null;\n\n    function putValue(id, value) {\n      switch(id) {\n        case '_pc_borderColor': _pc_borderColor = value; init(); break;\n        case '_pc_waterColor': _pc_waterColor = value; init(); break;\n        case '_pc_textColor': _pc_textColor = value; init(); break;\n        case '_pn_textSize': _pn_textSize = parseInt(value); init(); break;\n        case '_pn_value':\n          let newValue = parseFloat(value);\n          newValue = Math.max(_pn_min, Math.min(_pn_max, newValue));\n          const step = newValue > _pn_value ? 0.5 : -0.5;\n          const delay = 10;\n\n          const animateStep = () => {\n            if (_pn_value === newValue) {\n              animationTimer = null;\n              return;\n            }\n            _pn_value += step;\n            updateWaterLevel(_pn_value);\n            animationTimer = setTimeout(animateStep, delay);\n          };\n\n          if (animationTimer !== null) clearTimeout(animationTimer);\n          if (_pn_value !== newValue) animateStep();\n          break;\n      }\n    }\n\n    setTimeout(() => {\n      init();\n    }, 100);\n    \n  \nwModule_7ab11413ab_6aa11.init = init;\nwModule_7ab11413ab_6aa11.updateWaterLevel = updateWaterLevel;\nwModule_7ab11413ab_6aa11.putValue = putValue;\n})();\nwindow.wModule_7ab11413ab_6aa11=wModule_7ab11413ab_6aa11"
+                            },
+                            "varsToBind": [
+                                {
+                                    "originalName": "_pc_borderColor",
+                                    "name": "_pc_borderColor",
+                                    "type": "color",
+                                    "variableValue": "#898989ff"
+                                },
+                                {
+                                    "originalName": "_pc_waterColor",
+                                    "name": "_pc_waterColor",
+                                    "type": "color",
+                                    "variableValue": "#74b1e6ff"
+                                },
+                                {
+                                    "originalName": "_pc_waterBorderColor",
+                                    "name": "_pc_waterBorderColor",
+                                    "type": "color",
+                                    "variableValue": "#3781d8ff"
+                                },
+                                {
+                                    "originalName": "_pc_textColor",
+                                    "name": "_pc_textColor",
+                                    "type": "color",
+                                    "variableValue": "#000000ff"
+                                },
+                                {
+                                    "originalName": "_pn_textSize",
+                                    "name": "_pn_textSize",
+                                    "type": "number",
+                                    "variableValue": "24"
+                                },
+                                {
+                                    "originalName": "_pn_value",
+                                    "name": "_pn_value",
+                                    "type": "number",
+                                    "variableValue": "initValue",
+                                    "variableId": "t16",
+                                    "variableRaw": {
+                                        "id": "t16",
+                                        "name": "raw_level",
+                                        "type": "UInt16",
+                                        "memaddress": "400000",
+                                        "address": 16,
+                                        "divisor": 1,
+                                        "description": "Raw tank %",
+                                        "value": 50,
+                                        "timestamp": 1774224029083
+                                    }
+                                },
+                                {
+                                    "originalName": "_pn_min",
+                                    "name": "_pn_min",
+                                    "type": "number",
+                                    "variableValue": "0"
+                                },
+                                {
+                                    "originalName": "_pn_max",
+                                    "name": "_pn_max",
+                                    "type": "number",
+                                    "variableValue": "100"
+                                }
+                            ]
+                        },
+                        "label": "HtmlImage",
+                        "hide": false,
+                        "lock": false
+                    }
+                },
+                "variables": {},
+                "svgcontent": "<svg width=\"1024\" height=\"768\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:svg=\"http://www.w3.org/2000/svg\" xmlns:html=\"http://www.w3.org/1999/xhtml\">\n <filter height=\"200\" width=\"200\" y=\"-3\" x=\"-3\" id=\"blur-filter\">\n  <feGaussianBlur stdDeviation=\"3\"/>\n </filter>\n <g>\n  <title>Layer 1</title>\n  <g data-name=\"shape_1\" xml:space=\"preserve\" text-anchor=\"right\" font-family=\"sans-serif\" font-size=\"14\" fill=\"#FFFFFF\" type=\"svg-ext-own_ctrl-image\" id=\"OXC_40601faf-9c33439d\">\n   <rect id=\"svg_441aff70-2cdc4273\" height=\"150\" width=\"150\" y=\"170\" x=\"284\" stroke-width=\"0\"/>\n   <foreignObject id=\"H-OXC_f115804a-36ae45af\" width=\"150\" height=\"150\" y=\"170\" x=\"284\">\n    <DIV type=\"widget\" style=\"width:100%;height:100%;\" id=\"D-OXC_f115804a-36ae45af\">\n     <svg preserveAspectRatio=\"none\" viewBox=\"0 0 150 150\" height=\"150\" width=\"150\" xmlns=\"http://www.w3.org/2000/svg\">\n      <!-- Livello acqua con path -->\n      <path style=\"fill: rgb(116, 177, 230);\" stroke-linecap=\"round\" stroke=\"#74b1e6ff\" d=\"M9,101.4Q25.5,97.4 42,101.4Q58.5,105.4 75,101.4Q91.5,97.4 108,101.4Q124.5,105.4 141,101.4L141,141L9,141z\" fill=\"#74b1e6ff\" id=\"waterShape_7ab11413ab_6aa11\"/>\n      <path d=\"M9,101.4Q25.5,97.4 42,101.4Q58.5,105.4 75,101.4Q91.5,97.4 108,101.4Q124.5,105.4 141,101.4L141,141L9,141z\" stroke-linecap=\"round\" stroke-width=\"4\" stroke=\"#3781d8ff\" fill=\"none\" id=\"waterShapeBorder_7ab11413ab_6aa11\"/>\n      <rect style=\"stroke: rgb(137, 137, 137);\" fill=\"none\" stroke-width=\"4\" stroke=\"#888888\" height=\"136\" width=\"136\" y=\"7\" x=\"7\" id=\"tankBorder_7ab11413ab_6aa11\"/>\n      <!-- Static preview (used in <img>) -->\n      <path style=\"display: none;\" d=\"M9,70Q42,66 75,70Q108,74 141,70L141,141L9,141z\" fill=\"#74b1e6\" id=\"previewWater_7ab11413ab_6aa11\"/>\n      <text style=\"fill: rgb(0, 0, 0); font-size: 24px;\" font-family=\"Arial\" fill=\"#000000\" font-size=\"24\" text-anchor=\"middle\" y=\"85\" x=\"75\" id=\"tankText_7ab11413ab_6aa11\">30%</text>\n     </svg>\n    </DIV>\n   </foreignObject>\n  </g>\n  <g xml:space=\"preserve\" text-anchor=\"right\" font-family=\"sans-serif\" font-size=\"14\" fill=\"#FFFFFF\" type=\"svg-ext-own_ctrl-image\" id=\"OXC_7e390168-89f341f2\">\n   <rect id=\"svg_1e787699-60b645dd\" height=\"100\" width=\"100\" y=\"138\" x=\"186\" stroke-width=\"0\"/>\n   <foreignObject id=\"H-OXC_c4d65ab9-9f834e58\" width=\"100\" height=\"100\" y=\"138\" x=\"186\">\n    <DIV type=\"widget\" style=\"width:100%;height:100%;\" id=\"D-OXC_c4d65ab9-9f834e58\">\n     <svg height=\"100\" width=\"100\" xml:space=\"preserve\" viewBox=\"0 0 100 100\" y=\"0px\" x=\"0px\" id=\"Layer_1_17584087_12263\" version=\"1.1\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" xmlns=\"http://www.w3.org/2000/svg\">\n      <desc>Copyright Opto 22</desc>\n      <g>\n       <g id=\"frame_17584087_12263\">\n        <rect height=\"100\" width=\"100\" fill=\"none\"/>\n       </g>\n       <g id=\"shape_17584087_12263\">\n        <circle r=\"35.208\" cy=\"50\" cx=\"50.042\" fill=\"#b4b4b4\"/>\n        <rect height=\"16\" width=\"50\" fill=\"#b4b4b4\" y=\"14.833\" x=\"50\"/>\n        <path d=\"M50,57.667L0,57.667L0,41.667L50,41.667C54.418,41.667 58,45.249 58,49.667S54.418,57.667 50,57.667z\" fill=\"#b4b4b4\"/>\n        <path d=\"M8,60.667L0,60.667L0,38.667L8,38.667\" fill=\"#b4b4b4\"/>\n        <rect height=\"22\" width=\"8\" fill=\"#b4b4b4\" y=\"11.833\" x=\"92\"/>\n       </g>\n       <g id=\"dark_17584087_12263\">\n        <path d=\"M50.042,15.875C34.071,15.875 20.666,26.849 16.946,41.667L50,41.667C54.418,41.667 58,45.249 58,49.667S54.418,57.667 50,57.667L16.792,57.667C20.272,72.82 33.832,84.125 50.042,84.125C68.889,84.125 84.167,68.847 84.167,50C84.167,31.153 68.888,15.875 50.042,15.875z\" fill=\"#bfbfbf\"/>\n        <path d=\"M50,56.667C53.866,56.667 57,53.533 57,49.667S53.866,42.667 50,42.667L0,42.667L0,56.667C0,56.667 50,56.667 50,56.667z\" fill=\"#bfbfbf\"/>\n        <g fill=\"#bfbfbf\">\n         <path d=\"M50,15.833L50,15.876C50.014,15.876 50.028,15.875 50.042,15.875C61.343,15.875 71.356,21.372 77.566,29.833L100,29.833L100,15.833L50,15.833z\" fill=\"#bfbfbf\"/>\n        </g>\n        <rect height=\"14\" width=\"50\" fill=\"#bfbfbf\" y=\"15.833\" x=\"50\"/>\n       </g>\n       <g id=\"light_17584087_12263\">\n        <path d=\"M61.443,17.833C67.135,19.851 72.128,23.335 75.976,27.833L100,27.833L100,17.833L61.443,17.833z\" fill=\"#dadada\"/>\n        <g fill=\"#dadada\">\n         <path d=\"M50,44.667L0,44.667L0,54.667C0,54.667 50,54.667 50,54.667C52.761,54.667 55,52.428 55,49.667C55,46.905 52.761,44.667 50,44.667z\" fill=\"#dadada\"/>\n        </g>\n       </g>\n       <g id=\"shadow_17584087_12263\">\n        <path d=\"M50.042,21.292C37.11,21.292 26.151,29.889 22.572,41.667L23.617,41.667C27.163,30.448 37.667,22.292 50.042,22.292C65.32,22.292 77.75,34.722 77.75,50S65.32,77.708 50.042,77.708C37.423,77.708 26.756,69.226 23.421,57.667L22.381,57.667C25.744,69.785 36.867,78.708 50.041,78.708C65.871,78.708 78.75,65.83 78.75,50S65.871,21.292 50.042,21.292z\" fill=\"#999999\"/>\n        <path d=\"M50.042,35.792C45.322,35.792 41.144,38.115 38.559,41.667L39.806,41.667C42.23,38.695 45.917,36.792 50.042,36.792C57.325,36.792 63.25,42.717 63.25,50S57.324,63.208 50.042,63.208C45.619,63.208 41.706,61.015 39.308,57.667L38.099,57.667C40.629,61.595 45.032,64.208 50.042,64.208C57.876,64.208 64.25,57.834 64.25,50C64.25,42.166 57.876,35.792 50.042,35.792z\" fill=\"#999999\"/>\n        <polygon points=\"51.463,16.488 52.426,18.155 51.463,19.823 49.537,19.823 48.574,18.155 49.537,16.488  \" fill=\"#999999\"/>\n        <polygon points=\"51.463,37.488 52.426,39.155 51.463,40.823 49.537,40.823 48.574,39.155 49.537,37.488  \" fill=\"#999999\"/>\n        <polygon points=\"51.463,58.988 52.426,60.655 51.463,62.323 49.537,62.323 48.574,60.655 49.537,58.988  \" fill=\"#999999\"/>\n        <polygon points=\"58.847,53.613 60.773,53.613 61.735,55.28 60.773,56.948 58.847,56.948 57.884,55.28  \" fill=\"#999999\"/>\n        <polygon points=\"57.884,44.53 58.847,42.863 60.773,42.863 61.735,44.53 60.773,46.198 58.847,46.198  \" fill=\"#999999\"/>\n        <polygon points=\"51.463,80.238 52.426,81.905 51.463,83.573 49.537,83.573 48.574,81.905 49.537,80.238  \" fill=\"#999999\"/>\n        <polygon points=\"34.563,20.5 36.23,21.463 36.23,23.389 34.563,24.351 32.895,23.389 32.895,21.463  \" fill=\"#999999\"/>\n        <polygon points=\"66.438,75.709 68.105,76.672 68.105,78.598 66.438,79.56 64.77,78.598 64.77,76.672  \" fill=\"#999999\"/>\n        <polygon points=\"21.933,32.425 23.858,32.425 24.821,34.093 23.858,35.76 21.933,35.76 20.97,34.093  \" fill=\"#999999\"/>\n        <polygon points=\"77.142,64.3 79.067,64.3 80.03,65.968 79.067,67.635 77.142,67.635 76.179,65.968  \" fill=\"#999999\"/>\n        <polygon points=\"80.707,49.067 82.375,48.105 84.043,49.067 84.043,50.993 82.375,51.956 80.707,50.993  \" fill=\"#999999\"/>\n        <polygon points=\"20.97,65.968 21.933,64.3 23.858,64.3 24.821,65.968 23.858,67.635 21.933,67.635  \" fill=\"#999999\"/>\n        <polygon points=\"76.179,34.093 77.142,32.425 79.067,32.425 80.03,34.093 79.067,35.76 77.142,35.76  \" fill=\"#999999\"/>\n        <polygon points=\"32.895,78.598 32.895,76.672 34.563,75.709 36.23,76.672 36.23,78.598 34.563,79.56  \" fill=\"#999999\"/>\n        <polygon points=\"64.77,23.389 64.77,21.463 66.438,20.5 68.105,21.463 68.105,23.389 66.438,24.351  \" fill=\"#999999\"/>\n       </g>\n       <g id=\"hlight_17584087_12263\">\n        <path d=\"M50,53.167L0,53.167L0,46.167L50,46.167C51.933,46.167 53.5,47.734 53.5,49.667C53.5,51.6 51.933,53.167 50,53.167z\" fill=\"#f8f8f8\"/>\n        <path d=\"M67.332,19.333C70.621,21.191 73.586,23.556 76.109,26.333L100,26.333L100,19.333L67.332,19.333z\" fill=\"#f8f8f8\"/>\n       </g>\n      </g>\n     </svg>\n    </DIV>\n   </foreignObject>\n  </g>\n </g>\n</svg>",
+                "type": "svg"
+            }
+        ]
+    },
+    "version": "1.00",
+    "server": {
+        "id": "0",
+        "name": "FUXA Server",
+        "type": "FuxaServer",
+        "property": {}
     }
-  },
-  "hmi": {
-    "views": [
-      {
-        "id": "v_main",
-        "name": "MainView",
-        "profile": {
-          "width": 900,
-          "height": 650,
-          "bkcolor": "#ffffff",
-          "margin": 10,
-          "align": "topCenter",
-          "gridType": "fixed"
-        },
-        "items": {
-          "HXB_c747bffe-a2a721dd": {
-            "id": "HXB_c747bffe-a2a721dd",
-            "type": "svg-ext-html_label",
-            "name": "Water Treatment Plant",
-            "property": {
-              "x": 20,
-              "y": 10,
-              "w": 200,
-              "h": 30,
-              "text": "Water Treatment Plant",
-              "fontSize": 24,
-              "color": "#1565C0",
-              "fontWeight": "bold"
-            }
-          },
-          "HXB_677aaef6-2a3c97c5": {
-            "id": "HXB_677aaef6-2a3c97c5",
-            "type": "svg-ext-html_label",
-            "name": "plcc PLC \u2014 FUXA SCADA Demo",
-            "property": {
-              "x": 20,
-              "y": 45,
-              "w": 200,
-              "h": 30,
-              "text": "plcc PLC \u2014 FUXA SCADA Demo",
-              "fontSize": 12,
-              "color": "#666666",
-              "fontWeight": "normal"
-            }
-          },
-          "HXB_197379d3-8a9e16ea": {
-            "id": "HXB_197379d3-8a9e16ea",
-            "type": "svg-ext-html_label",
-            "name": "Commands",
-            "property": {
-              "x": 20,
-              "y": 90,
-              "w": 200,
-              "h": 30,
-              "text": "Commands",
-              "fontSize": 16,
-              "color": "#333",
-              "fontWeight": "bold"
-            }
-          },
-          "HXB_ff3d5b7c-16b97f23": {
-            "id": "HXB_ff3d5b7c-16b97f23",
-            "type": "svg-ext-html_button",
-            "name": "\u25b6 START",
-            "property": {
-              "x": 20,
-              "y": 120,
-              "w": 120,
-              "h": 40,
-              "text": "\u25b6 START",
-              "fontSize": 14,
-              "bkcolor": "#4CAF50",
-              "color": "#ffffff",
-              "borderRadius": 6,
-              "events": [
-                {
-                  "type": "click",
-                  "action": "onSetValue",
-                  "actparam": "1",
-                  "actoptions": {
-                    "variable": {
-                      "variableId": "t1"
-                    },
-                    "function": "set"
-                  }
-                }
-              ]
-            }
-          },
-          "HXB_7004a4b7-59968526": {
-            "id": "HXB_7004a4b7-59968526",
-            "type": "svg-ext-html_button",
-            "name": "\u23f9 STOP",
-            "property": {
-              "x": 150,
-              "y": 120,
-              "w": 120,
-              "h": 40,
-              "text": "\u23f9 STOP",
-              "fontSize": 14,
-              "bkcolor": "#f44336",
-              "color": "#ffffff",
-              "borderRadius": 6,
-              "events": [
-                {
-                  "type": "click",
-                  "action": "onSetValue",
-                  "actparam": "1",
-                  "actoptions": {
-                    "variable": {
-                      "variableId": "t2"
-                    },
-                    "function": "set"
-                  }
-                }
-              ]
-            }
-          },
-          "HXB_b5b6d15f-6a7ff89a": {
-            "id": "HXB_b5b6d15f-6a7ff89a",
-            "type": "svg-ext-html_button",
-            "name": "\ud83d\udd04 FLUSH",
-            "property": {
-              "x": 280,
-              "y": 120,
-              "w": 120,
-              "h": 40,
-              "text": "\ud83d\udd04 FLUSH",
-              "fontSize": 14,
-              "bkcolor": "#FF9800",
-              "color": "#ffffff",
-              "borderRadius": 6,
-              "events": [
-                {
-                  "type": "click",
-                  "action": "onSetValue",
-                  "actparam": "1",
-                  "actoptions": {
-                    "variable": {
-                      "variableId": "t3"
-                    },
-                    "function": "set"
-                  }
-                }
-              ]
-            }
-          },
-          "HXB_3225a8d3-888b2739": {
-            "id": "HXB_3225a8d3-888b2739",
-            "type": "svg-ext-html_button",
-            "name": "\ud83d\udd27 RESET",
-            "property": {
-              "x": 410,
-              "y": 120,
-              "w": 120,
-              "h": 40,
-              "text": "\ud83d\udd27 RESET",
-              "fontSize": 14,
-              "bkcolor": "#9E9E9E",
-              "color": "#ffffff",
-              "borderRadius": 6,
-              "events": [
-                {
-                  "type": "click",
-                  "action": "onSetValue",
-                  "actparam": "1",
-                  "actoptions": {
-                    "variable": {
-                      "variableId": "t5"
-                    },
-                    "function": "set"
-                  }
-                }
-              ]
-            }
-          },
-          "HXB_fe831dfd-604c168a": {
-            "id": "HXB_fe831dfd-604c168a",
-            "type": "svg-ext-html_label",
-            "name": "Process Status",
-            "property": {
-              "x": 20,
-              "y": 180,
-              "w": 200,
-              "h": 30,
-              "text": "Process Status",
-              "fontSize": 16,
-              "color": "#333",
-              "fontWeight": "bold"
-            }
-          },
-          "HXB_2306a9cd-2182f7fe": {
-            "id": "HXB_2306a9cd-2182f7fe",
-            "type": "svg-ext-html_led",
-            "name": "Running",
-            "property": {
-              "x": 20,
-              "y": 210,
-              "w": 24,
-              "h": 24,
-              "variableValue": "t11",
-              "label": "Running",
-              "onColor": "#4CAF50",
-              "offColor": "#cccccc",
-              "borderRadius": 12
-            }
-          },
-          "HXB_beba4bf2-d0a63870": {
-            "id": "HXB_beba4bf2-d0a63870",
-            "type": "svg-ext-html_label",
-            "name": "Running",
-            "property": {
-              "x": 50,
-              "y": 210,
-              "w": 200,
-              "h": 30,
-              "text": "Running",
-              "fontSize": 14,
-              "color": "#333333",
-              "fontWeight": "normal"
-            }
-          },
-          "HXB_ca9dabf5-eff2813a": {
-            "id": "HXB_ca9dabf5-eff2813a",
-            "type": "svg-ext-html_led",
-            "name": "Stopped",
-            "property": {
-              "x": 150,
-              "y": 210,
-              "w": 24,
-              "h": 24,
-              "variableValue": "t12",
-              "label": "Stopped",
-              "onColor": "#f44336",
-              "offColor": "#cccccc",
-              "borderRadius": 12
-            }
-          },
-          "HXB_8f6cf9ec-1341a2d5": {
-            "id": "HXB_8f6cf9ec-1341a2d5",
-            "type": "svg-ext-html_label",
-            "name": "Stopped",
-            "property": {
-              "x": 180,
-              "y": 210,
-              "w": 200,
-              "h": 30,
-              "text": "Stopped",
-              "fontSize": 14,
-              "color": "#333333",
-              "fontWeight": "normal"
-            }
-          },
-          "HXB_40d1283a-dbc601f8": {
-            "id": "HXB_40d1283a-dbc601f8",
-            "type": "svg-ext-html_led",
-            "name": "Flushing",
-            "property": {
-              "x": 280,
-              "y": 210,
-              "w": 24,
-              "h": 24,
-              "variableValue": "t13",
-              "label": "Flushing",
-              "onColor": "#FF9800",
-              "offColor": "#cccccc",
-              "borderRadius": 12
-            }
-          },
-          "HXB_abc67fca-01ea2a2a": {
-            "id": "HXB_abc67fca-01ea2a2a",
-            "type": "svg-ext-html_label",
-            "name": "Flushing",
-            "property": {
-              "x": 310,
-              "y": 210,
-              "w": 200,
-              "h": 30,
-              "text": "Flushing",
-              "fontSize": 14,
-              "color": "#333333",
-              "fontWeight": "normal"
-            }
-          },
-          "HXB_13fba6b0-d19ed6c4": {
-            "id": "HXB_13fba6b0-d19ed6c4",
-            "type": "svg-ext-html_led",
-            "name": "Faulted",
-            "property": {
-              "x": 410,
-              "y": 210,
-              "w": 24,
-              "h": 24,
-              "variableValue": "t14",
-              "label": "Faulted",
-              "onColor": "#f44336",
-              "offColor": "#cccccc",
-              "borderRadius": 12
-            }
-          },
-          "HXB_a18fbd31-2cc382c4": {
-            "id": "HXB_a18fbd31-2cc382c4",
-            "type": "svg-ext-html_label",
-            "name": "Faulted",
-            "property": {
-              "x": 440,
-              "y": 210,
-              "w": 200,
-              "h": 30,
-              "text": "Faulted",
-              "fontSize": 14,
-              "color": "#333333",
-              "fontWeight": "normal"
-            }
-          },
-          "HXB_bdc77204-3300850d": {
-            "id": "HXB_bdc77204-3300850d",
-            "type": "svg-ext-html_led",
-            "name": "System OK",
-            "property": {
-              "x": 540,
-              "y": 210,
-              "w": 24,
-              "h": 24,
-              "variableValue": "t18",
-              "label": "System OK",
-              "onColor": "#4CAF50",
-              "offColor": "#cccccc",
-              "borderRadius": 12
-            }
-          },
-          "HXB_ea6580fb-78491c96": {
-            "id": "HXB_ea6580fb-78491c96",
-            "type": "svg-ext-html_label",
-            "name": "System OK",
-            "property": {
-              "x": 570,
-              "y": 210,
-              "w": 200,
-              "h": 30,
-              "text": "System OK",
-              "fontSize": 14,
-              "color": "#333333",
-              "fontWeight": "normal"
-            }
-          },
-          "HXB_c1d5f5e8-97ebf9eb": {
-            "id": "HXB_c1d5f5e8-97ebf9eb",
-            "type": "svg-ext-html_label",
-            "name": "Tank Levels",
-            "property": {
-              "x": 20,
-              "y": 260,
-              "w": 200,
-              "h": 30,
-              "text": "Tank Levels",
-              "fontSize": 16,
-              "color": "#333",
-              "fontWeight": "bold"
-            }
-          },
-          "HXB_5d85bc9e-897ff535": {
-            "id": "HXB_5d85bc9e-897ff535",
-            "type": "svg-ext-html_label",
-            "name": "Raw Tank",
-            "property": {
-              "x": 20,
-              "y": 290,
-              "w": 200,
-              "h": 30,
-              "text": "Raw Tank",
-              "fontSize": 14,
-              "color": "#333333",
-              "fontWeight": "normal"
-            }
-          },
-          "HXB_d4ac5bdd-95a455ff": {
-            "id": "HXB_d4ac5bdd-95a455ff",
-            "type": "svg-ext-html_value",
-            "name": "raw_level",
-            "property": {
-              "x": 120,
-              "y": 290,
-              "w": 60,
-              "h": 30,
-              "variableValue": "t16",
-              "label": "",
-              "suffix": "%",
-              "fontSize": 16,
-              "color": "#000000",
-              "bkcolor": "#e8e8e8",
-              "borderRadius": 4
-            }
-          },
-          "HXB_242b01a7-10610d0a": {
-            "id": "HXB_242b01a7-10610d0a",
-            "type": "svg-ext-html_progress",
-            "name": "Raw",
-            "property": {
-              "x": 20,
-              "y": 320,
-              "w": 150,
-              "h": 150,
-              "variableValue": "t16",
-              "min": 0,
-              "max": 100,
-              "label": "Raw",
-              "shape": "circular",
-              "barColor": "#2196F3",
-              "bkcolor": "#f0f0f0",
-              "fontSize": 12
-            }
-          },
-          "HXB_51ccac55-f19c5b24": {
-            "id": "HXB_51ccac55-f19c5b24",
-            "type": "svg-ext-html_label",
-            "name": "Clean Tank",
-            "property": {
-              "x": 200,
-              "y": 290,
-              "w": 200,
-              "h": 30,
-              "text": "Clean Tank",
-              "fontSize": 14,
-              "color": "#333333",
-              "fontWeight": "normal"
-            }
-          },
-          "HXB_0421e3ae-ce0e471c": {
-            "id": "HXB_0421e3ae-ce0e471c",
-            "type": "svg-ext-html_value",
-            "name": "clean_level",
-            "property": {
-              "x": 300,
-              "y": 290,
-              "w": 60,
-              "h": 30,
-              "variableValue": "t17",
-              "label": "",
-              "suffix": "%",
-              "fontSize": 16,
-              "color": "#000000",
-              "bkcolor": "#e8e8e8",
-              "borderRadius": 4
-            }
-          },
-          "HXB_84dcb547-2b0bb282": {
-            "id": "HXB_84dcb547-2b0bb282",
-            "type": "svg-ext-html_progress",
-            "name": "Clean",
-            "property": {
-              "x": 200,
-              "y": 320,
-              "w": 150,
-              "h": 150,
-              "variableValue": "t17",
-              "min": 0,
-              "max": 100,
-              "label": "Clean",
-              "shape": "circular",
-              "barColor": "#2196F3",
-              "bkcolor": "#f0f0f0",
-              "fontSize": 12
-            }
-          },
-          "HXB_4d2a9c1b-89d1d723": {
-            "id": "HXB_4d2a9c1b-89d1d723",
-            "type": "svg-ext-html_label",
-            "name": "Setpoints",
-            "property": {
-              "x": 400,
-              "y": 260,
-              "w": 200,
-              "h": 30,
-              "text": "Setpoints",
-              "fontSize": 16,
-              "color": "#333",
-              "fontWeight": "bold"
-            }
-          },
-          "HXB_9daea7e5-4b07d232": {
-            "id": "HXB_9daea7e5-4b07d232",
-            "type": "svg-ext-html_label",
-            "name": "Raw Tank SP",
-            "property": {
-              "x": 400,
-              "y": 290,
-              "w": 200,
-              "h": 30,
-              "text": "Raw Tank SP",
-              "fontSize": 14,
-              "color": "#333333",
-              "fontWeight": "normal"
-            }
-          },
-          "HXB_b6faf4e3-afa60e80": {
-            "id": "HXB_b6faf4e3-afa60e80",
-            "type": "svg-ext-html_value",
-            "name": "sp_raw_tank",
-            "property": {
-              "x": 520,
-              "y": 290,
-              "w": 60,
-              "h": 30,
-              "variableValue": "t6",
-              "label": "",
-              "suffix": "%",
-              "fontSize": 16,
-              "color": "#000000",
-              "bkcolor": "#e8e8e8",
-              "borderRadius": 4
-            }
-          },
-          "HXB_b6f802cb-2e6bafa8": {
-            "id": "HXB_b6f802cb-2e6bafa8",
-            "type": "svg-ext-html_label",
-            "name": "Clean Tank SP",
-            "property": {
-              "x": 400,
-              "y": 320,
-              "w": 200,
-              "h": 30,
-              "text": "Clean Tank SP",
-              "fontSize": 14,
-              "color": "#333333",
-              "fontWeight": "normal"
-            }
-          },
-          "HXB_46a36eb0-0b7eb401": {
-            "id": "HXB_46a36eb0-0b7eb401",
-            "type": "svg-ext-html_value",
-            "name": "sp_clean_tank",
-            "property": {
-              "x": 520,
-              "y": 320,
-              "w": 60,
-              "h": 30,
-              "variableValue": "t7",
-              "label": "",
-              "suffix": "%",
-              "fontSize": 16,
-              "color": "#000000",
-              "bkcolor": "#e8e8e8",
-              "borderRadius": 4
-            }
-          },
-          "HXB_0409721a-08606f98": {
-            "id": "HXB_0409721a-08606f98",
-            "type": "svg-ext-html_label",
-            "name": "Pumps",
-            "property": {
-              "x": 20,
-              "y": 490,
-              "w": 200,
-              "h": 30,
-              "text": "Pumps",
-              "fontSize": 16,
-              "color": "#333",
-              "fontWeight": "bold"
-            }
-          },
-          "HXB_c0655fac-f5ca142b": {
-            "id": "HXB_c0655fac-f5ca142b",
-            "type": "svg-ext-html_led",
-            "name": "Inlet",
-            "property": {
-              "x": 20,
-              "y": 520,
-              "w": 24,
-              "h": 24,
-              "variableValue": "t21",
-              "label": "Inlet",
-              "onColor": "#4CAF50",
-              "offColor": "#cccccc",
-              "borderRadius": 12
-            }
-          },
-          "HXB_1b355f7d-a18b292b": {
-            "id": "HXB_1b355f7d-a18b292b",
-            "type": "svg-ext-html_label",
-            "name": "Inlet Pump",
-            "property": {
-              "x": 50,
-              "y": 520,
-              "w": 200,
-              "h": 30,
-              "text": "Inlet Pump",
-              "fontSize": 14,
-              "color": "#333333",
-              "fontWeight": "normal"
-            }
-          },
-          "HXB_bc6f74cb-14fa78c7": {
-            "id": "HXB_bc6f74cb-14fa78c7",
-            "type": "svg-ext-html_value",
-            "name": "inlet_pump_speed",
-            "property": {
-              "x": 160,
-              "y": 520,
-              "w": 50,
-              "h": 30,
-              "variableValue": "t22",
-              "label": "",
-              "suffix": "%",
-              "fontSize": 16,
-              "color": "#000000",
-              "bkcolor": "#e8e8e8",
-              "borderRadius": 4
-            }
-          },
-          "HXB_c3719858-0b43cae6": {
-            "id": "HXB_c3719858-0b43cae6",
-            "type": "svg-ext-html_led",
-            "name": "Xfer",
-            "property": {
-              "x": 230,
-              "y": 520,
-              "w": 24,
-              "h": 24,
-              "variableValue": "t24",
-              "label": "Xfer",
-              "onColor": "#4CAF50",
-              "offColor": "#cccccc",
-              "borderRadius": 12
-            }
-          },
-          "HXB_fd32bfb1-0a21f24d": {
-            "id": "HXB_fd32bfb1-0a21f24d",
-            "type": "svg-ext-html_label",
-            "name": "Transfer",
-            "property": {
-              "x": 260,
-              "y": 520,
-              "w": 200,
-              "h": 30,
-              "text": "Transfer",
-              "fontSize": 14,
-              "color": "#333333",
-              "fontWeight": "normal"
-            }
-          },
-          "HXB_25e05321-c551112e": {
-            "id": "HXB_25e05321-c551112e",
-            "type": "svg-ext-html_value",
-            "name": "xfer_pump_speed",
-            "property": {
-              "x": 360,
-              "y": 520,
-              "w": 50,
-              "h": 30,
-              "variableValue": "t25",
-              "label": "",
-              "suffix": "%",
-              "fontSize": 16,
-              "color": "#000000",
-              "bkcolor": "#e8e8e8",
-              "borderRadius": 4
-            }
-          },
-          "HXB_b4ad93c6-a8215e2c": {
-            "id": "HXB_b4ad93c6-a8215e2c",
-            "type": "svg-ext-html_led",
-            "name": "Outlet",
-            "property": {
-              "x": 430,
-              "y": 520,
-              "w": 24,
-              "h": 24,
-              "variableValue": "t27",
-              "label": "Outlet",
-              "onColor": "#4CAF50",
-              "offColor": "#cccccc",
-              "borderRadius": 12
-            }
-          },
-          "HXB_3da26355-352d7bbe": {
-            "id": "HXB_3da26355-352d7bbe",
-            "type": "svg-ext-html_label",
-            "name": "Outlet Pump",
-            "property": {
-              "x": 460,
-              "y": 520,
-              "w": 200,
-              "h": 30,
-              "text": "Outlet Pump",
-              "fontSize": 14,
-              "color": "#333333",
-              "fontWeight": "normal"
-            }
-          },
-          "HXB_4b2a86a0-50cd9653": {
-            "id": "HXB_4b2a86a0-50cd9653",
-            "type": "svg-ext-html_value",
-            "name": "outlet_pump_speed",
-            "property": {
-              "x": 570,
-              "y": 520,
-              "w": 50,
-              "h": 30,
-              "variableValue": "t28",
-              "label": "",
-              "suffix": "%",
-              "fontSize": 16,
-              "color": "#000000",
-              "bkcolor": "#e8e8e8",
-              "borderRadius": 4
-            }
-          },
-          "HXB_f1f0ee69-ee2e7207": {
-            "id": "HXB_f1f0ee69-ee2e7207",
-            "type": "svg-ext-html_label",
-            "name": "Valves",
-            "property": {
-              "x": 20,
-              "y": 560,
-              "w": 200,
-              "h": 30,
-              "text": "Valves",
-              "fontSize": 16,
-              "color": "#333",
-              "fontWeight": "bold"
-            }
-          },
-          "HXB_1222567c-3ffdfe30": {
-            "id": "HXB_1222567c-3ffdfe30",
-            "type": "svg-ext-html_label",
-            "name": "Inlet",
-            "property": {
-              "x": 20,
-              "y": 590,
-              "w": 200,
-              "h": 30,
-              "text": "Inlet",
-              "fontSize": 14,
-              "color": "#333333",
-              "fontWeight": "normal"
-            }
-          },
-          "HXB_e653c01d-4f2388a0": {
-            "id": "HXB_e653c01d-4f2388a0",
-            "type": "svg-ext-html_value",
-            "name": "inlet_vlv",
-            "property": {
-              "x": 80,
-              "y": 590,
-              "w": 50,
-              "h": 30,
-              "variableValue": "t30",
-              "label": "",
-              "suffix": "%",
-              "fontSize": 16,
-              "color": "#000000",
-              "bkcolor": "#e8e8e8",
-              "borderRadius": 4
-            }
-          },
-          "HXB_a1f9c35a-4ff1766f": {
-            "id": "HXB_a1f9c35a-4ff1766f",
-            "type": "svg-ext-html_label",
-            "name": "Outlet",
-            "property": {
-              "x": 160,
-              "y": 590,
-              "w": 200,
-              "h": 30,
-              "text": "Outlet",
-              "fontSize": 14,
-              "color": "#333333",
-              "fontWeight": "normal"
-            }
-          },
-          "HXB_5ac4a284-4b1f4568": {
-            "id": "HXB_5ac4a284-4b1f4568",
-            "type": "svg-ext-html_value",
-            "name": "outlet_vlv",
-            "property": {
-              "x": 230,
-              "y": 590,
-              "w": 50,
-              "h": 30,
-              "variableValue": "t31",
-              "label": "",
-              "suffix": "%",
-              "fontSize": 16,
-              "color": "#000000",
-              "bkcolor": "#e8e8e8",
-              "borderRadius": 4
-            }
-          },
-          "HXB_5141596d-bebe5eef": {
-            "id": "HXB_5141596d-bebe5eef",
-            "type": "svg-ext-html_label",
-            "name": "Drain",
-            "property": {
-              "x": 310,
-              "y": 590,
-              "w": 200,
-              "h": 30,
-              "text": "Drain",
-              "fontSize": 14,
-              "color": "#333333",
-              "fontWeight": "normal"
-            }
-          },
-          "HXB_47118d0b-7a6c5fe6": {
-            "id": "HXB_47118d0b-7a6c5fe6",
-            "type": "svg-ext-html_value",
-            "name": "drain_vlv",
-            "property": {
-              "x": 370,
-              "y": 590,
-              "w": 50,
-              "h": 30,
-              "variableValue": "t32",
-              "label": "",
-              "suffix": "%",
-              "fontSize": 16,
-              "color": "#000000",
-              "bkcolor": "#e8e8e8",
-              "borderRadius": 4
-            }
-          },
-          "HXB_de631f27-28d4a71a": {
-            "id": "HXB_de631f27-28d4a71a",
-            "type": "svg-ext-html_label",
-            "name": "Alarms",
-            "property": {
-              "x": 650,
-              "y": 90,
-              "w": 200,
-              "h": 30,
-              "text": "Alarms",
-              "fontSize": 16,
-              "color": "#f44336",
-              "fontWeight": "bold"
-            }
-          },
-          "HXB_c57389f4-4007f3c9": {
-            "id": "HXB_c57389f4-4007f3c9",
-            "type": "svg-ext-html_led",
-            "name": "Raw HIGH",
-            "property": {
-              "x": 650,
-              "y": 120,
-              "w": 24,
-              "h": 24,
-              "variableValue": "t33",
-              "label": "Raw HIGH",
-              "onColor": "#f44336",
-              "offColor": "#cccccc",
-              "borderRadius": 12
-            }
-          },
-          "HXB_e193027e-af36da17": {
-            "id": "HXB_e193027e-af36da17",
-            "type": "svg-ext-html_label",
-            "name": "Raw Tank HIGH",
-            "property": {
-              "x": 680,
-              "y": 120,
-              "w": 200,
-              "h": 30,
-              "text": "Raw Tank HIGH",
-              "fontSize": 14,
-              "color": "#333333",
-              "fontWeight": "normal"
-            }
-          },
-          "HXB_cdcf2ff8-bef03e82": {
-            "id": "HXB_cdcf2ff8-bef03e82",
-            "type": "svg-ext-html_led",
-            "name": "Raw LOW",
-            "property": {
-              "x": 650,
-              "y": 150,
-              "w": 24,
-              "h": 24,
-              "variableValue": "t34",
-              "label": "Raw LOW",
-              "onColor": "#FF9800",
-              "offColor": "#cccccc",
-              "borderRadius": 12
-            }
-          },
-          "HXB_28ec8b26-6e252670": {
-            "id": "HXB_28ec8b26-6e252670",
-            "type": "svg-ext-html_label",
-            "name": "Raw Tank LOW",
-            "property": {
-              "x": 680,
-              "y": 150,
-              "w": 200,
-              "h": 30,
-              "text": "Raw Tank LOW",
-              "fontSize": 14,
-              "color": "#333333",
-              "fontWeight": "normal"
-            }
-          },
-          "HXB_7f54dcf7-37fd956b": {
-            "id": "HXB_7f54dcf7-37fd956b",
-            "type": "svg-ext-html_led",
-            "name": "Clean HIGH",
-            "property": {
-              "x": 650,
-              "y": 180,
-              "w": 24,
-              "h": 24,
-              "variableValue": "t35",
-              "label": "Clean HIGH",
-              "onColor": "#f44336",
-              "offColor": "#cccccc",
-              "borderRadius": 12
-            }
-          },
-          "HXB_8e56dfcd-e138b288": {
-            "id": "HXB_8e56dfcd-e138b288",
-            "type": "svg-ext-html_label",
-            "name": "Clean Tank HIGH",
-            "property": {
-              "x": 680,
-              "y": 180,
-              "w": 200,
-              "h": 30,
-              "text": "Clean Tank HIGH",
-              "fontSize": 14,
-              "color": "#333333",
-              "fontWeight": "normal"
-            }
-          },
-          "HXB_78b498eb-8a031271": {
-            "id": "HXB_78b498eb-8a031271",
-            "type": "svg-ext-html_led",
-            "name": "Clean LOW",
-            "property": {
-              "x": 650,
-              "y": 210,
-              "w": 24,
-              "h": 24,
-              "variableValue": "t36",
-              "label": "Clean LOW",
-              "onColor": "#FF9800",
-              "offColor": "#cccccc",
-              "borderRadius": 12
-            }
-          },
-          "HXB_d4a5f702-5227ebba": {
-            "id": "HXB_d4a5f702-5227ebba",
-            "type": "svg-ext-html_label",
-            "name": "Clean Tank LOW",
-            "property": {
-              "x": 680,
-              "y": 210,
-              "w": 200,
-              "h": 30,
-              "text": "Clean Tank LOW",
-              "fontSize": 14,
-              "color": "#333333",
-              "fontWeight": "normal"
-            }
-          },
-          "HXB_4e8f45fd-1b1d49d5": {
-            "id": "HXB_4e8f45fd-1b1d49d5",
-            "type": "svg-ext-html_led",
-            "name": "Inlet Fault",
-            "property": {
-              "x": 650,
-              "y": 240,
-              "w": 24,
-              "h": 24,
-              "variableValue": "t37",
-              "label": "Inlet Fault",
-              "onColor": "#f44336",
-              "offColor": "#cccccc",
-              "borderRadius": 12
-            }
-          },
-          "HXB_90902727-4b9063d0": {
-            "id": "HXB_90902727-4b9063d0",
-            "type": "svg-ext-html_label",
-            "name": "Inlet Pump Fault",
-            "property": {
-              "x": 680,
-              "y": 240,
-              "w": 200,
-              "h": 30,
-              "text": "Inlet Pump Fault",
-              "fontSize": 14,
-              "color": "#333333",
-              "fontWeight": "normal"
-            }
-          },
-          "HXB_a75eccc4-886df633": {
-            "id": "HXB_a75eccc4-886df633",
-            "type": "svg-ext-html_led",
-            "name": "Xfer Fault",
-            "property": {
-              "x": 650,
-              "y": 270,
-              "w": 24,
-              "h": 24,
-              "variableValue": "t38",
-              "label": "Xfer Fault",
-              "onColor": "#f44336",
-              "offColor": "#cccccc",
-              "borderRadius": 12
-            }
-          },
-          "HXB_65e513a5-9a3de641": {
-            "id": "HXB_65e513a5-9a3de641",
-            "type": "svg-ext-html_label",
-            "name": "Transfer Pump Fault",
-            "property": {
-              "x": 680,
-              "y": 270,
-              "w": 200,
-              "h": 30,
-              "text": "Transfer Pump Fault",
-              "fontSize": 14,
-              "color": "#333333",
-              "fontWeight": "normal"
-            }
-          },
-          "HXB_4a1e4d2c-c9194fab": {
-            "id": "HXB_4a1e4d2c-c9194fab",
-            "type": "svg-ext-html_led",
-            "name": "Outlet Fault",
-            "property": {
-              "x": 650,
-              "y": 300,
-              "w": 24,
-              "h": 24,
-              "variableValue": "t39",
-              "label": "Outlet Fault",
-              "onColor": "#f44336",
-              "offColor": "#cccccc",
-              "borderRadius": 12
-            }
-          },
-          "HXB_c9cfcf6a-68a0f945": {
-            "id": "HXB_c9cfcf6a-68a0f945",
-            "type": "svg-ext-html_label",
-            "name": "Outlet Pump Fault",
-            "property": {
-              "x": 680,
-              "y": 300,
-              "w": 200,
-              "h": 30,
-              "text": "Outlet Pump Fault",
-              "fontSize": 14,
-              "color": "#333333",
-              "fontWeight": "normal"
-            }
-          },
-          "HXB_02071807-54bc95f2": {
-            "id": "HXB_02071807-54bc95f2",
-            "type": "svg-ext-html_label",
-            "name": "Counters",
-            "property": {
-              "x": 650,
-              "y": 350,
-              "w": 200,
-              "h": 30,
-              "text": "Counters",
-              "fontSize": 16,
-              "color": "#333",
-              "fontWeight": "bold"
-            }
-          },
-          "HXB_47586f87-dc81e6c6": {
-            "id": "HXB_47586f87-dc81e6c6",
-            "type": "svg-ext-html_label",
-            "name": "Cycle Count",
-            "property": {
-              "x": 650,
-              "y": 380,
-              "w": 200,
-              "h": 30,
-              "text": "Cycle Count",
-              "fontSize": 14,
-              "color": "#333333",
-              "fontWeight": "normal"
-            }
-          },
-          "HXB_b141cbac-065bc10f": {
-            "id": "HXB_b141cbac-065bc10f",
-            "type": "svg-ext-html_value",
-            "name": "cycle_count",
-            "property": {
-              "x": 780,
-              "y": 380,
-              "w": 80,
-              "h": 30,
-              "variableValue": "t15",
-              "label": "",
-              "suffix": "",
-              "fontSize": 16,
-              "color": "#000000",
-              "bkcolor": "#e8e8e8",
-              "borderRadius": 4
-            }
-          },
-          "HXB_21ebf965-349d516c": {
-            "id": "HXB_21ebf965-349d516c",
-            "type": "svg-ext-html_label",
-            "name": "Total Flow",
-            "property": {
-              "x": 650,
-              "y": 410,
-              "w": 200,
-              "h": 30,
-              "text": "Total Flow",
-              "fontSize": 14,
-              "color": "#333333",
-              "fontWeight": "normal"
-            }
-          },
-          "HXB_083d59cc-6e0abd24": {
-            "id": "HXB_083d59cc-6e0abd24",
-            "type": "svg-ext-html_value",
-            "name": "total_flow",
-            "property": {
-              "x": 780,
-              "y": 410,
-              "w": 80,
-              "h": 30,
-              "variableValue": "t20",
-              "label": "",
-              "suffix": "",
-              "fontSize": 16,
-              "color": "#000000",
-              "bkcolor": "#e8e8e8",
-              "borderRadius": 4
-            }
-          }
-        },
-        "variables": {},
-        "svgcontent": "<svg width=\"900\" height=\"650\" xmlns=\"http://www.w3.org/2000/svg\"><g><title>Water Treatment</title></g></svg>",
-        "type": "svg"
-      }
-    ]
-  },
-  "version": "1.00",
-  "server": {
-    "id": "0",
-    "name": "FUXA Server",
-    "type": "FuxaServer",
-    "property": {}
-  }
 }
