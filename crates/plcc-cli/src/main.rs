@@ -313,10 +313,59 @@ fn modbus_tcp_server(port: u16, state: std::sync::Arc<std::sync::Mutex<Vec<u8>>>
                 let unit_id = buf[6];
                 let fc = buf[7];
 
+                // Coil address N maps to state INT at byte offset (N-1)*2
+                // Value is bool: INT != 0 → true
                 match fc {
-                    0x03 => { // Read Holding Registers
+                    0x01 => { // Read Coils (FC01)
+                        let start = u16::from_be_bytes([buf[8], buf[9]]) as usize;
+                        let count = u16::from_be_bytes([buf[10], buf[11]]) as usize;
+                        let byte_count = (count + 7) / 8;
+                        let mut resp = Vec::with_capacity(9 + byte_count);
+                        resp.extend_from_slice(&tx_id);
+                        resp.extend_from_slice(&0u16.to_be_bytes());
+                        resp.extend_from_slice(&((3 + byte_count) as u16).to_be_bytes());
+                        resp.push(unit_id);
+                        resp.push(0x01);
+                        resp.push(byte_count as u8);
+                        let s = st.lock().unwrap();
+                        for byte_idx in 0..byte_count {
+                            let mut byte_val: u8 = 0;
+                            for bit in 0..8 {
+                                let coil = start + byte_idx * 8 + bit;
+                                if coil < start + count {
+                                    let off = coil * 2; // each coil = one INT16 in state
+                                    if off + 1 < s.len() {
+                                        let v = i16::from_ne_bytes([s[off], s[off + 1]]);
+                                        if v != 0 { byte_val |= 1 << bit; }
+                                    }
+                                }
+                            }
+                            resp.push(byte_val);
+                        }
+                        drop(s);
+                        let _ = sock.write_all(&resp);
+                    }
+                    0x05 => { // Write Single Coil (FC05)
+                        let addr = u16::from_be_bytes([buf[8], buf[9]]) as usize;
+                        let raw_val = u16::from_be_bytes([buf[10], buf[11]]);
+                        let value: i16 = if raw_val == 0xFF00 { 1 } else { 0 };
+                        let off = addr * 2;
+                        { let mut s = st.lock().unwrap();
+                          if off + 1 < s.len() {
+                              let b = value.to_ne_bytes();
+                              s[off] = b[0]; s[off+1] = b[1];
+                          }
+                        }
+                        let mut resp = Vec::with_capacity(12);
+                        resp.extend_from_slice(&tx_id);
+                        resp.extend_from_slice(&0u16.to_be_bytes());
+                        resp.extend_from_slice(&6u16.to_be_bytes());
+                        resp.extend_from_slice(&buf[6..12]);
+                        let _ = sock.write_all(&resp);
+                    }
+                    0x03 => { // Read Holding Registers (FC03)
                         let raw_start = u16::from_be_bytes([buf[8], buf[9]]) as usize;
-                        let start = if raw_start > 0 { raw_start - 1 } else { 0 }; // 1-based to 0-based
+                        let start = if raw_start > 0 { raw_start - 1 } else { 0 };
                         let count = u16::from_be_bytes([buf[10], buf[11]]) as usize;
                         let mut resp = Vec::with_capacity(9 + count * 2);
                         resp.extend_from_slice(&tx_id);
@@ -336,9 +385,9 @@ fn modbus_tcp_server(port: u16, state: std::sync::Arc<std::sync::Mutex<Vec<u8>>>
                         drop(s);
                         let _ = sock.write_all(&resp);
                     }
-                    0x06 => { // Write Single Register
+                    0x06 => { // Write Single Register (FC06)
                         let raw_addr = u16::from_be_bytes([buf[8], buf[9]]) as usize;
-                        let addr = if raw_addr > 0 { raw_addr - 1 } else { 0 }; // 1-based to 0-based
+                        let addr = if raw_addr > 0 { raw_addr - 1 } else { 0 };
                         let value = u16::from_be_bytes([buf[10], buf[11]]);
                         let off = addr * 2;
                         { let mut s = st.lock().unwrap();

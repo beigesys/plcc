@@ -46,361 +46,441 @@
           "id": "t1",
           "name": "cmd_start",
           "type": "Bool",
-          "memaddress": "400000",
-          "address": 0,
+          "memaddress": "000000",
+          "address": 1,
           "divisor": 1,
-          "description": "Start process"
+          "description": "Start process",
+          "value": 0,
+          "timestamp": 1774224029083
         },
         "t2": {
           "id": "t2",
           "name": "cmd_stop",
           "type": "Bool",
-          "memaddress": "400000",
-          "address": 1,
+          "memaddress": "000000",
+          "address": 2,
           "divisor": 1,
-          "description": "Stop process"
+          "description": "Stop process",
+          "value": 0,
+          "timestamp": 1774224029083
         },
         "t3": {
           "id": "t3",
           "name": "cmd_flush",
           "type": "Bool",
-          "memaddress": "400000",
-          "address": 2,
+          "memaddress": "000000",
+          "address": 3,
           "divisor": 1,
-          "description": "Flush/drain"
+          "description": "Flush/drain",
+          "value": 0,
+          "timestamp": 1774224029083
         },
         "t4": {
           "id": "t4",
           "name": "cmd_alarm_ack",
           "type": "Bool",
-          "memaddress": "400000",
-          "address": 3,
+          "memaddress": "000000",
+          "address": 4,
           "divisor": 1,
-          "description": "Acknowledge alarms"
+          "description": "Acknowledge alarms",
+          "value": 0,
+          "timestamp": 1774224029083
         },
         "t5": {
           "id": "t5",
           "name": "cmd_alarm_reset",
           "type": "Bool",
-          "memaddress": "400000",
-          "address": 4,
+          "memaddress": "000000",
+          "address": 5,
           "divisor": 1,
-          "description": "Reset faults"
+          "description": "Reset faults",
+          "value": 0,
+          "timestamp": 1774224029083
         },
         "t6": {
           "id": "t6",
           "name": "sp_raw_tank",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 5,
+          "address": 6,
           "divisor": 1,
-          "description": "Raw tank setpoint %"
+          "description": "Raw tank setpoint %",
+          "value": 50,
+          "timestamp": 1774224029083
         },
         "t7": {
           "id": "t7",
           "name": "sp_clean_tank",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 6,
+          "address": 7,
           "divisor": 1,
-          "description": "Clean tank setpoint %"
+          "description": "Clean tank setpoint %",
+          "value": 70,
+          "timestamp": 1774224029083
         },
         "t8": {
           "id": "t8",
           "name": "sp_inlet_pump",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 7,
+          "address": 8,
           "divisor": 1,
-          "description": "Inlet pump speed %"
+          "description": "Inlet pump speed %",
+          "value": 60,
+          "timestamp": 1774224029083
         },
         "t9": {
           "id": "t9",
           "name": "sp_transfer_pump",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 8,
+          "address": 9,
           "divisor": 1,
-          "description": "Transfer pump speed %"
+          "description": "Transfer pump speed %",
+          "value": 40,
+          "timestamp": 1774224029083
         },
         "t10": {
           "id": "t10",
           "name": "sp_outlet_pump",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 9,
+          "address": 10,
           "divisor": 1,
-          "description": "Outlet pump speed %"
+          "description": "Outlet pump speed %",
+          "value": 30,
+          "timestamp": 1774224029083
         },
         "t11": {
           "id": "t11",
           "name": "running",
           "type": "Bool",
-          "memaddress": "400000",
-          "address": 10,
+          "memaddress": "000000",
+          "address": 11,
           "divisor": 1,
-          "description": "Process running"
+          "description": "Process running",
+          "value": 0,
+          "timestamp": 1774224029083
         },
         "t12": {
           "id": "t12",
           "name": "stopped",
           "type": "Bool",
-          "memaddress": "400000",
-          "address": 11,
+          "memaddress": "000000",
+          "address": 12,
           "divisor": 1,
-          "description": "Process stopped"
+          "description": "Process stopped",
+          "value": 0,
+          "timestamp": 1774224029083
         },
         "t13": {
           "id": "t13",
           "name": "flushing",
           "type": "Bool",
-          "memaddress": "400000",
-          "address": 12,
+          "memaddress": "000000",
+          "address": 13,
           "divisor": 1,
-          "description": "Flush active"
+          "description": "Flush active",
+          "value": 0,
+          "timestamp": 1774224029083
         },
         "t14": {
           "id": "t14",
           "name": "faulted",
           "type": "Bool",
-          "memaddress": "400000",
-          "address": 13,
+          "memaddress": "000000",
+          "address": 14,
           "divisor": 1,
-          "description": "Fault state"
+          "description": "Fault state",
+          "value": 0,
+          "timestamp": 1774224029083
         },
         "t15": {
           "id": "t15",
           "name": "cycle_count",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 14,
+          "address": 15,
           "divisor": 1,
-          "description": "Scan counter"
+          "description": "Scan counter",
+          "value": 6708,
+          "timestamp": 1774224029083
         },
         "t16": {
           "id": "t16",
           "name": "raw_level",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 15,
+          "address": 16,
           "divisor": 1,
-          "description": "Raw tank %"
+          "description": "Raw tank %",
+          "value": 50,
+          "timestamp": 1774224029083
         },
         "t17": {
           "id": "t17",
           "name": "clean_level",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 16,
+          "address": 17,
           "divisor": 1,
-          "description": "Clean tank %"
+          "description": "Clean tank %",
+          "value": 70,
+          "timestamp": 1774224029083
         },
         "t18": {
           "id": "t18",
           "name": "system_ok",
           "type": "Bool",
-          "memaddress": "400000",
-          "address": 17,
+          "memaddress": "000000",
+          "address": 18,
           "divisor": 1,
-          "description": "System healthy"
+          "description": "System healthy",
+          "value": 0,
+          "timestamp": 1774224029083
         },
         "t19": {
           "id": "t19",
           "name": "alarm_word",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 18,
+          "address": 19,
           "divisor": 1,
-          "description": "Alarm bitmask"
+          "description": "Alarm bitmask",
+          "value": 0,
+          "timestamp": 1774224029083
         },
         "t20": {
           "id": "t20",
           "name": "total_flow",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 19,
+          "address": 20,
           "divisor": 1,
-          "description": "Total flow"
+          "description": "Total flow",
+          "value": 61828,
+          "timestamp": 1774224029083
         },
         "t21": {
           "id": "t21",
           "name": "inlet_pump_run",
           "type": "Bool",
-          "memaddress": "400000",
-          "address": 20,
+          "memaddress": "000000",
+          "address": 21,
           "divisor": 1,
-          "description": "Inlet pump ON"
+          "description": "Inlet pump ON",
+          "value": 0,
+          "timestamp": 1774224029083
         },
         "t22": {
           "id": "t22",
           "name": "inlet_pump_speed",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 21,
+          "address": 22,
           "divisor": 1,
-          "description": "Inlet pump speed"
+          "description": "Inlet pump speed",
+          "value": 0,
+          "timestamp": 1774224029083
         },
         "t23": {
           "id": "t23",
           "name": "inlet_pump_fault",
           "type": "Bool",
-          "memaddress": "400000",
-          "address": 22,
+          "memaddress": "000000",
+          "address": 23,
           "divisor": 1,
-          "description": "Inlet pump fault"
+          "description": "Inlet pump fault",
+          "value": 0,
+          "timestamp": 1774224029083
         },
         "t24": {
           "id": "t24",
           "name": "xfer_pump_run",
           "type": "Bool",
-          "memaddress": "400000",
-          "address": 23,
+          "memaddress": "000000",
+          "address": 24,
           "divisor": 1,
-          "description": "Transfer pump ON"
+          "description": "Transfer pump ON",
+          "value": 0,
+          "timestamp": 1774224029083
         },
         "t25": {
           "id": "t25",
           "name": "xfer_pump_speed",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 24,
+          "address": 25,
           "divisor": 1,
-          "description": "Transfer pump speed"
+          "description": "Transfer pump speed",
+          "value": 40,
+          "timestamp": 1774224029083
         },
         "t26": {
           "id": "t26",
           "name": "xfer_pump_fault",
           "type": "Bool",
-          "memaddress": "400000",
-          "address": 25,
+          "memaddress": "000000",
+          "address": 26,
           "divisor": 1,
-          "description": "Transfer pump fault"
+          "description": "Transfer pump fault",
+          "value": 0,
+          "timestamp": 1774224029083
         },
         "t27": {
           "id": "t27",
           "name": "outlet_pump_run",
           "type": "Bool",
-          "memaddress": "400000",
-          "address": 26,
+          "memaddress": "000000",
+          "address": 27,
           "divisor": 1,
-          "description": "Outlet pump ON"
+          "description": "Outlet pump ON",
+          "value": 0,
+          "timestamp": 1774224029083
         },
         "t28": {
           "id": "t28",
           "name": "outlet_pump_speed",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 27,
+          "address": 28,
           "divisor": 1,
-          "description": "Outlet pump speed"
+          "description": "Outlet pump speed",
+          "value": 30,
+          "timestamp": 1774224029083
         },
         "t29": {
           "id": "t29",
           "name": "outlet_pump_fault",
           "type": "Bool",
-          "memaddress": "400000",
-          "address": 28,
+          "memaddress": "000000",
+          "address": 29,
           "divisor": 1,
-          "description": "Outlet pump fault"
+          "description": "Outlet pump fault",
+          "value": 0,
+          "timestamp": 1774224029083
         },
         "t30": {
           "id": "t30",
           "name": "inlet_vlv_pos",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 29,
+          "address": 30,
           "divisor": 1,
-          "description": "Inlet valve %"
+          "description": "Inlet valve %",
+          "value": 0,
+          "timestamp": 1774224029083
         },
         "t31": {
           "id": "t31",
           "name": "outlet_vlv_pos",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 30,
+          "address": 31,
           "divisor": 1,
-          "description": "Outlet valve %"
+          "description": "Outlet valve %",
+          "value": 100,
+          "timestamp": 1774224029083
         },
         "t32": {
           "id": "t32",
           "name": "drain_vlv_pos",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 31,
+          "address": 32,
           "divisor": 1,
-          "description": "Drain valve %"
+          "description": "Drain valve %",
+          "value": 0,
+          "timestamp": 1774224029083
         },
         "t33": {
           "id": "t33",
           "name": "alm_raw_high",
           "type": "Bool",
-          "memaddress": "400000",
-          "address": 32,
+          "memaddress": "000000",
+          "address": 33,
           "divisor": 1,
-          "description": "Raw tank HIGH"
+          "description": "Raw tank HIGH",
+          "value": 0,
+          "timestamp": 1774224029083
         },
         "t34": {
           "id": "t34",
           "name": "alm_raw_low",
           "type": "Bool",
-          "memaddress": "400000",
-          "address": 33,
+          "memaddress": "000000",
+          "address": 34,
           "divisor": 1,
-          "description": "Raw tank LOW"
+          "description": "Raw tank LOW",
+          "value": 0,
+          "timestamp": 1774224029083
         },
         "t35": {
           "id": "t35",
           "name": "alm_clean_high",
           "type": "Bool",
-          "memaddress": "400000",
-          "address": 34,
+          "memaddress": "000000",
+          "address": 35,
           "divisor": 1,
-          "description": "Clean tank HIGH"
+          "description": "Clean tank HIGH",
+          "value": 0,
+          "timestamp": 1774224029083
         },
         "t36": {
           "id": "t36",
           "name": "alm_clean_low",
           "type": "Bool",
-          "memaddress": "400000",
-          "address": 35,
+          "memaddress": "000000",
+          "address": 36,
           "divisor": 1,
-          "description": "Clean tank LOW"
+          "description": "Clean tank LOW",
+          "value": 0,
+          "timestamp": 1774224029083
         },
         "t37": {
           "id": "t37",
           "name": "alm_inlet_fault",
           "type": "Bool",
-          "memaddress": "400000",
-          "address": 36,
+          "memaddress": "000000",
+          "address": 37,
           "divisor": 1,
-          "description": "Inlet pump fault"
+          "description": "Inlet pump fault",
+          "value": 0,
+          "timestamp": 1774224029083
         },
         "t38": {
           "id": "t38",
           "name": "alm_xfer_fault",
           "type": "Bool",
-          "memaddress": "400000",
-          "address": 37,
+          "memaddress": "000000",
+          "address": 38,
           "divisor": 1,
-          "description": "Transfer pump fault"
+          "description": "Transfer pump fault",
+          "value": 0,
+          "timestamp": 1774224029083
         },
         "t39": {
           "id": "t39",
           "name": "alm_outlet_fault",
           "type": "Bool",
-          "memaddress": "400000",
-          "address": 38,
+          "memaddress": "000000",
+          "address": 39,
           "divisor": 1,
-          "description": "Outlet pump fault"
+          "description": "Outlet pump fault",
+          "value": 0,
+          "timestamp": 1774224029083
         },
         "t40": {
           "id": "t40",
           "name": "alm_count",
           "type": "UInt16",
           "memaddress": "400000",
-          "address": 39,
+          "address": 40,
           "divisor": 1,
-          "description": "Active alarm count"
+          "description": "Active alarm count",
+          "value": 0,
+          "timestamp": 1774224029083
         }
       },
       "polling": 1000
