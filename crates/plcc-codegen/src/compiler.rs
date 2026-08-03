@@ -122,6 +122,15 @@ pub enum CodegenError {
         type_name: String,
         unresolved: String,
     },
+    /// Two `TYPE` declarations share a name. ST identifiers are case-insensitive, so
+    /// `Foo` and `foo` are the same type — the second silently replaced the first and
+    /// the program failed much later with something unrelated, typically
+    /// `undefined variable: a` from a field that only the shadowed declaration had.
+    #[error(
+        "TYPE `{second}` is already declared as `{first}` \
+         (ST identifiers are case-insensitive, so these are the same name)"
+    )]
+    DuplicateType { first: String, second: String },
     /// The generated module failed LLVM's own verifier.
     ///
     /// Structural IR defects (a terminator in the middle of a block, a block with no
@@ -2713,6 +2722,20 @@ impl<'ctx> Compiler<'ctx> {
                 _ => None,
             })
             .collect();
+
+        // Reject two declarations of the same name before resolving anything. The
+        // registry case-folds its keys, so `TYPE Foo` followed by `TYPE foo` was a
+        // silent last-wins overwrite, and the program failed later somewhere else
+        // entirely — `undefined variable: a` from a field only the first one had.
+        let mut seen: HashMap<String, String> = HashMap::new();
+        for td in &pending {
+            if let Some(first) = seen.insert(td.name.name.to_uppercase(), td.name.name.clone()) {
+                return Err(CodegenError::DuplicateType {
+                    first,
+                    second: td.name.name.clone(),
+                });
+            }
+        }
 
         while !pending.is_empty() {
             let before = pending.len();
