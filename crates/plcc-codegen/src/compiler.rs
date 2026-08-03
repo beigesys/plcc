@@ -2621,6 +2621,10 @@ impl<'ctx> Compiler<'ctx> {
         // order (an FB may contain an instance of an FB declared later in the file).
         self.layout_pou_structs(unit);
 
+        // Record every METHOD signature up front for the same reason: a method call
+        // resolves through the owner's recorded `methods` map.
+        self.layout_pou_methods(unit);
+
         // Declare the `<pou>_init` prototypes up front so init bodies can call each
         // other without regard to declaration order.
         self.declare_init_prototypes(unit);
@@ -2909,19 +2913,50 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
+    /// Name of the generated scan function for a POU.
+    fn scan_fn_name_for(name: &str) -> String {
+        format!("{}_scan", name.to_lowercase())
+    }
+
+    /// Get, or declare, `<name>(ptr) -> void`.
+    ///
+    /// Declaring a prototype creates the `FunctionValue` without a body, so callers
+    /// can reference it before the definition is compiled.
+    fn declare_state_fn(&self, name: &str) -> FunctionValue<'ctx> {
+        if let Some(f) = self.module.get_function(name) {
+            return f;
+        }
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let fn_type = self.context.void_type().fn_type(&[ptr_ty.into()], false);
+        self.module.add_function(name, fn_type, None)
+    }
+
     /// Record (or overwrite) the struct layout for an FB/CLASS.
+    ///
+    /// Also declares the POU's `_scan` and `_init` prototypes. `compile_fb_call`
+    /// resolves the callee with `module.get_function(scan_fn_name)`, which only
+    /// succeeds once that `FunctionValue` exists. Creating it in the definition
+    /// (`compile_function_block`) made the whole module order-dependent: an OUTER
+    /// declared before the INNER it instantiates failed with "FB scan function
+    /// 'inner_scan' not found", and so did passing two .st files in the wrong order
+    /// on the command line. Layout runs over every POU before any body is compiled,
+    /// so declaring here makes every callee resolvable from every caller.
     fn record_pou_layout(&mut self, name: &str, fields: Vec<(String, IecType)>) {
         let field_types: Vec<BasicTypeEnum<'ctx>> = fields
             .iter()
             .map(|(_, t)| self.iec_to_llvm_type(t))
             .collect();
         let struct_type = self.context.struct_type(&field_types, false);
+        let scan_fn_name = Self::scan_fn_name_for(name);
+        let init_fn_name = Self::init_fn_name_for(name);
+        self.declare_state_fn(&scan_fn_name);
+        self.declare_state_fn(&init_fn_name);
         self.compiled_fbs.insert(
             name.to_uppercase(),
             FbLayout {
                 struct_type,
-                scan_fn_name: format!("{}_scan", name.to_lowercase()),
-                init_fn_name: Self::init_fn_name_for(name),
+                scan_fn_name,
+                init_fn_name,
                 fields,
                 methods: HashMap::new(),
             },
@@ -2984,8 +3019,6 @@ impl<'ctx> Compiler<'ctx> {
     /// Bodies are filled in later; declaring them all first lets init bodies call each
     /// other regardless of declaration order.
     fn declare_init_prototypes(&mut self, unit: &CompilationUnit) {
-        let ptr_ty = self.context.ptr_type(AddressSpace::default());
-        let fn_type = self.context.void_type().fn_type(&[ptr_ty.into()], false);
         for decl in &unit.declarations {
             let name = match decl {
                 Declaration::FunctionBlock(fb) => &fb.name.name,
@@ -2993,10 +3026,7 @@ impl<'ctx> Compiler<'ctx> {
                 Declaration::Program(p) => &p.name.name,
                 _ => continue,
             };
-            let init_name = Self::init_fn_name_for(name);
-            if self.module.get_function(&init_name).is_none() {
-                self.module.add_function(&init_name, fn_type, None);
-            }
+            self.declare_state_fn(&Self::init_fn_name_for(name));
         }
     }
 
@@ -3630,8 +3660,9 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     fn compile_function_block(&mut self, fb: &FunctionBlockDecl) -> Result<(), CodegenError> {
-        // Similar to program — creates a scan function with state struct pointer
-        let fn_name = format!("{}_scan", fb.name.name.to_lowercase());
+        // Similar to program — fills in the body of the scan function that
+        // `record_pou_layout` already declared.
+        let fn_name = Self::scan_fn_name_for(&fb.name.name);
 
         let mut field_types: Vec<BasicTypeEnum<'ctx>> = Vec::new();
         let mut field_names: Vec<String> = Vec::new();
@@ -3648,12 +3679,15 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         let struct_type = self.context.struct_type(&field_types, false);
-        let state_ptr_type = self.context.ptr_type(AddressSpace::default());
-        let fn_type = self
-            .context
-            .void_type()
-            .fn_type(&[state_ptr_type.into()], false);
-        let function = self.module.add_function(&fn_name, fn_type, None);
+        // Reuse the prototype declared during layout; only create one if this FB was
+        // never laid out (defensive — layout covers every FB in the unit).
+        let function = self.declare_state_fn(&fn_name);
+        if function.count_basic_blocks() > 0 {
+            return Err(CodegenError::LlvmError(format!(
+                "duplicate FUNCTION_BLOCK definition '{}'",
+                fb.name.name
+            )));
+        }
 
         // Record this FB's layout for use by parent POUs that instantiate it
         let fb_fields: Vec<(String, IecType)> = field_names
@@ -3724,7 +3758,7 @@ impl<'ctx> Compiler<'ctx> {
 
     /// Compile a CLASS declaration. A CLASS is like an FB but has no scan body — only methods.
     fn compile_class(&mut self, cls: &ClassDecl) -> Result<(), CodegenError> {
-        let fn_name = format!("{}_scan", cls.name.name.to_lowercase());
+        let fn_name = Self::scan_fn_name_for(&cls.name.name);
 
         let mut field_types: Vec<BasicTypeEnum<'ctx>> = Vec::new();
         let mut field_names: Vec<String> = Vec::new();
@@ -3741,14 +3775,16 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         let struct_type = self.context.struct_type(&field_types, false);
-        let state_ptr_type = self.context.ptr_type(AddressSpace::default());
 
-        // Create an empty scan function (classes don't have a body like FBs)
-        let void_fn_type = self
-            .context
-            .void_type()
-            .fn_type(&[state_ptr_type.into()], false);
-        let scan_function = self.module.add_function(&fn_name, void_fn_type, None);
+        // Fill in the prototype declared during layout with an empty body (classes
+        // have no scan body like FBs).
+        let scan_function = self.declare_state_fn(&fn_name);
+        if scan_function.count_basic_blocks() > 0 {
+            return Err(CodegenError::LlvmError(format!(
+                "duplicate CLASS definition '{}'",
+                cls.name.name
+            )));
+        }
         let entry = self.context.append_basic_block(scan_function, "entry");
         self.builder.position_at_end(entry);
         self.builder
@@ -3791,16 +3827,19 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
-    /// Compile a METHOD declaration on an FB/Class.
-    /// Produces an LLVM function: `{fb_name}_{method_name}(instance_ptr, ...params) -> ret_type`
-    fn compile_method(
+    /// Compute a METHOD's signature and declare (or fetch) its LLVM prototype.
+    ///
+    /// Split out of [`Self::compile_method`] so [`Self::layout_pou_methods`] can record
+    /// every method of every POU before any body is compiled. `compile_method_call`
+    /// looks the callee up in the owner's recorded `methods` map, so calling a method
+    /// on a CLASS or FB declared *later* in the file used to fail with
+    /// "method 'X' not found on FB type 'Y'" — the same declaration-order hazard the
+    /// `_scan` prototypes had.
+    fn declare_method(
         &mut self,
         fb_name: &str,
         method: &MethodDecl,
-        fb_struct_type: StructType<'ctx>,
-        fb_field_names: &[String],
-        fb_field_iec_types: &[IecType],
-    ) -> Result<MethodInfo, CodegenError> {
+    ) -> (MethodInfo, FunctionValue<'ctx>) {
         let method_fn_name = format!(
             "{}_{}",
             fb_name.to_lowercase(),
@@ -3816,8 +3855,7 @@ impl<'ctx> Compiler<'ctx> {
         // First param is always the instance pointer
         let state_ptr_type = self.context.ptr_type(AddressSpace::default());
         let mut param_types: Vec<BasicMetadataTypeEnum<'ctx>> = vec![state_ptr_type.into()];
-        let mut param_names: Vec<String> = Vec::new();
-        let mut param_iec_types: Vec<IecType> = Vec::new();
+        let mut params: Vec<(String, IecType)> = Vec::new();
 
         for block in &method.var_blocks {
             if block.kind == VarBlockKind::VarInput {
@@ -3825,8 +3863,7 @@ impl<'ctx> Compiler<'ctx> {
                     let iec_ty = self.resolve_type_spec(&decl.type_spec);
                     let llvm_ty = self.iec_to_llvm_type(&iec_ty);
                     param_types.push(llvm_ty.into());
-                    param_names.push(decl.name.name.clone());
-                    param_iec_types.push(iec_ty);
+                    params.push((decl.name.name.clone(), iec_ty));
                 }
             }
         }
@@ -3838,7 +3875,60 @@ impl<'ctx> Compiler<'ctx> {
             ret_llvm.fn_type(&param_types, false)
         };
 
-        let function = self.module.add_function(&method_fn_name, fn_type, None);
+        let function = match self.module.get_function(&method_fn_name) {
+            Some(f) => f,
+            None => self.module.add_function(&method_fn_name, fn_type, None),
+        };
+
+        (
+            MethodInfo {
+                fn_name: method_fn_name,
+                params,
+                return_type: ret_iec_ty,
+            },
+            function,
+        )
+    }
+
+    /// Record every FB/CLASS method signature (and declare its prototype) before any
+    /// body is compiled, so method calls resolve regardless of declaration order.
+    fn layout_pou_methods(&mut self, unit: &CompilationUnit) {
+        for decl in &unit.declarations {
+            let (name, methods) = match decl {
+                Declaration::FunctionBlock(fb) => (&fb.name.name, &fb.methods),
+                Declaration::Class(cls) => (&cls.name.name, &cls.methods),
+                _ => continue,
+            };
+            let mut infos: HashMap<String, MethodInfo> = HashMap::new();
+            for method in methods {
+                let (info, _) = self.declare_method(name, method);
+                infos.insert(method.name.name.to_uppercase(), info);
+            }
+            if let Some(layout) = self.compiled_fbs.get_mut(&name.to_uppercase()) {
+                layout.methods = infos;
+            }
+        }
+    }
+
+    /// Compile a METHOD declaration on an FB/Class.
+    /// Produces an LLVM function: `{fb_name}_{method_name}(instance_ptr, ...params) -> ret_type`
+    fn compile_method(
+        &mut self,
+        fb_name: &str,
+        method: &MethodDecl,
+        fb_struct_type: StructType<'ctx>,
+        fb_field_names: &[String],
+        fb_field_iec_types: &[IecType],
+    ) -> Result<MethodInfo, CodegenError> {
+        let (info, function) = self.declare_method(fb_name, method);
+        if function.count_basic_blocks() > 0 {
+            // Body already emitted (a duplicate POU definition). Keep the first.
+            return Ok(info);
+        }
+        let ret_iec_ty = info.return_type.clone();
+        let param_names: Vec<String> = info.params.iter().map(|(n, _)| n.clone()).collect();
+        let param_iec_types: Vec<IecType> = info.params.iter().map(|(_, t)| t.clone()).collect();
+
         let entry = self.context.append_basic_block(function, "entry");
         self.builder.position_at_end(entry);
 
@@ -3959,16 +4049,7 @@ impl<'ctx> Compiler<'ctx> {
         self.current_struct_type = saved_struct_type;
         self.current_state_ptr = saved_state_ptr;
 
-        let params: Vec<(String, IecType)> = param_names
-            .into_iter()
-            .zip(param_iec_types.into_iter())
-            .collect();
-
-        Ok(MethodInfo {
-            fn_name: method_fn_name,
-            params,
-            return_type: ret_iec_ty,
-        })
+        Ok(info)
     }
 
     fn compile_statement(
@@ -4245,10 +4326,13 @@ impl<'ctx> Compiler<'ctx> {
         // Build argument list: instance pointer + method params
         let mut call_args: Vec<BasicValueEnum<'ctx>> = vec![fb_ptr.into()];
 
-        // Method params can be positional or named
+        // Method params can be positional or named. Either way the value has to be
+        // widened/narrowed to the declared parameter type: an integer literal is an
+        // INT (i16), so `acc.Bump(amount := 7)` on a `amount : DINT` parameter would
+        // otherwise pass an i16 to an i32 parameter and produce an invalid module.
         if !args.is_empty() && args[0].name.is_some() {
             // Named arguments — match by name to method param order
-            for (param_name, _param_ty) in &method_info.params {
+            for (param_name, param_ty) in &method_info.params {
                 let arg = args
                     .iter()
                     .find(|a| {
@@ -4263,13 +4347,21 @@ impl<'ctx> Compiler<'ctx> {
                         ))
                     })?;
                 if let Some(val) = self.compile_expression(&arg.value, function)? {
-                    call_args.push(val);
+                    let src = self.rvalue_iec_type(&arg.value);
+                    call_args.push(self.coerce_value(val, src.as_ref(), param_ty)?);
                 }
             }
         } else {
             // Positional arguments
-            for arg in args {
+            for (i, arg) in args.iter().enumerate() {
                 if let Some(val) = self.compile_expression(&arg.value, function)? {
+                    let val = match method_info.params.get(i) {
+                        Some((_, param_ty)) => {
+                            let src = self.rvalue_iec_type(&arg.value);
+                            self.coerce_value(val, src.as_ref(), param_ty)?
+                        }
+                        None => val,
+                    };
                     call_args.push(val);
                 }
             }
