@@ -2919,13 +2919,22 @@ impl<'ctx> Compiler<'ctx> {
 
     /// Widen/narrow/convert an initializer value so it matches the member's storage type.
     /// Without this, `x : DINT := -1` would store a 16-bit -1 into a 32-bit slot.
+    ///
+    /// The source type is unknown here, so widening falls back to the destination's
+    /// signedness. That is right for a bare literal (`x : DINT := -1` must sign-extend)
+    /// and wrong for a typed value, so anything that *has* a source type must call
+    /// [`Self::coerce_value`] instead.
     fn coerce_init_value(
         &self,
         val: BasicValueEnum<'ctx>,
         ty: &IecType,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
-        let target = self.iec_to_llvm_type(ty);
-        let unsigned = matches!(
+        self.coerce_value(val, None, ty)
+    }
+
+    /// True when values of `ty` are widened by zero-extension.
+    fn widens_unsigned(ty: &IecType) -> bool {
+        matches!(
             ty,
             IecType::Bool
                 | IecType::Byte
@@ -2938,7 +2947,29 @@ impl<'ctx> Compiler<'ctx> {
                 | IecType::Ulint
                 | IecType::Char
                 | IecType::Wchar
-        );
+        )
+    }
+
+    /// Convert `val` (of IEC type `src`, when known) to the storage type of `ty`.
+    ///
+    /// Widening signedness comes from the **source**, not the destination. A BYTE
+    /// holding 16#FF is 255, and it is still 255 after `acc : DINT := raw_b;` — taking
+    /// the sign from the DINT destination turned every ANY_BIT and ANY_UNSIGNED value
+    /// assigned into a wider signed slot into a negative number.
+    ///
+    /// `src` is `None` for values with no static IEC type (bare literals); the
+    /// destination's signedness is the fallback there.
+    fn coerce_value(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        src: Option<&IecType>,
+        ty: &IecType,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let target = self.iec_to_llvm_type(ty);
+        let unsigned = match src {
+            Some(src_ty) => Self::widens_unsigned(src_ty),
+            None => Self::widens_unsigned(ty),
+        };
         match (val, target) {
             (BasicValueEnum::IntValue(iv), BasicTypeEnum::IntType(it)) => {
                 let (sw, tw) = (iv.get_type().get_bit_width(), it.get_bit_width());
@@ -3834,8 +3865,14 @@ impl<'ctx> Compiler<'ctx> {
                             // Match the store width to the destination. Without this a
                             // narrow RHS (integer literals default to INT/i16) stored
                             // into a wider slot wrote only part of it.
+                            // Match the store width to the destination, but take the
+                            // *source's* signedness: `acc : DINT := raw_byte;` where
+                            // raw_byte is 16#FF must widen to 255, not to -1.
                             let val = match self.lvalue_iec_type(target) {
-                                Some(ty) => self.coerce_init_value(val, &ty)?,
+                                Some(ty) => {
+                                    let src = self.rvalue_iec_type(value);
+                                    self.coerce_value(val, src.as_ref(), &ty)?
+                                }
                                 None => val,
                             };
                             self.builder
@@ -4010,7 +4047,8 @@ impl<'ctx> Compiler<'ctx> {
                     // Widen/narrow to the declared input type. Integer literals
                     // default to INT (i16), so `ctr(PV := 100000)` on a DINT input
                     // used to store a truncated 16-bit value into a 32-bit field.
-                    let val = self.coerce_init_value(val, &info.fields[field_idx].1)?;
+                    let src = self.rvalue_iec_type(&arg.value);
+                    let val = self.coerce_value(val, src.as_ref(), &info.fields[field_idx].1)?;
                     self.builder
                         .build_store(field_ptr, val)
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
@@ -4557,6 +4595,50 @@ impl<'ctx> Compiler<'ctx> {
                     _ => None,
                 }
             }
+            _ => None,
+        }
+    }
+
+    /// IEC type of a *value-producing* expression, when it can be determined statically.
+    ///
+    /// Only used to decide whether widening the value is a zero-extension or a
+    /// sign-extension, so it is deliberately conservative: `None` means "no static
+    /// type", and the caller falls back to the destination's signedness.
+    fn rvalue_iec_type(&self, expr: &Expression) -> Option<IecType> {
+        match &expr.kind {
+            ExpressionKind::Identifier(_)
+            | ExpressionKind::ArrayIndex { .. }
+            | ExpressionKind::MemberAccess { .. } => self.lvalue_iec_type(expr),
+            ExpressionKind::Parenthesized(inner) => self.rvalue_iec_type(inner),
+            // Negation only makes sense on a signed value, and the result is signed
+            // regardless of what went in. NOT preserves its operand's type.
+            ExpressionKind::UnaryOp { op, operand } => match op {
+                UnaryOp::Neg => None,
+                UnaryOp::Not => self.rvalue_iec_type(operand),
+            },
+            ExpressionKind::BinaryOp { op, left, right } => match op {
+                // Comparisons yield BOOL whatever the operands were. Getting this
+                // wrong would sign-extend an i1 `1` into 16#FF.
+                BinaryOp::Equal
+                | BinaryOp::NotEqual
+                | BinaryOp::Less
+                | BinaryOp::LessEqual
+                | BinaryOp::Greater
+                | BinaryOp::GreaterEqual => Some(IecType::Bool),
+                _ => match (self.rvalue_iec_type(left), self.rvalue_iec_type(right)) {
+                    // The wider operand's type governs; a literal operand contributes
+                    // nothing, so the typed side wins.
+                    (Some(l), Some(r)) => {
+                        Some(if r.bit_size().unwrap_or(0) > l.bit_size().unwrap_or(0) {
+                            r
+                        } else {
+                            l
+                        })
+                    }
+                    (Some(t), None) | (None, Some(t)) => Some(t),
+                    (None, None) => None,
+                },
+            },
             _ => None,
         }
     }
