@@ -1875,8 +1875,13 @@ impl<'s> Parser<'s> {
                 | Token::Time
                 | Token::Ltime
                 | Token::Date
+                | Token::Ldate
                 | Token::Dt
+                | Token::DateAndTime
+                | Token::Ldt
                 | Token::Tod
+                | Token::TimeOfDay
+                | Token::Ltod
                 | Token::Char
                 | Token::Wchar
         )
@@ -1902,8 +1907,13 @@ impl<'s> Parser<'s> {
             Token::Time => "TIME",
             Token::Ltime => "LTIME",
             Token::Date => "DATE",
+            Token::Ldate => "LDATE",
             Token::Dt => "DT",
+            Token::DateAndTime => "DATE_AND_TIME",
+            Token::Ldt => "LDT",
             Token::Tod => "TOD",
+            Token::TimeOfDay => "TIME_OF_DAY",
+            Token::Ltod => "LTOD",
             Token::Char => "CHAR",
             Token::Wchar => "WCHAR",
             _ => "UNKNOWN",
