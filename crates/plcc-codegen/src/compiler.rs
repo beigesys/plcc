@@ -111,6 +111,17 @@ pub enum CodegenError {
         var_name: String,
         type_name: String,
     },
+    /// A `TYPE` declaration never becomes layout-complete: a cycle, or a name that
+    /// resolves to nothing.
+    #[error(
+        "TYPE `{type_name}` cannot be laid out: `{unresolved}` never resolves \
+         (a cyclic TYPE definition, or a name that is not declared anywhere; \
+         a type that refers to itself must go through POINTER TO)"
+    )]
+    CyclicType {
+        type_name: String,
+        unresolved: String,
+    },
     /// The generated module failed LLVM's own verifier.
     ///
     /// Structural IR defects (a terminator in the middle of a block, a block with no
@@ -2589,18 +2600,15 @@ impl<'ctx> Compiler<'ctx> {
 
         // Register user TYPE declarations (STRUCT / ENUM / subrange / alias) so that a
         // `v : MyStruct;` declaration resolves instead of falling through to the
-        // "unknown type" fallback. Two passes so a TYPE may reference another TYPE
-        // declared later in the file.
-        for _ in 0..2 {
-            for decl in &unit.declarations {
-                if let Declaration::TypeDecl(td) = decl {
-                    let ty = self.resolve_type_spec(&td.type_spec);
-                    self.type_registry
-                        .register(td.name.name.clone(), ty.clone());
-                    self.type_checker.types.register(td.name.name.clone(), ty);
-                }
-            }
-        }
+        // "unknown type" fallback.
+        //
+        // A TYPE may name another TYPE declared later in the file, so this iterates to
+        // a fixed point. A fixed *count* of passes silently truncates: two passes
+        // resolve a two-deep forward chain and reject a three-deep one, which is not a
+        // property of the language, only of the loop bound. Each round re-resolves from
+        // the AST, so a round that resolves one name lets the next round resolve
+        // anything that referenced it.
+        self.register_type_declarations(unit)?;
 
         // Every declared type must resolve to something real *before* we lay out any
         // struct. Previously an unknown type name (`t : TON;` with no TON in scope)
@@ -2686,20 +2694,96 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
+    /// Resolve every `TYPE` declaration to a fixed point.
+    ///
+    /// Returns an error if a declaration never becomes layout-complete: a genuine
+    /// cycle (`A : ARRAY OF B; B : ARRAY OF A;`) or a name that resolves to nothing.
+    /// Without that check the loop would either stop early and leave an `Unresolved`
+    /// in a struct layout, or spin forever.
+    fn register_type_declarations(&mut self, unit: &CompilationUnit) -> Result<(), CodegenError> {
+        let mut pending: Vec<&TypeDeclaration> = unit
+            .declarations
+            .iter()
+            .filter_map(|d| match d {
+                Declaration::TypeDecl(td) => Some(td),
+                _ => None,
+            })
+            .collect();
+
+        while !pending.is_empty() {
+            let before = pending.len();
+            let mut still = Vec::with_capacity(before);
+            for td in pending {
+                let ty = self.resolve_type_spec(&td.type_spec);
+                let incomplete = Self::first_unresolved_in_layout(&ty);
+                // Register even a partially resolved type: it is what lets the *next*
+                // round make progress on whatever referenced it.
+                self.type_registry
+                    .register(td.name.name.clone(), ty.clone());
+                self.type_checker.types.register(td.name.name.clone(), ty);
+                if let Some(name) = incomplete {
+                    still.push((td, name));
+                }
+            }
+            if still.is_empty() {
+                return Ok(());
+            }
+            if still.len() == before {
+                // A whole round with nothing resolved: no later round can do better.
+                let (td, unresolved) = &still[0];
+                return Err(CodegenError::CyclicType {
+                    type_name: td.name.name.clone(),
+                    unresolved: unresolved.clone(),
+                });
+            }
+            pending = still.into_iter().map(|(td, _)| td).collect();
+        }
+        Ok(())
+    }
+
+    /// First unresolved type name that would affect `ty`'s memory layout.
+    ///
+    /// Recursion stops at a POINTER: it is one machine word whatever it points at, so
+    /// `TYPE Node : STRUCT next : POINTER TO Node; END_STRUCT; END_TYPE` is complete
+    /// after a single round rather than regressing forever.
+    fn first_unresolved_in_layout(ty: &IecType) -> Option<String> {
+        match ty {
+            IecType::Unresolved(name) => Some(name.clone()),
+            IecType::Array { element_type, .. } => Self::first_unresolved_in_layout(element_type),
+            IecType::Alias { base_type, .. } | IecType::Subrange { base_type, .. } => {
+                Self::first_unresolved_in_layout(base_type)
+            }
+            IecType::Struct { fields, .. } => fields
+                .iter()
+                .find_map(|(_, t)| Self::first_unresolved_in_layout(t)),
+            IecType::Pointer(_) => None,
+            _ => None,
+        }
+    }
+
     /// First unresolved type name reachable from `ty`, if any.
     ///
     /// Walks through the aggregate types so `ARRAY [1..4] OF TON` and
     /// `STRUCT t : TON; END_STRUCT` are caught too, not just a bare `t : TON;`.
-    fn first_unresolved(ty: &IecType) -> Option<String> {
+    fn first_unresolved(&self, ty: &IecType) -> Option<String> {
         match ty {
             IecType::Unresolved(name) => Some(name.clone()),
-            IecType::Array { element_type, .. } => Self::first_unresolved(element_type),
-            IecType::Pointer(inner)
-            | IecType::Alias {
+            IecType::Array { element_type, .. } => self.first_unresolved(element_type),
+            IecType::Alias {
                 base_type: inner, ..
-            } => Self::first_unresolved(inner),
+            } => self.first_unresolved(inner),
+            // A pointee is not part of this type's layout, and it may legitimately be
+            // the type currently being defined: `TYPE Node : STRUCT next : POINTER TO
+            // Node; END_STRUCT` snapshots `Node` as unresolved inside itself. So the
+            // pointee is checked by *name* against the finished registry instead of
+            // structurally — a POINTER TO something that genuinely does not exist is
+            // still rejected.
+            IecType::Pointer(inner) => match inner.as_ref() {
+                IecType::Unresolved(name) if self.type_registry.resolve(name).is_some() => None,
+                other => self.first_unresolved(other),
+            },
             IecType::Struct { fields, .. } => {
-                fields.iter().find_map(|(_, t)| Self::first_unresolved(t))
+                fields.iter().find_map(|(_, t)| self.first_unresolved(t))
             }
             _ => None,
         }
@@ -2722,7 +2806,7 @@ impl<'ctx> Compiler<'ctx> {
             for block in blocks {
                 for decl in &block.declarations {
                     let ty = this.resolve_type_spec(&decl.type_spec);
-                    if let Some(type_name) = Self::first_unresolved(&ty) {
+                    if let Some(type_name) = this.first_unresolved(&ty) {
                         return Err(CodegenError::UnknownType {
                             pou_kind,
                             pou_name: pou_name.to_string(),
