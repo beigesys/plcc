@@ -153,6 +153,14 @@ pub enum CodegenError {
          (ST identifiers are case-insensitive, so these are the same name)"
     )]
     DuplicateType { first: String, second: String },
+    /// A call's arguments cannot be bound to the callee's declared parameters.
+    ///
+    /// IEC 61131-3 allows a call to name its arguments (`F(b := 3, a := 10)`), and the
+    /// names — not the positions — decide the binding. Silently ignoring the names and
+    /// binding positionally is a wrong answer with no diagnostic, so anything that
+    /// cannot be bound unambiguously is an error here.
+    #[error("in the call to `{callee}`: {problem}")]
+    ArgumentBinding { callee: String, problem: String },
     /// The generated module failed LLVM's own verifier.
     ///
     /// Structural IR defects (a terminator in the middle of a block, a block with no
@@ -4462,6 +4470,75 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
+    /// Put a call's arguments into declared-parameter order.
+    ///
+    /// IEC 61131-3 §6.6.1.6 lets a call name its arguments, and the *name* decides
+    /// which parameter each value goes to. Consuming a named argument list
+    /// positionally is a silent wrong answer: `SUB2(b := 3, a := 10)` on
+    /// `SUB2 := a - b` returned -7 instead of 7.
+    ///
+    /// The rule matches the one METHOD calls already use — a call is either wholly
+    /// named or wholly positional. Mixing the two has no unambiguous reading (does the
+    /// first positional argument fill the first parameter, or the first *unnamed* one?)
+    /// so it is rejected rather than guessed at.
+    fn bind_args<'a>(
+        callee: &str,
+        params: &[(String, IecType)],
+        args: &'a [CallArg],
+    ) -> Result<Vec<&'a Expression>, CodegenError> {
+        let err = |problem: String| CodegenError::ArgumentBinding {
+            callee: callee.to_string(),
+            problem,
+        };
+
+        let named = args.iter().filter(|a| a.name.is_some()).count();
+        if named == 0 {
+            return Ok(args.iter().map(|a| &a.value).collect());
+        }
+        if named != args.len() {
+            return Err(err(
+                "named and positional arguments cannot be mixed — name every argument \
+                 or none of them"
+                    .into(),
+            ));
+        }
+
+        // Every argument names a declared parameter…
+        for arg in args {
+            let Some(name) = &arg.name else { continue };
+            if !params
+                .iter()
+                .any(|(p, _)| p.eq_ignore_ascii_case(&name.name))
+            {
+                return Err(err(format!("there is no parameter named `{}`", name.name)));
+            }
+        }
+        // …at most once…
+        for (i, arg) in args.iter().enumerate() {
+            let Some(name) = &arg.name else { continue };
+            if args[..i]
+                .iter()
+                .any(|a| a.name.as_ref().is_some_and(|n| n.name == name.name))
+            {
+                return Err(err(format!("`{}` is given more than once", name.name)));
+            }
+        }
+        // …and every declared parameter is given.
+        params
+            .iter()
+            .map(|(p, _)| {
+                args.iter()
+                    .find(|a| {
+                        a.name
+                            .as_ref()
+                            .is_some_and(|n| n.name.eq_ignore_ascii_case(p))
+                    })
+                    .map(|a| &a.value)
+                    .ok_or_else(|| err(format!("no value for parameter `{p}`")))
+            })
+            .collect()
+    }
+
     fn layout_pou_methods(&mut self, unit: &CompilationUnit) {
         for decl in &unit.declarations {
             let (name, methods) = match decl {
@@ -6062,21 +6139,27 @@ impl<'ctx> Compiler<'ctx> {
 
                     // Fall back to user-defined functions
                     if let Some(fn_val) = self.module.get_function(&ident.name.to_lowercase()) {
-                        let params = self
-                            .fn_signatures
-                            .get(&ident.name.to_lowercase())
-                            .cloned()
-                            .unwrap_or_default();
+                        let signature = self.fn_signatures.get(&ident.name.to_lowercase()).cloned();
+                        let params = signature.clone().unwrap_or_default();
+                        // Named arguments bind by name, not by position — see
+                        // `bind_args`. Only a call that names nothing keeps the source
+                        // order. A callee with no recorded signature (not a FUNCTION in
+                        // this unit) has no parameter names to bind against, so it stays
+                        // positional rather than being rejected for naming them.
+                        let ordered = match &signature {
+                            Some(params) => Self::bind_args(&ident.name, params, args)?,
+                            None => args.iter().map(|a| &a.value).collect(),
+                        };
                         let mut compiled_args = Vec::new();
-                        for (i, arg) in args.iter().enumerate() {
-                            if let Some(val) = self.compile_expression(&arg.value, function)? {
+                        for (i, arg) in ordered.iter().enumerate() {
+                            if let Some(val) = self.compile_expression(arg, function)? {
                                 // Coerce to the declared parameter type. Passing the value
                                 // through unconverted produces a call whose argument width
                                 // does not match the signature, which LLVM's verifier
                                 // rejects outright.
                                 let val = match params.get(i) {
                                     Some((_, param_ty)) => {
-                                        let src = self.rvalue_iec_type(&arg.value);
+                                        let src = self.rvalue_iec_type(arg);
                                         self.coerce_value(val, src.as_ref(), param_ty)?
                                     }
                                     None => val,
