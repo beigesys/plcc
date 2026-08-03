@@ -3067,10 +3067,7 @@ impl<'ctx> Compiler<'ctx> {
         _ty: &IecType,
     ) -> Option<BasicValueEnum<'ctx>> {
         match &expr.kind {
-            ExpressionKind::IntegerLiteral(v) => {
-                // Use i16 (INT) by default, matching compile_expression
-                Some(self.context.i16_type().const_int(*v as u64, true).into())
-            }
+            ExpressionKind::IntegerLiteral(v) => Some(self.int_literal(*v).into()),
             ExpressionKind::RealLiteral(v) => Some(self.context.f32_type().const_float(*v).into()),
             ExpressionKind::BoolLiteral(v) => {
                 Some(self.context.i8_type().const_int(*v as u64, false).into())
@@ -3140,6 +3137,27 @@ impl<'ctx> Compiler<'ctx> {
                 .build_int_s_extend(b, a.get_type(), "sext")
                 .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
             Ok((a, ext))
+        }
+    }
+
+    /// Materialize an integer literal at the narrowest standard width that holds it.
+    ///
+    /// IEC 61131-3 gives an integer literal the type its context demands. Codegen has
+    /// no context here, so it picks by magnitude: INT (i16) for anything that fits —
+    /// which is the overwhelmingly common case and keeps ordinary INT arithmetic
+    /// 16-bit — then DINT (i32), then LINT (i64). Fixing the width at i16
+    /// unconditionally silently truncated every literal above 32767, so
+    /// `ctr(PV := 100000)` passed -31072.
+    ///
+    /// Binary operations sign-extend to the wider operand, and assignment coerces to
+    /// the destination, so a wider literal never leaks into a narrower slot.
+    fn int_literal(&self, v: i128) -> inkwell::values::IntValue<'ctx> {
+        if (i16::MIN as i128..=i16::MAX as i128).contains(&v) {
+            self.context.i16_type().const_int(v as u64, true)
+        } else if (i32::MIN as i128..=i32::MAX as i128).contains(&v) {
+            self.context.i32_type().const_int(v as u64, true)
+        } else {
+            self.context.i64_type().const_int(v as u64, true)
         }
     }
 
@@ -3772,6 +3790,13 @@ impl<'ctx> Compiler<'ctx> {
                 if !self.try_compile_string_assignment(target, value, function)? {
                     if let Some(ptr) = self.compile_lvalue_with_fn(target, function)? {
                         if let Some(val) = self.compile_expression(value, function)? {
+                            // Match the store width to the destination. Without this a
+                            // narrow RHS (integer literals default to INT/i16) stored
+                            // into a wider slot wrote only part of it.
+                            let val = match self.lvalue_iec_type(target) {
+                                Some(ty) => self.coerce_init_value(val, &ty)?,
+                                None => val,
+                            };
                             self.builder
                                 .build_store(ptr, val)
                                 .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
@@ -3941,6 +3966,10 @@ impl<'ctx> Compiler<'ctx> {
                             &arg_name.name,
                         )
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    // Widen/narrow to the declared input type. Integer literals
+                    // default to INT (i16), so `ctr(PV := 100000)` on a DINT input
+                    // used to store a truncated 16-bit value into a 32-bit field.
+                    let val = self.coerce_init_value(val, &info.fields[field_idx].1)?;
                     self.builder
                         .build_store(field_ptr, val)
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
@@ -4457,6 +4486,55 @@ impl<'ctx> Compiler<'ctx> {
         self.compile_lvalue_inner(expr, Some(function))
     }
 
+    /// IEC type of an assignable expression, when it can be determined statically.
+    ///
+    /// Assignment stores the compiled RHS straight into the target pointer. With
+    /// opaque pointers there is nothing to check the width against, so without this
+    /// an `INT` expression assigned to a `TIME` (i64) field stored only two of the
+    /// eight bytes and left the rest stale. `ET := 0;` was quietly broken.
+    ///
+    /// Returns `None` for anything not recognized, in which case the store happens
+    /// unchanged — no behavior is *removed* by this, only widths corrected.
+    fn lvalue_iec_type(&self, expr: &Expression) -> Option<IecType> {
+        match &expr.kind {
+            ExpressionKind::Identifier(ident) => self
+                .variables
+                .get(&ident.name.to_uppercase())
+                .map(|(_, t)| t.clone()),
+            ExpressionKind::Parenthesized(inner) => self.lvalue_iec_type(inner),
+            ExpressionKind::ArrayIndex { array, .. } => match self.lvalue_iec_type(array)? {
+                IecType::Array { element_type, .. } => Some(*element_type),
+                _ => None,
+            },
+            ExpressionKind::MemberAccess { object, member } => {
+                let ExpressionKind::Identifier(ident) = &object.kind else {
+                    return None;
+                };
+                // FB instance field (t.ET, ctr.CV, ...)
+                if let Some(info) = self.fb_instances.get(&ident.name.to_uppercase()) {
+                    return info
+                        .fields
+                        .iter()
+                        .find(|(name, _)| name.eq_ignore_ascii_case(&member.name))
+                        .map(|(_, t)| t.clone());
+                }
+                // Plain STRUCT field
+                match self
+                    .variables
+                    .get(&ident.name.to_uppercase())
+                    .map(|(_, t)| t)
+                {
+                    Some(IecType::Struct { fields, .. }) => fields
+                        .iter()
+                        .find(|(name, _)| name.eq_ignore_ascii_case(&member.name))
+                        .map(|(_, t)| t.clone()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn compile_lvalue_inner(
         &mut self,
         expr: &Expression,
@@ -4693,12 +4771,7 @@ impl<'ctx> Compiler<'ctx> {
         function: FunctionValue<'ctx>,
     ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
         match &expr.kind {
-            ExpressionKind::IntegerLiteral(v) => {
-                // Default to i16 (INT) — binary ops will widen as needed
-                Ok(Some(
-                    self.context.i16_type().const_int(*v as u64, true).into(),
-                ))
-            }
+            ExpressionKind::IntegerLiteral(v) => Ok(Some(self.int_literal(*v).into())),
             ExpressionKind::RealLiteral(v) => {
                 // Default to f32 (REAL) to match common IEC usage
                 Ok(Some(self.context.f32_type().const_float(*v).into()))
