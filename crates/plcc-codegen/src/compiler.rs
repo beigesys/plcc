@@ -93,6 +93,15 @@ pub enum CodegenError {
     LlvmError(String),
     #[error("target error: {0}")]
     TargetError(String),
+    /// The generated module failed LLVM's own verifier.
+    ///
+    /// Structural IR defects (a terminator in the middle of a block, a block with no
+    /// terminator, a type mismatch) are invisible at `OptimizationLevel::None` — the
+    /// JIT the execution tests use will happily run past them — and only surface as a
+    /// hang or a miscompile once an optimizing backend gets hold of the module. So the
+    /// verifier runs at the end of every `compile()`, not just before object emission.
+    #[error("generated LLVM module failed verification: {0}")]
+    InvalidModule(String),
 }
 
 /// Information about a compiled method on an FB/Class.
@@ -2566,6 +2575,14 @@ impl<'ctx> Compiler<'ctx> {
                 self.compile_program(p)?;
             }
         }
+
+        // Structurally malformed IR must never escape this function. `emit_object`
+        // runs LLVM at OptimizationLevel::Default; the execution tests JIT at
+        // OptimizationLevel::None. Anything the verifier rejects is a codegen bug that
+        // the JIT path would otherwise hide until someone ran the real `plcc compile`.
+        self.module
+            .verify()
+            .map_err(|e| CodegenError::InvalidModule(e.to_string()))?;
         Ok(())
     }
 
@@ -2923,6 +2940,30 @@ impl<'ctx> Compiler<'ctx> {
                     .insert(name.to_uppercase(), (ptr, iec_ty.clone()));
             }
         }
+        Ok(())
+    }
+
+    /// Branch to `target` unless the block being built already ends in a terminator.
+    ///
+    /// LLVM's builder appends blindly at the end of the current block, so emitting a
+    /// second terminator produces "Terminator found in the middle of a basic block"
+    /// IR: everything after it is unreachable but still present, and the optimizer is
+    /// free to do anything with it. Every structured-control-flow join goes through
+    /// here so a body that already terminated (EXIT, a nested join, ...) cannot
+    /// corrupt the block.
+    fn branch_to_join(
+        &self,
+        target: inkwell::basic_block::BasicBlock<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let Some(current) = self.builder.get_insert_block() else {
+            return Ok(());
+        };
+        if current.get_terminator().is_some() {
+            return Ok(());
+        }
+        self.builder
+            .build_unconditional_branch(target)
+            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
         Ok(())
     }
 
@@ -3929,9 +3970,7 @@ impl<'ctx> Compiler<'ctx> {
             for stmt in then_body {
                 self.compile_statement(stmt, function)?;
             }
-            self.builder
-                .build_unconditional_branch(merge_bb)
-                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+            self.branch_to_join(merge_bb)?;
         } else {
             let else_bb = self.context.append_basic_block(function, "else");
             self.builder
@@ -3942,9 +3981,7 @@ impl<'ctx> Compiler<'ctx> {
             for stmt in then_body {
                 self.compile_statement(stmt, function)?;
             }
-            self.builder
-                .build_unconditional_branch(merge_bb)
-                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+            self.branch_to_join(merge_bb)?;
 
             self.builder.position_at_end(else_bb);
             // Handle elsif chains
@@ -3957,11 +3994,12 @@ impl<'ctx> Compiler<'ctx> {
                         })?;
 
                     let elsif_then = self.context.append_basic_block(function, "elsif_then");
-                    let elsif_else = if i + 1 < elsif_branches.len() || else_body.is_some() {
-                        self.context.append_basic_block(function, "elsif_else")
-                    } else {
-                        merge_bb
-                    };
+                    // Always a fresh block, never `merge_bb` itself. Aliasing the last
+                    // ELSIF's false edge onto the join meant the fall-through branch
+                    // emitted below landed *in* the join block as `merge: br %merge` —
+                    // an infinite self-loop, with the rest of the enclosing body
+                    // appended after that terminator.
+                    let elsif_else = self.context.append_basic_block(function, "elsif_else");
 
                     self.builder
                         .build_conditional_branch(
@@ -3975,9 +4013,7 @@ impl<'ctx> Compiler<'ctx> {
                     for stmt in &branch.body {
                         self.compile_statement(stmt, function)?;
                     }
-                    self.builder
-                        .build_unconditional_branch(merge_bb)
-                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    self.branch_to_join(merge_bb)?;
 
                     self.builder.position_at_end(elsif_else);
                 }
@@ -3988,9 +4024,7 @@ impl<'ctx> Compiler<'ctx> {
                     self.compile_statement(stmt, function)?;
                 }
             }
-            self.builder
-                .build_unconditional_branch(merge_bb)
-                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+            self.branch_to_join(merge_bb)?;
         }
 
         self.builder.position_at_end(merge_bb);
@@ -4104,9 +4138,7 @@ impl<'ctx> Compiler<'ctx> {
         self.builder
             .build_store(var_ptr, next_val)
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-        self.builder
-            .build_unconditional_branch(loop_bb)
-            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+        self.branch_to_join(loop_bb)?;
 
         self.builder.position_at_end(end_bb);
         self.loop_exit_bb = prev_exit_bb;
@@ -4135,17 +4167,17 @@ impl<'ctx> Compiler<'ctx> {
         let cond_val = self
             .compile_expression(condition, function)?
             .ok_or_else(|| CodegenError::LlvmError("failed to compile condition".into()))?;
+        // BOOL is an i8 in this ABI; a branch condition must be i1.
+        let cond_bool = self.to_i1(cond_val.into_int_value())?;
         self.builder
-            .build_conditional_branch(cond_val.into_int_value(), body_bb, end_bb)
+            .build_conditional_branch(cond_bool, body_bb, end_bb)
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
 
         self.builder.position_at_end(body_bb);
         for stmt in body {
             self.compile_statement(stmt, function)?;
         }
-        self.builder
-            .build_unconditional_branch(cond_bb)
-            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+        self.branch_to_join(cond_bb)?;
 
         self.builder.position_at_end(end_bb);
         self.loop_exit_bb = prev_exit_bb;
@@ -4176,9 +4208,7 @@ impl<'ctx> Compiler<'ctx> {
         for stmt in body {
             self.compile_statement(stmt, function)?;
         }
-        self.builder
-            .build_unconditional_branch(cond_bb)
-            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+        self.branch_to_join(cond_bb)?;
 
         // Condition check: if UNTIL condition is true, exit; otherwise loop back
         self.builder.position_at_end(cond_bb);
@@ -4260,9 +4290,7 @@ impl<'ctx> Compiler<'ctx> {
             for stmt in &branch.body {
                 self.compile_statement(stmt, function)?;
             }
-            self.builder
-                .build_unconditional_branch(end_bb)
-                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+            self.branch_to_join(end_bb)?;
         }
 
         // Else body
@@ -4271,9 +4299,7 @@ impl<'ctx> Compiler<'ctx> {
             for stmt in body {
                 self.compile_statement(stmt, function)?;
             }
-            self.builder
-                .build_unconditional_branch(end_bb)
-                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+            self.branch_to_join(end_bb)?;
         }
 
         self.builder.position_at_end(end_bb);
