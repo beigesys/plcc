@@ -2570,12 +2570,10 @@ impl<'ctx> Compiler<'ctx> {
                 ),
                 _ => continue,
             };
-            self.type_registry
-                .register(name.to_uppercase(), fb_type.clone());
-            self.type_checker
-                .types
-                .register(name.to_uppercase(), fb_type.clone());
-            self.type_checker.types.register(name.clone(), fb_type);
+            // TypeRegistry::register case-folds the key, so one registration covers
+            // every spelling a program might use.
+            self.type_registry.register(name.clone(), fb_type.clone());
+            self.type_checker.types.register(name, fb_type);
         }
 
         // Register user TYPE declarations (STRUCT / ENUM / subrange / alias) so that a
@@ -2587,10 +2585,7 @@ impl<'ctx> Compiler<'ctx> {
                 if let Declaration::TypeDecl(td) = decl {
                     let ty = self.resolve_type_spec(&td.type_spec);
                     self.type_registry
-                        .register(td.name.name.to_uppercase(), ty.clone());
-                    self.type_checker
-                        .types
-                        .register(td.name.name.to_uppercase(), ty.clone());
+                        .register(td.name.name.clone(), ty.clone());
                     self.type_checker.types.register(td.name.name.clone(), ty);
                 }
             }

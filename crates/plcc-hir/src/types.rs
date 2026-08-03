@@ -274,11 +274,22 @@ impl TypeRegistry {
         }
     }
 
+    /// Register a user type. The key is case-folded, because ST identifiers are
+    /// case-insensitive — see [`Self::resolve`].
     pub fn register(&mut self, name: String, ty: IecType) {
-        self.user_types.insert(name, ty);
+        self.user_types.insert(name.to_uppercase(), ty);
     }
 
+    /// Resolve a type name, ignoring case.
+    ///
+    /// IEC 61131-3 identifiers are case-insensitive (Annex A, 2.1.2), so `t : Ton;`,
+    /// `f : myfb;` and `c : complex;` must all resolve. Matching the stored spelling
+    /// exactly rejected idiomatic ST outright, and broke real corpora: OSCAT declares
+    /// `TYPE COMPLEX` and then writes `complex` in FUNCTION CABS.
+    ///
+    /// The fold happens here rather than by registering every spelling a program might
+    /// use — there is no finite set of those.
     pub fn resolve(&self, name: &str) -> Option<IecType> {
-        resolve_type_name(name).or_else(|| self.user_types.get(name).cloned())
+        resolve_type_name(name).or_else(|| self.user_types.get(&name.to_uppercase()).cloned())
     }
 }
