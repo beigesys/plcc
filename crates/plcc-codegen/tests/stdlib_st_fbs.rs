@@ -43,7 +43,9 @@ const MS: i64 = 1_000_000;
 
 /// A JIT-compiled driver program that can be stepped one scan at a time.
 struct Rig<'ctx> {
-    ee: inkwell::execution_engine::ExecutionEngine<'ctx>,
+    /// Owned only to keep the JIT alive: `scan` points into its code memory, which
+    /// is freed when the engine drops.
+    _ee: inkwell::execution_engine::ExecutionEngine<'ctx>,
     scan: extern "C" fn(*mut u8),
     state: Vec<u8>,
 }
@@ -102,13 +104,10 @@ fn rig<'ctx>(
         .expect("scan function missing");
     let scan: extern "C" fn(*mut u8) = unsafe { std::mem::transmute(a) };
 
-    Rig { ee, scan, state }
-}
-
-/// Keeps the execution engine alive for the lifetime of the rig.
-impl Drop for Rig<'_> {
-    fn drop(&mut self) {
-        let _ = &self.ee;
+    Rig {
+        _ee: ee,
+        scan,
+        state,
     }
 }
 
