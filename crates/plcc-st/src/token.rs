@@ -36,6 +36,13 @@ pub enum Token {
     #[token("END_FUNCTION", ignore(case))]
     EndFunction,
     #[token("FUNCTION_BLOCK", ignore(case))]
+    // `FUNCTIONBLOCK` (no underscore) is a CODESYS 2.3 extension, NOT valid
+    // IEC 61131-3 — Annex A B.1.5.2 spells the keyword `FUNCTION_BLOCK`.
+    // Accepted for compatibility with legacy CODESYS exports; OSCAT Basic ships
+    // seven of them (SRAMP, TMAX, TMIN, TOF_1, TP_1, TP_1D, SEQUENCE_64).
+    // Only the opener has this variant — those same files close with the
+    // standard `END_FUNCTION_BLOCK`, so `EndFunctionBlock` needs no alias.
+    #[token("FUNCTIONBLOCK", ignore(case))]
     FunctionBlock,
     #[token("END_FUNCTION_BLOCK", ignore(case))]
     EndFunctionBlock,
@@ -335,17 +342,43 @@ pub enum Token {
     #[regex(r#""([^"\\]|\\.)*""#)]
     WstringLiteral,
 
-    // ── Time literals ──
-    #[regex(r"[Tt]#[0-9a-zA-Z_.]+")]
+    // ── Time / date literals ──
+    //
+    // Prefixes follow IEC 61131-3 3rd ed. Annex A B.1.2.3, which allows both the
+    // abbreviated and the spelled-out keyword, each with an `L` (64-bit) form:
+    //   duration      ::= ('T'   | 'LT'   | 'TIME'          | 'LTIME'         ) '#' ...
+    //   date          ::= ('D'   | 'LD'   | 'DATE'          | 'LDATE'         ) '#' ...
+    //   time_of_day   ::= ('TOD' | 'LTOD' | 'TIME_OF_DAY'   | 'LTIME_OF_DAY'  ) '#' ...
+    //   date_and_time ::= ('DT'  | 'LDT'  | 'DATE_AND_TIME' | 'LDATE_AND_TIME') '#' ...
+    //
+    // Two things matter for correctness here:
+    //  * Longest alternatives are listed first. logos resolves overlaps by
+    //    longest match so ordering is belt-and-braces, but it keeps the intent
+    //    obvious: `TOD` must never win over `TIME_OF_DAY`.
+    //  * Every prefix word is also a type keyword (`x : TIME_OF_DAY;`). Those
+    //    stay keywords because the literal patterns all require a following
+    //    `#`, making the literal strictly longer whenever it applies.
+    //
+    // Time-of-day seconds are optional: CODESYS writes `TOD#12:00`, and the
+    // standard's `day_second` is likewise not required to be present. Hour /
+    // minute / second / month / day accept one or two digits (they are plain
+    // integers in the grammar, not fixed-width fields).
+    #[regex(r"(LTIME|TIME|LT|T)#[0-9a-zA-Z_.]+", ignore(case))]
     TimeLiteral,
 
-    #[regex(r"[Dd]#[0-9]{4}-[0-9]{2}-[0-9]{2}")]
+    #[regex(r"(LDATE|DATE|LD|D)#[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}", ignore(case))]
     DateLiteral,
 
-    #[regex(r"(TOD|tod)#[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?")]
+    #[regex(
+        r"(LTIME_OF_DAY|TIME_OF_DAY|LTOD|TOD)#[0-9]{1,2}:[0-9]{1,2}(:[0-9]{1,2}(\.[0-9]+)?)?",
+        ignore(case)
+    )]
     TodLiteral,
 
-    #[regex(r"(DT|dt)#[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?")]
+    #[regex(
+        r"(LDATE_AND_TIME|DATE_AND_TIME|LDT|DT)#[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}-[0-9]{1,2}:[0-9]{1,2}(:[0-9]{1,2}(\.[0-9]+)?)?",
+        ignore(case)
+    )]
     DtLiteral,
 
     // ── Direct representation ──

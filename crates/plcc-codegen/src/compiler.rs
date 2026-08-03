@@ -20,12 +20,16 @@ use thiserror::Error;
 /// Parse a TIME literal string (e.g., "T#100ms", "T#1s500ms", "T#1h30m") into nanoseconds.
 fn parse_time_literal_ns(s: &str) -> i64 {
     let s = s.trim();
-    // Strip T# or t# prefix
-    let s = if s.len() > 2 && (s.starts_with("T#") || s.starts_with("t#")) {
-        &s[2..]
-    } else {
-        s
-    };
+    // Strip the duration prefix. IEC 61131-3 Annex A B.1.2.3 allows T#, LT#,
+    // TIME# and LTIME#; the lexer accepts all four, so all four must be
+    // stripped here or the prefix letters would be misread as unit suffixes.
+    // Longest first, so `LTIME#`/`TIME#` are not truncated to `LT#`/`T#`.
+    let s = ["LTIME#", "TIME#", "LT#", "T#"]
+        .iter()
+        .find_map(|p| {
+            (s.len() > p.len() && s[..p.len()].eq_ignore_ascii_case(p)).then(|| &s[p.len()..])
+        })
+        .unwrap_or(s);
     let mut ns: i64 = 0;
     let mut num_buf = String::new();
     let mut chars = s.chars().peekable();
@@ -47,6 +51,13 @@ fn parse_time_literal_ns(s: &str) -> i64 {
                 } else {
                     break;
                 }
+            }
+            if unit.is_empty() {
+                // `c` is neither a digit nor a letter (e.g. a stray `#` or `-`).
+                // Consume it so the loop always makes progress — otherwise this
+                // spins forever.
+                chars.next();
+                continue;
             }
             let multiplier: f64 = match unit.to_lowercase().as_str() {
                 "d" => 86_400_000_000_000.0,
