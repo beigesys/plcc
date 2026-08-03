@@ -4111,25 +4111,38 @@ impl<'ctx> Compiler<'ctx> {
             StatementKind::Assignment { target, value } => {
                 // Try string function assignment first (CONCAT, LEFT, RIGHT, MID)
                 if !self.try_compile_string_assignment(target, value, function)? {
-                    if let Some(ptr) = self.compile_lvalue_with_fn(target, function)? {
-                        if let Some(val) = self.compile_expression(value, function)? {
-                            // Match the store width to the destination. Without this a
-                            // narrow RHS (integer literals default to INT/i16) stored
-                            // into a wider slot wrote only part of it.
-                            // Match the store width to the destination, but take the
-                            // *source's* signedness: `acc : DINT := raw_byte;` where
-                            // raw_byte is 16#FF must widen to 255, not to -1.
-                            let val = match self.lvalue_iec_type(target) {
-                                Some(ty) => {
-                                    let src = self.rvalue_iec_type(value);
-                                    self.coerce_value(val, src.as_ref(), &ty)?
-                                }
-                                None => val,
-                            };
-                            self.builder
-                                .build_store(ptr, val)
-                                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                        }
+                    // An assignment target that resolves to no address is a
+                    // diagnostic, not a no-op. `compile_lvalue_inner` returns
+                    // `Ok(None)` for expressions with no address at all (literals,
+                    // calls, `%IX0.0`), which the string builtins ask about
+                    // speculatively — but reaching here means the user wrote it on
+                    // the left of `:=`, and dropping the store silently is how this
+                    // class of bug has repeatedly gone unnoticed.
+                    let ptr = self
+                        .compile_lvalue_with_fn(target, function)?
+                        .ok_or_else(|| {
+                            CodegenError::UnsupportedType(format!(
+                                "'{}' is not an assignable location",
+                                Self::describe_lvalue(target)
+                            ))
+                        })?;
+                    if let Some(val) = self.compile_expression(value, function)? {
+                        // Match the store width to the destination. Without this a
+                        // narrow RHS (integer literals default to INT/i16) stored
+                        // into a wider slot wrote only part of it.
+                        // Match the store width to the destination, but take the
+                        // *source's* signedness: `acc : DINT := raw_byte;` where
+                        // raw_byte is 16#FF must widen to 255, not to -1.
+                        let val = match self.lvalue_iec_type(target) {
+                            Some(ty) => {
+                                let src = self.rvalue_iec_type(value);
+                                self.coerce_value(val, src.as_ref(), &ty)?
+                            }
+                            None => val,
+                        };
+                        self.builder
+                            .build_store(ptr, val)
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                     }
                 }
             }
@@ -4926,6 +4939,47 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
+    /// Render an assignable expression back into something a user recognizes, for
+    /// diagnostics. Indices are elided — the point is to name the construct.
+    fn describe_lvalue(expr: &Expression) -> String {
+        match &expr.kind {
+            ExpressionKind::Identifier(i) => i.name.clone(),
+            ExpressionKind::Parenthesized(inner) => Self::describe_lvalue(inner),
+            ExpressionKind::ArrayIndex { array, .. } => {
+                format!("{}[..]", Self::describe_lvalue(array))
+            }
+            ExpressionKind::MemberAccess { object, member } => {
+                format!("{}.{}", Self::describe_lvalue(object), member.name)
+            }
+            ExpressionKind::FunctionCall { callee, .. } => {
+                format!("{}(..)", Self::describe_lvalue(callee))
+            }
+            ExpressionKind::DirectVariable(addr) => format!("%{addr}"),
+            ExpressionKind::StringLiteral(_) => "a string literal".into(),
+            ExpressionKind::IntegerLiteral(v) => v.to_string(),
+            ExpressionKind::RealLiteral(v) => v.to_string(),
+            ExpressionKind::BoolLiteral(v) => {
+                if *v {
+                    "TRUE".into()
+                } else {
+                    "FALSE".into()
+                }
+            }
+            _ => "expression".into(),
+        }
+    }
+
+    /// Pointer to an assignable location.
+    ///
+    /// `Ok(None)` means "this expression has no address", and callers that *ask*
+    /// speculatively (the string builtins, which accept either a variable or a
+    /// literal) rely on that. It must never mean "recognized the construct and gave
+    /// up": returning `Ok(None)` from a recognized construct is how
+    /// `s.i.v := 7;` and `o[1][2].a := 7;` came to emit no code at all. Arms that
+    /// recognize a construct and cannot lower it raise a `CodegenError` naming it.
+    ///
+    /// The assignment statement path turns a `None` target into a diagnostic, so the
+    /// remaining unaddressable cases are reported rather than dropped.
     fn compile_lvalue_inner(
         &mut self,
         expr: &Expression,
@@ -4936,143 +4990,128 @@ impl<'ctx> Compiler<'ctx> {
                 .variables
                 .get(&ident.name.to_uppercase())
                 .map(|(ptr, _)| *ptr)),
+            ExpressionKind::Parenthesized(inner) => self.compile_lvalue_inner(inner, function),
             ExpressionKind::ArrayIndex { array, indices } => {
-                // Get the array variable's pointer and IEC type
-                if let ExpressionKind::Identifier(ident) = &array.kind {
-                    if let Some((arr_ptr, iec_ty)) =
-                        self.variables.get(&ident.name.to_uppercase()).cloned()
-                    {
-                        if let IecType::Array { ref ranges, .. } = iec_ty {
-                            let ranges = ranges.clone();
-                            let function = function.ok_or_else(|| {
-                                CodegenError::LlvmError(
-                                    "array index in lvalue requires function context".into(),
-                                )
+                // The indexed thing is resolved as an lvalue in its own right, so an
+                // index can sit on top of any chain: `o[1][2]`, `s.arr[3]`,
+                // `a[1].b[2]`. Matching only a bare identifier here dropped every
+                // such chain silently — `o[1][2].a := 7;` and `n := o[1][2].a;` both
+                // emitted no code at all, with no diagnostic.
+                let Some(iec_ty) = self.lvalue_iec_type(array) else {
+                    return Err(CodegenError::UndefinedVariable(format!(
+                        "cannot resolve the array indexed by '{}'",
+                        Self::describe_lvalue(expr)
+                    )));
+                };
+                let IecType::Array { ref ranges, .. } = iec_ty else {
+                    return Err(CodegenError::UnsupportedType(format!(
+                        "array indexing on non-array type: {iec_ty}"
+                    )));
+                };
+                let ranges = ranges.clone();
+                let function = function.ok_or_else(|| {
+                    CodegenError::LlvmError(
+                        "array index in lvalue requires function context".into(),
+                    )
+                })?;
+                let Some(arr_ptr) = self.compile_lvalue_inner(array, Some(function))? else {
+                    return Err(CodegenError::UnsupportedType(format!(
+                        "unsupported array base in '{}'",
+                        Self::describe_lvalue(expr)
+                    )));
+                };
+                let arr_llvm_ty = self.iec_to_llvm_type(&iec_ty);
+
+                if indices.len() == 1 {
+                    let idx_val =
+                        self.compile_expression(&indices[0], function)?
+                            .ok_or_else(|| {
+                                CodegenError::LlvmError("failed to compile array index".into())
                             })?;
-                            let arr_llvm_ty = self.iec_to_llvm_type(&iec_ty);
 
-                            if indices.len() == 1 {
-                                let idx_val = self
-                                    .compile_expression(&indices[0], function)?
-                                    .ok_or_else(|| {
-                                        CodegenError::LlvmError(
-                                            "failed to compile array index".into(),
-                                        )
-                                    })?;
-
-                                let lo = ranges[0].0;
-                                let idx_int = idx_val.into_int_value();
-                                let adjusted = if lo != 0 {
-                                    let lo_val = idx_int.get_type().const_int(lo as u64, true);
-                                    self.builder
-                                        .build_int_sub(idx_int, lo_val, "adj_idx")
-                                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                                } else {
-                                    idx_int
-                                };
-
-                                let idx_i32 = if adjusted.get_type().get_bit_width() < 32 {
-                                    self.builder
-                                        .build_int_s_extend(
-                                            adjusted,
-                                            self.context.i32_type(),
-                                            "idx_ext",
-                                        )
-                                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                                } else {
-                                    adjusted
-                                };
-
-                                let zero = self.context.i32_type().const_zero();
-                                let elem_ptr = unsafe {
-                                    self.builder
-                                        .build_in_bounds_gep(
-                                            arr_llvm_ty,
-                                            arr_ptr,
-                                            &[zero, idx_i32],
-                                            "arr_elem",
-                                        )
-                                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                                };
-                                Ok(Some(elem_ptr))
-                            } else {
-                                // Multi-dimensional: flatten to linear index
-                                let function = function;
-                                let mut linear_idx = self.context.i32_type().const_zero();
-
-                                for (dim, idx_expr) in indices.iter().enumerate() {
-                                    let idx_val = self
-                                        .compile_expression(idx_expr, function)?
-                                        .ok_or_else(|| {
-                                            CodegenError::LlvmError(
-                                                "failed to compile array index".into(),
-                                            )
-                                        })?;
-
-                                    let lo = ranges[dim].0;
-                                    let idx_int = idx_val.into_int_value();
-                                    let idx_i32 = if idx_int.get_type().get_bit_width() < 32 {
-                                        self.builder
-                                            .build_int_s_extend(
-                                                idx_int,
-                                                self.context.i32_type(),
-                                                "idx_ext",
-                                            )
-                                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                                    } else {
-                                        idx_int
-                                    };
-
-                                    let adjusted = if lo != 0 {
-                                        let lo_val =
-                                            self.context.i32_type().const_int(lo as u64, true);
-                                        self.builder
-                                            .build_int_sub(idx_i32, lo_val, "adj_idx")
-                                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                                    } else {
-                                        idx_i32
-                                    };
-
-                                    let mut stride = 1i64;
-                                    for d in (dim + 1)..ranges.len() {
-                                        stride *= ranges[d].1 - ranges[d].0 + 1;
-                                    }
-                                    let stride_val =
-                                        self.context.i32_type().const_int(stride as u64, false);
-                                    let component = self
-                                        .builder
-                                        .build_int_mul(adjusted, stride_val, "dim_component")
-                                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                                    linear_idx = self
-                                        .builder
-                                        .build_int_add(linear_idx, component, "linear_idx")
-                                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                                }
-
-                                let zero = self.context.i32_type().const_zero();
-                                let elem_ptr = unsafe {
-                                    self.builder
-                                        .build_in_bounds_gep(
-                                            arr_llvm_ty,
-                                            arr_ptr,
-                                            &[zero, linear_idx],
-                                            "arr_elem",
-                                        )
-                                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                                };
-                                Ok(Some(elem_ptr))
-                            }
-                        } else {
-                            Err(CodegenError::UnsupportedType(format!(
-                                "array indexing on non-array type: {}",
-                                iec_ty
-                            )))
-                        }
+                    let lo = ranges[0].0;
+                    let idx_int = idx_val.into_int_value();
+                    let adjusted = if lo != 0 {
+                        let lo_val = idx_int.get_type().const_int(lo as u64, true);
+                        self.builder
+                            .build_int_sub(idx_int, lo_val, "adj_idx")
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?
                     } else {
-                        Ok(None)
-                    }
+                        idx_int
+                    };
+
+                    let idx_i32 = if adjusted.get_type().get_bit_width() < 32 {
+                        self.builder
+                            .build_int_s_extend(adjusted, self.context.i32_type(), "idx_ext")
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                    } else {
+                        adjusted
+                    };
+
+                    let zero = self.context.i32_type().const_zero();
+                    let elem_ptr = unsafe {
+                        self.builder
+                            .build_in_bounds_gep(arr_llvm_ty, arr_ptr, &[zero, idx_i32], "arr_elem")
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                    };
+                    Ok(Some(elem_ptr))
                 } else {
-                    Ok(None)
+                    // Multi-dimensional: flatten to linear index
+                    let mut linear_idx = self.context.i32_type().const_zero();
+
+                    for (dim, idx_expr) in indices.iter().enumerate() {
+                        let idx_val =
+                            self.compile_expression(idx_expr, function)?
+                                .ok_or_else(|| {
+                                    CodegenError::LlvmError("failed to compile array index".into())
+                                })?;
+
+                        let lo = ranges[dim].0;
+                        let idx_int = idx_val.into_int_value();
+                        let idx_i32 = if idx_int.get_type().get_bit_width() < 32 {
+                            self.builder
+                                .build_int_s_extend(idx_int, self.context.i32_type(), "idx_ext")
+                                .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                        } else {
+                            idx_int
+                        };
+
+                        let adjusted = if lo != 0 {
+                            let lo_val = self.context.i32_type().const_int(lo as u64, true);
+                            self.builder
+                                .build_int_sub(idx_i32, lo_val, "adj_idx")
+                                .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                        } else {
+                            idx_i32
+                        };
+
+                        let mut stride = 1i64;
+                        for d in (dim + 1)..ranges.len() {
+                            stride *= ranges[d].1 - ranges[d].0 + 1;
+                        }
+                        let stride_val = self.context.i32_type().const_int(stride as u64, false);
+                        let component = self
+                            .builder
+                            .build_int_mul(adjusted, stride_val, "dim_component")
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                        linear_idx = self
+                            .builder
+                            .build_int_add(linear_idx, component, "linear_idx")
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    }
+
+                    let zero = self.context.i32_type().const_zero();
+                    let elem_ptr = unsafe {
+                        self.builder
+                            .build_in_bounds_gep(
+                                arr_llvm_ty,
+                                arr_ptr,
+                                &[zero, linear_idx],
+                                "arr_elem",
+                            )
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                    };
+                    Ok(Some(elem_ptr))
                 }
             }
             ExpressionKind::MemberAccess { object, member } => {
@@ -5122,18 +5161,30 @@ impl<'ctx> Compiler<'ctx> {
                 // its own right, so `s.i.v` GEPs through `s.i` — matching only a bare
                 // identifier here dropped every chain longer than one level, silently:
                 // `s.i.v := 7;` emitted nothing at all.
-                let Some(IecType::Struct { fields, .. }) = self.lvalue_iec_type(object) else {
-                    return Ok(None);
+                let obj_ty = self.lvalue_iec_type(object).ok_or_else(|| {
+                    CodegenError::UndefinedVariable(format!(
+                        "cannot resolve '{}' in '{}'",
+                        Self::describe_lvalue(object),
+                        Self::describe_lvalue(expr)
+                    ))
+                })?;
+                let IecType::Struct { ref fields, .. } = obj_ty else {
+                    return Err(CodegenError::UnsupportedType(format!(
+                        "'{}' is {obj_ty}, which has no member '{}'",
+                        Self::describe_lvalue(object),
+                        member.name
+                    )));
                 };
                 let field_idx = fields
                     .iter()
                     .position(|(name, _)| name.eq_ignore_ascii_case(&member.name))
                     .ok_or_else(|| CodegenError::UndefinedVariable(member.name.clone()))?;
-                let obj_ty = self
-                    .lvalue_iec_type(object)
-                    .ok_or_else(|| CodegenError::UndefinedVariable(member.name.clone()))?;
                 let Some(obj_ptr) = self.compile_lvalue_inner(object, function)? else {
-                    return Ok(None);
+                    return Err(CodegenError::UnsupportedType(format!(
+                        "'{}' has no address, so '{}' cannot be reached",
+                        Self::describe_lvalue(object),
+                        Self::describe_lvalue(expr)
+                    )));
                 };
                 let struct_llvm_ty = self.iec_to_llvm_type(&obj_ty);
                 let field_ptr = self
@@ -5147,6 +5198,10 @@ impl<'ctx> Compiler<'ctx> {
                     .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                 Ok(Some(field_ptr))
             }
+            // Literals, calls, and direct representation (%IX0.0) have no address.
+            // This is the one arm where `None` is the honest answer, and the string
+            // builtins depend on it to accept a literal where a variable would also
+            // do. Assignment reports it — see `compile_statement`.
             _ => Ok(None),
         }
     }
@@ -5262,28 +5317,24 @@ impl<'ctx> Compiler<'ctx> {
                 // Direct variables (%I, %Q, %M) resolved at link time
                 Ok(None)
             }
-            ExpressionKind::ArrayIndex { array, indices } => {
-                // Get the element pointer via lvalue, then load from it
-                if let Some(elem_ptr) = self.compile_lvalue_with_fn(expr, function)? {
-                    // Determine the element type from the array's IEC type
-                    if let ExpressionKind::Identifier(ident) = &array.kind {
-                        if let Some((_, iec_ty)) =
-                            self.variables.get(&ident.name.to_uppercase()).cloned()
-                        {
-                            if let IecType::Array { element_type, .. } = &iec_ty {
-                                let elem_llvm_ty = self.iec_to_llvm_type(element_type);
-                                let val = self
-                                    .builder
-                                    .build_load(elem_llvm_ty, elem_ptr, "arr_load")
-                                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                                return Ok(Some(val));
-                            }
-                        }
-                    }
-                    Ok(None)
-                } else {
-                    Ok(None)
-                }
+            ExpressionKind::ArrayIndex { .. } => {
+                // Element pointer via the lvalue path, then load. The element type
+                // comes from the same walk, so a base that is itself a chain
+                // (`o[1][2]`, `s.arr[3]`) loads instead of silently producing
+                // nothing — matching only a bare identifier here meant `n := o[1][2].a;`
+                // emitted no code at all.
+                let Some(elem_ptr) = self.compile_lvalue_with_fn(expr, function)? else {
+                    return Ok(None);
+                };
+                let Some(elem_ty) = self.lvalue_iec_type(expr) else {
+                    return Ok(None);
+                };
+                let elem_llvm_ty = self.iec_to_llvm_type(&elem_ty);
+                let val = self
+                    .builder
+                    .build_load(elem_llvm_ty, elem_ptr, "arr_load")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(Some(val))
             }
             ExpressionKind::MemberAccess { object, member } => {
                 if let ExpressionKind::Identifier(ident) = &object.kind {
