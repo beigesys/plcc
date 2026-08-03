@@ -2858,6 +2858,34 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
+    /// Register every FB-instance field of a POU's state struct in `fb_instances`.
+    ///
+    /// Without this, a statement like `i(A := X);` inside the owning POU is not
+    /// recognized as an FB call and compiles to nothing at all — no scan call, no
+    /// diagnostic. Only `compile_program` used to do it, so nesting an FB inside
+    /// another FB (or using one from a METHOD) silently dropped the call.
+    fn register_fb_instance_fields(&mut self, field_names: &[String], field_types: &[IecType]) {
+        for (i, (name, iec_ty)) in field_names.iter().zip(field_types.iter()).enumerate() {
+            let IecType::FbInstance(fb_type_name) = iec_ty else {
+                continue;
+            };
+            let Some(layout) = self.compiled_fbs.get(&fb_type_name.to_uppercase()).cloned() else {
+                continue;
+            };
+            self.fb_instances.insert(
+                name.to_uppercase(),
+                FbInstanceInfo {
+                    field_index: i as u32,
+                    fb_type_name: fb_type_name.clone(),
+                    scan_fn_name: layout.scan_fn_name.clone(),
+                    fields: layout.fields.clone(),
+                    struct_type: layout.struct_type,
+                    methods: layout.methods.clone(),
+                },
+            );
+        }
+    }
+
     /// Name of the generated init function for a POU.
     fn init_fn_name_for(name: &str) -> String {
         format!("{}_init", name.to_lowercase())
@@ -3454,24 +3482,8 @@ impl<'ctx> Compiler<'ctx> {
                 .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
             self.variables
                 .insert(name.to_uppercase(), (ptr, iec_ty.clone()));
-
-            // If this is an FB instance, register it
-            if let IecType::FbInstance(fb_type_name) = iec_ty {
-                if let Some(layout) = self.compiled_fbs.get(&fb_type_name.to_uppercase()).cloned() {
-                    self.fb_instances.insert(
-                        name.to_uppercase(),
-                        FbInstanceInfo {
-                            field_index: i as u32,
-                            fb_type_name: fb_type_name.clone(),
-                            scan_fn_name: layout.scan_fn_name.clone(),
-                            fields: layout.fields.clone(),
-                            struct_type: layout.struct_type,
-                            methods: layout.methods.clone(),
-                        },
-                    );
-                }
-            }
         }
+        self.register_fb_instance_fields(&field_names, &field_iec_types);
 
         // Add global variables
         self.add_globals_to_variables()?;
@@ -3681,6 +3693,9 @@ impl<'ctx> Compiler<'ctx> {
 
         self.variables.clear();
         self.fb_instances.clear();
+        // An FB's own state struct is the parent struct for anything it instantiates.
+        self.current_struct_type = Some(struct_type);
+        self.current_state_ptr = Some(state_ptr);
         for (i, (name, iec_ty)) in field_names.iter().zip(field_iec_types.iter()).enumerate() {
             let ptr = self
                 .builder
@@ -3689,6 +3704,7 @@ impl<'ctx> Compiler<'ctx> {
             self.variables
                 .insert(name.to_uppercase(), (ptr, iec_ty.clone()));
         }
+        self.register_fb_instance_fields(&field_names, &field_iec_types);
 
         // Add global variables
         self.add_globals_to_variables()?;
@@ -3850,6 +3866,7 @@ impl<'ctx> Compiler<'ctx> {
             self.variables
                 .insert(name.to_uppercase(), (ptr, iec_ty.clone()));
         }
+        self.register_fb_instance_fields(fb_field_names, fb_field_iec_types);
 
         // Allocate method input params as local allocas
         for (i, (name, iec_ty)) in param_names.iter().zip(param_iec_types.iter()).enumerate() {
