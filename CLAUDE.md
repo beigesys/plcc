@@ -4,7 +4,8 @@
 
 IEC 61131-3 Structured Text compiler written in Rust. Full language implementation targeting complete, modern, PLC-grade ST per the 3rd edition standard (2013) — not a subset. Uses LLVM (via inkwell) for codegen. Cross-compiles to any LLVM target triple: wasm32, thumbv8m, aarch64, x86_64, whatever.
 
-Must be permissively licensed (MPL-2.0) — commercial embedded product.
+Licensed MPL-2.0 with a compiler output exception. Dependencies must be
+permissively licensed (MIT, Apache-2.0, BSD, ISC) — no GPL/LGPL.
 
 Compiler runs on the build host. Cross-compiles via LLVM target triples.
 
@@ -234,12 +235,21 @@ fn codegen_arithmetic() {
 
 ## License
 
-Dual-licensed MPL-2.0. Every source file gets:
+MPL-2.0 (`LICENSE`) with a compiler output exception (`LICENSE-EXCEPTION`).
+Every source file gets:
 ```rust
 // SPDX-License-Identifier: MPL-2.0
 ```
 
-Do NOT incorporate any GPL/LGPL code. Do NOT copy from RuSTy, matiec, Beremiz, or OpenPLC. External .st files are test inputs only.
+File-level reciprocity: modifications to plcc's own files come back under the
+MPL, but linking plcc into a proprietary product — and compiling ST programs
+with it — carries no obligation. Contributions are inbound = outbound, signed
+off under the DCO (`CONTRIBUTING.md`). No CLA.
+
+Do NOT incorporate any GPL/LGPL code. Do NOT copy from RuSTy, matiec, Beremiz,
+OpenPLC v3, or OpenPLC Editor. `Autonomy-Logic/openplc-runtime` (OpenPLC v4) is
+MIT and may be used with attribution — verify per-file headers, not just the
+repo badge. External .st files are test inputs only.
 
 ## Getting Started
 

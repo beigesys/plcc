@@ -1,0 +1,43 @@
+plcc Compiler Output Exception
+==============================
+
+This is an additional permission granted by the copyright holders of plcc,
+supplementing the Mozilla Public License, Version 2.0 (see LICENSE). In case
+of any conflict between this exception and the MPL, this exception governs.
+
+1. Compiler output is not Covered Software
+------------------------------------------
+
+Code that plcc generates from input source files which are not themselves
+Covered Software is not a Modification of, and does not constitute, Covered
+Software. You may use, distribute, sublicense, and license such generated
+code under terms of your choosing, including proprietary terms, with no
+obligation under the MPL arising from the act of compilation.
+
+Compiling your IEC 61131-3 program with plcc places no license requirement
+on your program or on the object code, firmware, or binaries produced from
+it.
+
+2. Linking the runtime
+----------------------
+
+Portions of plcc — notably the runtime and hardware-abstraction layers — are
+designed to be linked into your program. Those files remain Covered Software:
+if you modify them, Section 3.2 of the MPL requires you to make the modified
+files available under the MPL.
+
+Your program as a whole is a Larger Work under Section 3.3 of the MPL, and
+you may license it under terms of your choosing. Linking plcc runtime code
+into a proprietary product is expressly permitted and creates no obligation
+to disclose that product's source.
+
+3. What this exception does not do
+----------------------------------
+
+This exception does not waive the MPL's reciprocity for plcc itself. If you
+modify plcc's own source files — the parser, type checker, code generator,
+runtime, or hardware-abstraction layer — Section 3.2 of the MPL still
+requires those modified files to be made available under the MPL.
+
+The intent is simple: use plcc in whatever you build, ship whatever you like,
+but improvements to plcc itself come back.

@@ -229,4 +229,13 @@ Real-world PLC patterns verified end-to-end with JIT execution:
 
 ## License
 
-MPL-2.0
+[Mozilla Public License 2.0](LICENSE), with a
+[compiler output exception](LICENSE-EXCEPTION).
+
+Use plcc in whatever you build and ship whatever you like — compiling your ST
+program places no license obligation on it, and linking the runtime into a
+proprietary product is expressly permitted. MPL reciprocity is file-level: if
+you improve plcc itself, those files come back under the MPL.
+
+Contributions are accepted under the same terms, signed off under the
+[DCO](CONTRIBUTING.md). No CLA.
