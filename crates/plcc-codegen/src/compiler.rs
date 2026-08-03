@@ -2568,6 +2568,17 @@ impl<'ctx> Compiler<'ctx> {
                     cls.name.name.clone(),
                     IecType::FbInstance(cls.name.name.clone()),
                 ),
+                // An INTERFACE-typed variable is valid 3rd-edition ST (IEC 61131-3
+                // §6.6.4). It holds a *reference* to an object implementing the
+                // interface, not an inline instance, so it gets a pointer slot —
+                // registering it as an FbInstance would find no layout and silently
+                // fall back to an i32 field, which is exactly the miscompile the
+                // unknown-type error exists to prevent. Skipping it entirely made the
+                // declaration a hard error.
+                Declaration::Interface(iface) => (
+                    iface.name.name.clone(),
+                    IecType::Pointer(Box::new(IecType::FbInstance(iface.name.name.clone()))),
+                ),
                 _ => continue,
             };
             // TypeRegistry::register case-folds the key, so one registration covers
