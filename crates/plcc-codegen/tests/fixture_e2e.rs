@@ -175,31 +175,81 @@ fn fixture_state_machine_initial() {
 // PIDController layout:
 //   pid_inst: PID(52), sensor_value: REAL(4), target_value: REAL(4),
 //   control_output: REAL(4) = 64 bytes
-// Use generous buffer. Verify it compiles and runs without crash, and
-// control_output is a reasonable float.
+// Use a generous buffer and assert the exact PID arithmetic.
+
+// Byte offsets inside the PIDController state struct (all members are f32).
+// PID sub-struct starts at 0; its fields are in declaration order.
+const PID_KP: usize = 8;
+const PID_KI: usize = 12;
+const PID_KD: usize = 16;
+const PID_DT: usize = 20;
+const PID_OUT_MIN: usize = 24;
+const PID_OUT_MAX: usize = 28;
+const PID_OUTPUT: usize = 32;
+const PID_INTEGRAL: usize = 44;
+const PID_DERIVATIVE: usize = 48;
+const PID_TARGET_VALUE: usize = 56;
+const PID_CONTROL_OUTPUT: usize = 60;
 
 #[test]
-fn fixture_pid_simple_compiles_and_runs() {
+fn fixture_pid_simple_clamps_to_out_max_on_first_scan() {
     let source = read_fixture("programs/pid_simple.st");
     let state = jit_run(&source, "pidcontroller_scan", 128, 1);
+
+    // The FB's declared initial values must survive init (they are VAR_INPUT
+    // members of the PID FB instance, never written by the program).
+    assert_eq!(read_f32(&state, PID_KP), 1.0, "pid.kp");
+    assert_eq!(read_f32(&state, PID_KI), 0.1, "pid.ki");
+    assert_eq!(read_f32(&state, PID_KD), 0.05, "pid.kd");
+    assert_eq!(read_f32(&state, PID_DT), 0.01, "pid.dt");
+    assert_eq!(read_f32(&state, PID_OUT_MIN), -100.0, "pid.out_min");
+    assert_eq!(read_f32(&state, PID_OUT_MAX), 100.0, "pid.out_max");
+    assert_eq!(read_f32(&state, PID_TARGET_VALUE), 50.0, "target_value");
 
     // After 1 scan with setpoint=50.0, measured=0.0:
     //   err = 50.0, integral = 50*0.01 = 0.5, derivative = 50/0.01 = 5000
     //   output = 1*50 + 0.1*0.5 + 0.05*5000 = 50 + 0.05 + 250 = 300.05
     //   clamped to out_max = 100.0
-    // So control_output should be 100.0 (clamped).
-    // The output value must appear somewhere in state as a non-zero, finite float.
-    let mut found_nonzero_float = false;
-    for offset in (0..state.len() - 3).step_by(4) {
-        let val = read_f32(&state, offset);
-        if val.is_finite() && val.abs() > 1.0 {
-            found_nonzero_float = true;
-            break;
-        }
-    }
+    assert_eq!(read_f32(&state, PID_INTEGRAL), 0.5, "pid.integral");
+    assert_eq!(read_f32(&state, PID_DERIVATIVE), 5000.0, "pid.derivative");
+
+    let output = read_f32(&state, PID_OUTPUT);
+    let control_output = read_f32(&state, PID_CONTROL_OUTPUT);
     assert!(
-        found_nonzero_float,
-        "pid_simple: expected at least one non-zero finite float in state after PID scan"
+        output.is_finite(),
+        "pid_simple: pid.output must be finite, got {output}"
+    );
+    assert_eq!(output, 100.0, "pid.output must be clamped to out_max");
+    assert_eq!(
+        control_output, 100.0,
+        "control_output must mirror the clamped pid.output"
+    );
+}
+
+#[test]
+fn fixture_pid_simple_settles_after_several_scans() {
+    let source = read_fixture("programs/pid_simple.st");
+    // 5 scans. err stays 50.0 every scan, so from scan 2 onwards derivative is 0
+    // and integral accumulates 50 * dt = 0.5 per scan.
+    let state = jit_run(&source, "pidcontroller_scan", 128, 5);
+
+    let integral = read_f32(&state, PID_INTEGRAL);
+    assert_eq!(integral, 2.5, "integral after 5 scans = 5 * 50 * 0.01");
+    assert_eq!(
+        read_f32(&state, PID_DERIVATIVE),
+        0.0,
+        "derivative settles to 0"
+    );
+
+    // output = kp*50 + ki*2.5 + kd*0 = 50 + 0.25 = 50.25, inside [-100, 100].
+    let control_output = read_f32(&state, PID_CONTROL_OUTPUT);
+    assert!(
+        control_output.is_finite(),
+        "pid_simple: control_output must be finite (not NaN/inf), got {control_output}"
+    );
+    assert!(
+        (control_output - 50.25).abs() < 1e-4,
+        "pid_simple: control_output should be 50.25, got {control_output}"
     );
 }
 
@@ -551,35 +601,75 @@ fn fixture_globals() {
 //   Total per FB: ~18 bytes (with alignment ~20)
 // PROGRAM MotorSystem: { motor1: MC(~20), motor2: MC(~20), any_fault: i8 }
 //
-// After 1 scan with start_cmd=TRUE, stop_cmd=FALSE, current=10.0 (< overload_limit=15.0):
-//   Both motors: running=TRUE, fault=FALSE, run_time=1
-//   any_fault = FALSE
+// MotorController struct: { i8 start_cmd, i8 stop_cmd, pad(2), f32 current,
+//   f32 overload_limit, i8 running, i8 fault, i16 run_time, i16 overload_count }
+//   -> size 18, align 4 -> 20 bytes.
+// MotorSystem: { motor1 @0, motor2 @20, i8 any_fault @40 }
+//
+// current = 10.0 is below the declared overload_limit of 15.0, so neither motor
+// ever faults: running stays TRUE and run_time counts scans.
+
+const MC_STRIDE: usize = 20;
+const MC_OVERLOAD_LIMIT: usize = 8;
+const MC_RUNNING: usize = 12;
+const MC_FAULT: usize = 13;
+const MC_RUN_TIME: usize = 14;
+const MC_OVERLOAD_COUNT: usize = 16;
+const MS_ANY_FAULT: usize = 40;
+
+fn assert_motor(state: &[u8], base: usize, scans: i16, tag: &str) {
+    assert_eq!(
+        read_f32(state, base + MC_OVERLOAD_LIMIT),
+        15.0,
+        "{tag}: overload_limit initializer must survive init"
+    );
+    assert_eq!(
+        state[base + MC_RUNNING] & 1,
+        1,
+        "{tag}: running must be TRUE"
+    );
+    assert_eq!(state[base + MC_FAULT] & 1, 0, "{tag}: fault must be FALSE");
+    assert_eq!(
+        read_i16(state, base + MC_RUN_TIME),
+        scans,
+        "{tag}: run_time must equal the scan count"
+    );
+    assert_eq!(
+        read_i16(state, base + MC_OVERLOAD_COUNT),
+        0,
+        "{tag}: overload_count must stay 0 (current 10.0 < limit 15.0)"
+    );
+}
 
 #[test]
 fn fixture_motor_control() {
     let source = read_fixture("programs/motor_control.st");
     let state = jit_run(&source, "motorsystem_scan", 128, 1);
 
-    // Search for running=TRUE (i8=1) pattern. Both motors should be running.
-    // MotorController: { i8(start_cmd), i8(stop_cmd), pad(2), f32(current), f32(overload_limit),
-    //                     i8(running), i8(fault), i16(run_time), i16(overload_count) }
-    // Approximate offsets: start_cmd=0, stop_cmd=1, pad=2-3, current=4, overload_limit=8,
-    //   running=12, fault=13, run_time=14, overload_count=16 -> ~18 bytes
-    // motor1 @ 0, motor2 @ ~18-20, any_fault @ ~40
+    assert_motor(&state, 0, 1, "motor1");
+    assert_motor(&state, MC_STRIDE, 1, "motor2");
+    assert_eq!(
+        state[MS_ANY_FAULT] & 1,
+        0,
+        "motor_control: any_fault must be FALSE"
+    );
+}
 
-    // We verify by searching for the any_fault field = 0 and at least one running=1 byte.
-    // More robustly, just ensure it doesn't crash and we can find expected patterns.
-    let mut found_running = false;
-    for offset in 0..state.len() {
-        // Look for a byte that is 1 (running=TRUE) followed by 0 (fault=FALSE)
-        if state[offset] == 1 && offset + 1 < state.len() && state[offset + 1] == 0 {
-            found_running = true;
-            break;
-        }
-    }
-    assert!(
-        found_running,
-        "motor_control: expected to find running=TRUE, fault=FALSE pattern in state"
+/// With the declared overload_limit of 15.0 applied, a current of 10.0 never trips
+/// the overload counter, so the motors keep running for as many scans as you like.
+/// Before FB member initializers worked, overload_limit was 0.0 and both motors
+/// faulted out on the third scan.
+#[test]
+fn fixture_motor_control_no_false_overload_trip() {
+    let source = read_fixture("programs/motor_control.st");
+    let state = jit_run(&source, "motorsystem_scan", 128, 10);
+
+    assert_motor(&state, 0, 10, "motor1");
+    assert_motor(&state, MC_STRIDE, 10, "motor2");
+    assert_eq!(
+        state[MS_ANY_FAULT] & 1,
+        0,
+        "motor_control: any_fault must stay FALSE across 10 scans"
     );
 }
 
@@ -669,8 +759,23 @@ fn fixture_state_machine_no_trigger_10_scans() {
 #[test]
 fn fixture_pid_simple_10_scans() {
     let source = read_fixture("programs/pid_simple.st");
-    // Just verify it runs 10 scans without crashing
-    let _state = jit_run(&source, "pidcontroller_scan", 128, 10);
+    let state = jit_run(&source, "pidcontroller_scan", 128, 10);
+
+    // integral = 10 * 50 * 0.01 = 5.0; output = 50 + 0.1*5.0 = 50.5, unclamped.
+    let integral = read_f32(&state, PID_INTEGRAL);
+    let control_output = read_f32(&state, PID_CONTROL_OUTPUT);
+    assert!(
+        control_output.is_finite(),
+        "pid_simple (10 scans): control_output must be finite, got {control_output}"
+    );
+    assert!(
+        (integral - 5.0).abs() < 1e-3,
+        "pid_simple (10 scans): integral should be 5.0, got {integral}"
+    );
+    assert!(
+        (control_output - 50.5).abs() < 1e-3,
+        "pid_simple (10 scans): control_output should be 50.5, got {control_output}"
+    );
 }
 
 /// Verify arithmetic is idempotent across scans.
