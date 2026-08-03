@@ -70,12 +70,12 @@ The PLC runtime calls `init` once, then `scan` in a loop at the configured task 
 ```
 plcc/
 ├── crates/
-│   ├── plcc-st/     Lexer (logos) + recursive-descent parser + AST
-│   ├── plcc-hir/        Type checker, name resolution, IEC type hierarchy
-│   ├── plcc-codegen/    LLVM codegen via inkwell
-│   ├── plcc-runtime/    Standard FBs (TON, CTU, etc.) + standard functions
-│   ├── plcc-hal/        Hardware Abstraction Layer for platform integration
-│   └── plcc-cli/        CLI binary
+│   ├── plcc-st/           Lexer (logos) + recursive-descent parser + AST
+│   ├── plcc-hir/          Type checker, name resolution, IEC type hierarchy
+│   ├── plcc-codegen/      LLVM codegen via inkwell
+│   ├── plcc-runtime/      Standard FBs (TON, CTU, etc.) + standard functions
+│   ├── plcc-hal/          Hardware Abstraction Layer for platform integration
+│   └── plcc-cli/          CLI binary
 └── tests/
     ├── fixtures/          ST test files by language feature
     └── external/          OSCAT, RuSTy corpora (gitignored)

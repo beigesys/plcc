@@ -17,11 +17,11 @@ plcc/
 ├── CLAUDE.md
 ├── Cargo.toml             # workspace root
 ├── crates/
-│   ├── plcc-st/     # lexer, parser, AST, source spans
-│   ├── plcc-hir/        # high-level IR, name resolution, type checking
-│   ├── plcc-codegen/    # LLVM codegen via inkwell — any target triple
-│   ├── plcc-runtime/    # runtime interface types (FB lifecycle, std FBs, std functions)
-│   └── plcc-cli/        # CLI binary
+│   ├── plcc-st/           # lexer, parser, AST, source spans
+│   ├── plcc-hir/          # high-level IR, name resolution, type checking
+│   ├── plcc-codegen/      # LLVM codegen via inkwell — any target triple
+│   ├── plcc-runtime/      # runtime interface types (FB lifecycle, std FBs, std functions)
+│   └── plcc-cli/          # CLI binary
 └── tests/
     ├── fixtures/          # our .st test files by language feature
     └── external/          # fetched test corpora (gitignored)

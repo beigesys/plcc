@@ -3,8 +3,8 @@
 //! IEC 61131-3 conformance tests: JIT execution tests verifying behavior
 //! specified by the IEC 61131-3:2013 standard (3rd edition).
 
-use inkwell::context::Context;
 use inkwell::OptimizationLevel;
+use inkwell::context::Context;
 use plcc_codegen::Compiler;
 
 fn jit_run(source: &str, scan_fn_name: &str, state_size: usize, num_scans: usize) -> Vec<u8> {
@@ -226,9 +226,17 @@ END_PROGRAM
     // With 2+1+1+4+2+2+4 = 16 bytes (generous)
     let state = jit_run(source, "zeroinit_scan", 16, 1);
     // INT i defaults to 0
-    assert_eq!(read_i16(&state, 0), 0, "uninitialized INT should default to 0");
+    assert_eq!(
+        read_i16(&state, 0),
+        0,
+        "uninitialized INT should default to 0"
+    );
     // BOOL b defaults to FALSE (0)
-    assert_eq!(state[2] & 1, 0, "uninitialized BOOL should default to FALSE");
+    assert_eq!(
+        state[2] & 1,
+        0,
+        "uninitialized BOOL should default to FALSE"
+    );
 }
 
 // 7. Explicit initialization value
@@ -605,11 +613,7 @@ END_VAR
 END_PROGRAM
 "#;
     let state = jit_run(source, "multiin_scan", 2, 1);
-    assert_eq!(
-        read_i16(&state, 0),
-        60,
-        "AddThree(10, 20, 30) should be 60"
-    );
+    assert_eq!(read_i16(&state, 0), 60, "AddThree(10, 20, 30) should be 60");
 }
 
 // ===========================================================================

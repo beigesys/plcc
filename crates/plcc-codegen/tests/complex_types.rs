@@ -2,8 +2,8 @@
 
 //! Tests for array indexing, struct member access, and multi-file compilation.
 
-use inkwell::context::Context;
 use inkwell::OptimizationLevel;
+use inkwell::context::Context;
 use plcc_codegen::Compiler;
 
 fn jit_run(source: &str, scan_fn_name: &str, state_size: usize, num_scans: usize) -> Vec<u8> {
@@ -34,7 +34,12 @@ fn jit_run(source: &str, scan_fn_name: &str, state_size: usize, num_scans: usize
     state
 }
 
-fn jit_run_merged(sources: &[&str], scan_fn_name: &str, state_size: usize, num_scans: usize) -> Vec<u8> {
+fn jit_run_merged(
+    sources: &[&str],
+    scan_fn_name: &str,
+    state_size: usize,
+    num_scans: usize,
+) -> Vec<u8> {
     let mut all_declarations = Vec::new();
 
     for source in sources {

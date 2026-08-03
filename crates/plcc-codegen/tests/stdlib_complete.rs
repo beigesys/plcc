@@ -2,12 +2,17 @@
 
 //! Tests for newly added standard library functions: trig, rounding, type conversions.
 
-use inkwell::context::Context;
 use inkwell::OptimizationLevel;
+use inkwell::context::Context;
 use plcc_codegen::Compiler;
 
 /// Helper: compile source, JIT execute the scan function, return state bytes.
-fn compile_and_run(source: &str, scan_fn_name: &str, state_size: usize, num_scans: usize) -> Vec<u8> {
+fn compile_and_run(
+    source: &str,
+    scan_fn_name: &str,
+    state_size: usize,
+    num_scans: usize,
+) -> Vec<u8> {
     let (unit, errors) = plcc_st::parse(source);
     assert!(errors.is_empty(), "parse errors: {errors:?}");
 
@@ -235,7 +240,10 @@ END_PROGRAM
 "#;
     let state = compile_and_run(source, "inttodinttest_scan", 4, 1);
     let result = read_i32(&state, 0);
-    assert_eq!(result, 1000, "INT_TO_DINT(1000) should be 1000, got {result}");
+    assert_eq!(
+        result, 1000,
+        "INT_TO_DINT(1000) should be 1000, got {result}"
+    );
 }
 
 // ==================== Integer narrowing (trunc) ====================
@@ -335,6 +343,12 @@ END_PROGRAM
     let state = compile_and_run(source, "chainedtest_scan", 8, 1);
     let int_result = read_i16(&state, 2);
     let dint_result = read_i32(&state, 4);
-    assert_eq!(int_result, 200, "BYTE_TO_INT(200) should be 200, got {int_result}");
-    assert_eq!(dint_result, 200, "INT_TO_DINT(200) should be 200, got {dint_result}");
+    assert_eq!(
+        int_result, 200,
+        "BYTE_TO_INT(200) should be 200, got {int_result}"
+    );
+    assert_eq!(
+        dint_result, 200,
+        "INT_TO_DINT(200) should be 200, got {dint_result}"
+    );
 }

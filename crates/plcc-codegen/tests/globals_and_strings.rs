@@ -2,13 +2,18 @@
 
 //! Tests for VAR_GLOBAL support and string LEN operation.
 
-use inkwell::context::Context;
 use inkwell::OptimizationLevel;
+use inkwell::context::Context;
 use plcc_codegen::Compiler;
 
 /// Helper: compile source, JIT execute the scan function, return state bytes.
 /// The state bytes correspond to the program's local VAR block only (not globals).
-fn compile_and_run(source: &str, scan_fn_name: &str, state_size: usize, num_scans: usize) -> Vec<u8> {
+fn compile_and_run(
+    source: &str,
+    scan_fn_name: &str,
+    state_size: usize,
+    num_scans: usize,
+) -> Vec<u8> {
     let (unit, errors) = plcc_st::parse(source);
     assert!(errors.is_empty(), "parse errors: {errors:?}");
 
@@ -17,7 +22,10 @@ fn compile_and_run(source: &str, scan_fn_name: &str, state_size: usize, num_scan
     compiler.compile(&unit).expect("codegen failed");
 
     let ir = compiler.emit_ir();
-    assert!(ir.contains(scan_fn_name), "scan function not found in IR:\n{ir}");
+    assert!(
+        ir.contains(scan_fn_name),
+        "scan function not found in IR:\n{ir}"
+    );
 
     let ee = compiler
         .module()
@@ -62,7 +70,10 @@ END_PROGRAM
     // Program state struct has only 'result' (INT = i16 = 2 bytes)
     let state = compile_and_run(source, "globaltest_scan", 2, 5);
     let result = i16::from_ne_bytes([state[0], state[1]]);
-    assert_eq!(result, 5, "After 5 scans, result should be 5 (g_count persists in global)");
+    assert_eq!(
+        result, 5,
+        "After 5 scans, result should be 5 (g_count persists in global)"
+    );
 }
 
 #[test]

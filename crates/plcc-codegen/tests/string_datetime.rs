@@ -3,12 +3,17 @@
 //! JIT execution tests for string functions (CONCAT, LEFT, RIGHT, MID, FIND)
 //! and date/time arithmetic functions (ADD_TIME, SUB_TIME, MUL_TIME, DIV_TIME).
 
-use inkwell::context::Context;
 use inkwell::OptimizationLevel;
+use inkwell::context::Context;
 use plcc_codegen::Compiler;
 
 /// Helper: compile source, JIT execute the scan function, return state bytes.
-fn compile_and_run(source: &str, scan_fn_name: &str, state_size: usize, num_scans: usize) -> Vec<u8> {
+fn compile_and_run(
+    source: &str,
+    scan_fn_name: &str,
+    state_size: usize,
+    num_scans: usize,
+) -> Vec<u8> {
     let (unit, errors) = plcc_st::parse(source);
     assert!(errors.is_empty(), "parse errors: {errors:?}");
 
@@ -292,10 +297,7 @@ END_PROGRAM
     compiler.compile(&unit).expect("codegen failed");
 
     let ir = compiler.emit_ir();
-    assert!(
-        ir.contains("plcc_mid"),
-        "plcc_mid function should be in IR"
-    );
+    assert!(ir.contains("plcc_mid"), "plcc_mid function should be in IR");
 }
 
 #[test]

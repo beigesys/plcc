@@ -4,8 +4,8 @@
 //! from tests/fixtures/. Each test reads the .st source from disk, compiles it through
 //! the plcc pipeline, executes via LLVM JIT, and verifies specific output values.
 
-use inkwell::context::Context;
 use inkwell::OptimizationLevel;
+use inkwell::context::Context;
 use plcc_codegen::Compiler;
 
 // =============================================================================
@@ -58,11 +58,21 @@ fn read_i16(state: &[u8], offset: usize) -> i16 {
 }
 
 fn read_i32(state: &[u8], offset: usize) -> i32 {
-    i32::from_ne_bytes([state[offset], state[offset + 1], state[offset + 2], state[offset + 3]])
+    i32::from_ne_bytes([
+        state[offset],
+        state[offset + 1],
+        state[offset + 2],
+        state[offset + 3],
+    ])
 }
 
 fn read_f32(state: &[u8], offset: usize) -> f32 {
-    f32::from_ne_bytes([state[offset], state[offset + 1], state[offset + 2], state[offset + 3]])
+    f32::from_ne_bytes([
+        state[offset],
+        state[offset + 1],
+        state[offset + 2],
+        state[offset + 3],
+    ])
 }
 
 fn read_i64(state: &[u8], offset: usize) -> i64 {
@@ -82,7 +92,10 @@ fn read_i64(state: &[u8], offset: usize) -> i64 {
 fn read_fixture(relative_path: &str) -> String {
     let path = format!("../../tests/fixtures/{relative_path}");
     std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!("Failed to read fixture file '{path}': {e}. CWD: {:?}", std::env::current_dir())
+        panic!(
+            "Failed to read fixture file '{path}': {e}. CWD: {:?}",
+            std::env::current_dir()
+        )
     })
 }
 
@@ -97,11 +110,7 @@ fn read_fixture(relative_path: &str) -> String {
 fn fixture_blink_after_1_scan() {
     let source = read_fixture("programs/blink.st");
     let state = jit_run(&source, "blink_scan", 1, 1);
-    assert_eq!(
-        state[0] & 1,
-        1,
-        "blink: output should be TRUE after 1 scan"
-    );
+    assert_eq!(state[0] & 1, 1, "blink: output should be TRUE after 1 scan");
 }
 
 #[test]
@@ -243,7 +252,10 @@ fn fixture_control_flow() {
     let _i = read_i16(&state, 4);
     let sum = read_i16(&state, 6);
     assert_eq!(sm_state, 0, "control_flow: state should remain 0");
-    assert_eq!(output, 100, "control_flow: output should be 100 (from CASE)");
+    assert_eq!(
+        output, 100,
+        "control_flow: output should be 100 (from CASE)"
+    );
     assert_eq!(sum, 45, "control_flow: sum should be 45 (55 - 10)");
 }
 
@@ -291,10 +303,19 @@ fn fixture_function_blocks() {
     let c2_count = read_i16(&state, 8);
     let sum = read_i16(&state, 16);
     let doubled = read_i16(&state, 18);
-    assert_eq!(c1_count, 5, "function_blocks: c1.count should be 5 after 5 scans, got {c1_count}");
-    assert_eq!(c2_count, 5, "function_blocks: c2.count should be 5 after 5 scans, got {c2_count}");
+    assert_eq!(
+        c1_count, 5,
+        "function_blocks: c1.count should be 5 after 5 scans, got {c1_count}"
+    );
+    assert_eq!(
+        c2_count, 5,
+        "function_blocks: c2.count should be 5 after 5 scans, got {c2_count}"
+    );
     assert_eq!(sum, 10, "function_blocks: sum should be 10, got {sum}");
-    assert_eq!(doubled, 10, "function_blocks: doubled should be 10, got {doubled}");
+    assert_eq!(
+        doubled, 10,
+        "function_blocks: doubled should be 10, got {doubled}"
+    );
 }
 
 // =============================================================================
@@ -319,7 +340,10 @@ fn fixture_arrays_structs() {
     let sum = read_i16(&state, 22);
     let max_val = read_i16(&state, 24);
     assert_eq!(sum, 550, "arrays_structs: sum should be 550, got {sum}");
-    assert_eq!(max_val, 100, "arrays_structs: max_val should be 100, got {max_val}");
+    assert_eq!(
+        max_val, 100,
+        "arrays_structs: max_val should be 100, got {max_val}"
+    );
 }
 
 // =============================================================================
@@ -366,7 +390,10 @@ fn fixture_stdlib_math() {
     assert!((cl - 4.0).abs() < 0.001, "stdlib_math: CEIL(3.2) = {cl}");
     assert!((mn - 3.0).abs() < 0.001, "stdlib_math: MIN(5.0,3.0) = {mn}");
     assert!((mx - 5.0).abs() < 0.001, "stdlib_math: MAX(5.0,3.0) = {mx}");
-    assert!((lm - 0.0).abs() < 0.001, "stdlib_math: LIMIT(0.0,-5.0,100.0) = {lm}");
+    assert!(
+        (lm - 0.0).abs() < 0.001,
+        "stdlib_math: LIMIT(0.0,-5.0,100.0) = {lm}"
+    );
 }
 
 // =============================================================================
@@ -432,10 +459,22 @@ fn fixture_stdlib_time() {
     let scaled_t = read_i64(&state, 32);
 
     // Verify t1 and t2 were initialized correctly
-    assert_eq!(t1, 100_000_000, "stdlib_time: t1 should be 100ms in ns, got {t1}");
-    assert_eq!(t2, 50_000_000, "stdlib_time: t2 should be 50ms in ns, got {t2}");
-    assert_eq!(sum_t, 150_000_000, "stdlib_time: sum_t should be 150ms in ns, got {sum_t}");
-    assert_eq!(diff_t, 50_000_000, "stdlib_time: diff_t should be 50ms in ns, got {diff_t}");
+    assert_eq!(
+        t1, 100_000_000,
+        "stdlib_time: t1 should be 100ms in ns, got {t1}"
+    );
+    assert_eq!(
+        t2, 50_000_000,
+        "stdlib_time: t2 should be 50ms in ns, got {t2}"
+    );
+    assert_eq!(
+        sum_t, 150_000_000,
+        "stdlib_time: sum_t should be 150ms in ns, got {sum_t}"
+    );
+    assert_eq!(
+        diff_t, 50_000_000,
+        "stdlib_time: diff_t should be 50ms in ns, got {diff_t}"
+    );
     assert_eq!(
         scaled_t, 300_000_000,
         "stdlib_time: scaled_t should be 300ms in ns, got {scaled_t}"
@@ -658,6 +697,12 @@ fn fixture_function_calls_idempotent() {
     let state = jit_run(&source, "calltest_scan", 4, 50);
     let result1 = read_i16(&state, 0);
     let result2 = read_i16(&state, 2);
-    assert_eq!(result1, 7, "function_calls (50 scans): AddTwo(3,4) = {result1}");
-    assert_eq!(result2, 25, "function_calls (50 scans): Square(5) = {result2}");
+    assert_eq!(
+        result1, 7,
+        "function_calls (50 scans): AddTwo(3,4) = {result1}"
+    );
+    assert_eq!(
+        result2, 25,
+        "function_calls (50 scans): Square(5) = {result2}"
+    );
 }

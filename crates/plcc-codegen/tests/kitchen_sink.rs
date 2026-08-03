@@ -2,8 +2,8 @@
 
 //! Kitchen-sink execution tests: complex ST programs JIT-executed and verified.
 
-use inkwell::context::Context;
 use inkwell::OptimizationLevel;
+use inkwell::context::Context;
 use plcc_codegen::Compiler;
 
 fn jit_run(source: &str, scan_fn_name: &str, state_size: usize, num_scans: usize) -> Vec<u8> {
@@ -238,7 +238,11 @@ END_PROGRAM
     let state = jit_run(source, "boollogic_scan", 8, 1);
     assert_eq!(read_i16(&state, 0), 1, "AND(true, true) should be true");
     assert_eq!(read_i16(&state, 2), 1, "OR(false, true) should be true");
-    assert_eq!(read_i16(&state, 4), 1, "NOT(AND(true, false)) should be true");
+    assert_eq!(
+        read_i16(&state, 4),
+        1,
+        "NOT(AND(true, false)) should be true"
+    );
     assert_eq!(read_i16(&state, 6), 0, "AND(false, false) should be false");
 }
 

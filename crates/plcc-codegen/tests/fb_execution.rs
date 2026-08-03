@@ -2,8 +2,8 @@
 
 //! Tests for function block (FB) instantiation and calling.
 
-use inkwell::context::Context;
 use inkwell::OptimizationLevel;
+use inkwell::context::Context;
 use plcc_codegen::Compiler;
 
 /// Helper: compile, JIT execute with init + multiple scans, return state bytes.
@@ -201,7 +201,10 @@ END_PROGRAM
 
     // sum is at offset 12 (after two 6-byte Counter structs)
     let sum = read_i16(&state, 12);
-    assert_eq!(sum, 8, "after 4 scans, both counters at 4, sum should be 8, got {sum}");
+    assert_eq!(
+        sum, 8,
+        "after 4 scans, both counters at 4, sum should be 8, got {sum}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -257,7 +260,10 @@ END_PROGRAM
 
     // output is at offset 10 (after Counter 6 bytes + Doubler 4 bytes)
     let output = read_i16(&state, 10);
-    assert_eq!(output, 10, "after 5 scans, count=5, doubled=10, got {output}");
+    assert_eq!(
+        output, 10,
+        "after 5 scans, count=5, doubled=10, got {output}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -316,6 +322,12 @@ END_PROGRAM
     // Program: { SimpleTimer(8), i16(output) } -> output at offset 8
     let output9 = read_i16(&state9, 8);
     let output10 = read_i16(&state10, 8);
-    assert_eq!(output9, 0, "after 9 scans, timer not done, output should be 0, got {output9}");
-    assert_eq!(output10, 1, "after 10 scans, timer done, output should be 1, got {output10}");
+    assert_eq!(
+        output9, 0,
+        "after 9 scans, timer not done, output should be 0, got {output9}"
+    );
+    assert_eq!(
+        output10, 1,
+        "after 10 scans, timer done, output should be 1, got {output10}"
+    );
 }

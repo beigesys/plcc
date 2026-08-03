@@ -2,12 +2,17 @@
 
 //! JIT execution tests for IEC 61131-3 standard library functions.
 
-use inkwell::context::Context;
 use inkwell::OptimizationLevel;
+use inkwell::context::Context;
 use plcc_codegen::Compiler;
 
 /// Helper: compile source, JIT execute the scan function, return state bytes.
-fn compile_and_run(source: &str, scan_fn_name: &str, state_size: usize, num_scans: usize) -> Vec<u8> {
+fn compile_and_run(
+    source: &str,
+    scan_fn_name: &str,
+    state_size: usize,
+    num_scans: usize,
+) -> Vec<u8> {
     let (unit, errors) = plcc_st::parse(source);
     assert!(errors.is_empty(), "parse errors: {errors:?}");
 
@@ -270,10 +275,7 @@ END_PROGRAM
         (exp_val - 1.0).abs() < 0.001,
         "EXP(0.0) should be ~1.0, got {exp_val}"
     );
-    assert!(
-        ln_val.abs() < 0.001,
-        "LN(1.0) should be ~0.0, got {ln_val}"
-    );
+    assert!(ln_val.abs() < 0.001, "LN(1.0) should be ~0.0, got {ln_val}");
 }
 
 #[test]

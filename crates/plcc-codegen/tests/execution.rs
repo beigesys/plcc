@@ -2,12 +2,17 @@
 
 //! End-to-end tests: compile ST → LLVM → JIT execute → verify outputs.
 
-use inkwell::context::Context;
 use inkwell::OptimizationLevel;
+use inkwell::context::Context;
 use plcc_codegen::Compiler;
 
 /// Helper: compile source, JIT execute the scan function, return state bytes.
-fn compile_and_run(source: &str, scan_fn_name: &str, state_size: usize, num_scans: usize) -> Vec<u8> {
+fn compile_and_run(
+    source: &str,
+    scan_fn_name: &str,
+    state_size: usize,
+    num_scans: usize,
+) -> Vec<u8> {
     let (unit, errors) = plcc_st::parse(source);
     assert!(errors.is_empty(), "parse errors: {errors:?}");
 
@@ -17,7 +22,10 @@ fn compile_and_run(source: &str, scan_fn_name: &str, state_size: usize, num_scan
 
     // Verify the IR is valid
     let ir = compiler.emit_ir();
-    assert!(ir.contains(scan_fn_name), "scan function not found in IR:\n{ir}");
+    assert!(
+        ir.contains(scan_fn_name),
+        "scan function not found in IR:\n{ir}"
+    );
 
     // Use execution engine to JIT
     let ee = compiler

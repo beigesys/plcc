@@ -3,8 +3,8 @@
 //! Coverage completion tests: REPEAT/UNTIL, MOD, EXIT, function return values,
 //! composed functions, multi-program files, stress counters, and edge cases.
 
-use inkwell::context::Context;
 use inkwell::OptimizationLevel;
+use inkwell::context::Context;
 use plcc_codegen::Compiler;
 
 fn jit_run(source: &str, scan_fn_name: &str, state_size: usize, num_scans: usize) -> Vec<u8> {
@@ -119,7 +119,10 @@ END_PROGRAM
     // sum = 1+2+...+10 = 55 (EXIT fires when i=11, before adding 11)
     let state = jit_run(source, "exittest_scan", 4, 1);
     let sum = read_i16(&state, 2);
-    assert_eq!(sum, 55, "sum of 1..10 with EXIT at 11 should be 55, got {sum}");
+    assert_eq!(
+        sum, 55,
+        "sum of 1..10 with EXIT at 11 should be 55, got {sum}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -271,7 +274,10 @@ END_PROGRAM
     // INT range is -32768..32767, so 10000 is fine
     let state = jit_run(source, "stress_scan", 2, 10000);
     let count = read_i16(&state, 0);
-    assert_eq!(count, 10000, "after 10000 scans count should be 10000, got {count}");
+    assert_eq!(
+        count, 10000,
+        "after 10000 scans count should be 10000, got {count}"
+    );
 }
 
 // ---------------------------------------------------------------------------

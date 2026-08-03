@@ -2,8 +2,8 @@
 
 //! Real-world PLC program patterns — the kind of code that runs on critical infrastructure.
 
-use inkwell::context::Context;
 use inkwell::OptimizationLevel;
+use inkwell::context::Context;
 use plcc_codegen::Compiler;
 
 fn jit_run(source: &str, scan_fn_name: &str, state_size: usize, num_scans: usize) -> Vec<u8> {
@@ -186,7 +186,10 @@ END_PROGRAM
     let state = jit_run(source, "pcontroller_scan", 20, 50);
     let measured = read_f32(&state, 4);
     let error = read_f32(&state, 12);
-    assert!(measured > 40.0, "measured should approach setpoint, got {measured}");
+    assert!(
+        measured > 40.0,
+        "measured should approach setpoint, got {measured}"
+    );
     assert!(error.abs() < 15.0, "error should decrease, got {error}");
 }
 
@@ -310,7 +313,10 @@ END_PROGRAM
     // Priority: critical=0, high=1 → result=3
     let state = jit_run(source, "alarmsystem_scan", 10, 1);
     let priority = read_i16(&state, 8);
-    assert_eq!(priority, 3, "highest priority should be 3 (high), got {priority}");
+    assert_eq!(
+        priority, 3,
+        "highest priority should be 3 (high), got {priority}"
+    );
 }
 
 #[test]

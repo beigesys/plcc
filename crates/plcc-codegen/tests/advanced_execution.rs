@@ -4,8 +4,8 @@
 //! unary minus, precedence, REAL arithmetic, deeply nested IF, CASE ELSE, and
 //! multi-scan counters.
 
-use inkwell::context::Context;
 use inkwell::OptimizationLevel;
+use inkwell::context::Context;
 use plcc_codegen::Compiler;
 
 fn jit_run(source: &str, scan_fn_name: &str, state_size: usize, num_scans: usize) -> Vec<u8> {
@@ -254,9 +254,24 @@ END_PROGRAM
 "#;
     // State: 3 x i16 = 6 bytes
     let state = jit_run(source, "negtest_scan", 6, 1);
-    assert_eq!(read_i16(&state, 0), -5, "x should be -5, got {}", read_i16(&state, 0));
-    assert_eq!(read_i16(&state, 2), 5, "y := -x should be 5, got {}", read_i16(&state, 2));
-    assert_eq!(read_i16(&state, 4), -7, "z := -10 + 3 should be -7, got {}", read_i16(&state, 4));
+    assert_eq!(
+        read_i16(&state, 0),
+        -5,
+        "x should be -5, got {}",
+        read_i16(&state, 0)
+    );
+    assert_eq!(
+        read_i16(&state, 2),
+        5,
+        "y := -x should be 5, got {}",
+        read_i16(&state, 2)
+    );
+    assert_eq!(
+        read_i16(&state, 4),
+        -7,
+        "z := -10 + 3 should be -7, got {}",
+        read_i16(&state, 4)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -280,10 +295,30 @@ END_PROGRAM
 "#;
     // State: 4 x i16 = 8 bytes
     let state = jit_run(source, "prec_scan", 8, 1);
-    assert_eq!(read_i16(&state, 0), 14, "2 + 3 * 4 should be 14, got {}", read_i16(&state, 0));
-    assert_eq!(read_i16(&state, 2), 20, "(2 + 3) * 4 should be 20, got {}", read_i16(&state, 2));
-    assert_eq!(read_i16(&state, 4), 5, "10 - 2 * 3 + 1 should be 5, got {}", read_i16(&state, 4));
-    assert_eq!(read_i16(&state, 6), 5, "100 / 5 / 4 should be 5, got {}", read_i16(&state, 6));
+    assert_eq!(
+        read_i16(&state, 0),
+        14,
+        "2 + 3 * 4 should be 14, got {}",
+        read_i16(&state, 0)
+    );
+    assert_eq!(
+        read_i16(&state, 2),
+        20,
+        "(2 + 3) * 4 should be 20, got {}",
+        read_i16(&state, 2)
+    );
+    assert_eq!(
+        read_i16(&state, 4),
+        5,
+        "10 - 2 * 3 + 1 should be 5, got {}",
+        read_i16(&state, 4)
+    );
+    assert_eq!(
+        read_i16(&state, 6),
+        5,
+        "100 / 5 / 4 should be 5, got {}",
+        read_i16(&state, 6)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -311,10 +346,22 @@ END_PROGRAM
     let prod = read_f32(&state, 4);
     let quot = read_f32(&state, 8);
     let diff = read_f32(&state, 12);
-    assert!((sum - 4.0).abs() < 0.001, "1.5 + 2.5 should be 4.0, got {sum}");
-    assert!((prod - 13.5).abs() < 0.001, "3.0 * 4.5 should be 13.5, got {prod}");
-    assert!((quot - 2.5).abs() < 0.001, "10.0 / 4.0 should be 2.5, got {quot}");
-    assert!((diff - 62.5).abs() < 0.001, "100.0 - 37.5 should be 62.5, got {diff}");
+    assert!(
+        (sum - 4.0).abs() < 0.001,
+        "1.5 + 2.5 should be 4.0, got {sum}"
+    );
+    assert!(
+        (prod - 13.5).abs() < 0.001,
+        "3.0 * 4.5 should be 13.5, got {prod}"
+    );
+    assert!(
+        (quot - 2.5).abs() < 0.001,
+        "10.0 / 4.0 should be 2.5, got {quot}"
+    );
+    assert!(
+        (diff - 62.5).abs() < 0.001,
+        "100.0 - 37.5 should be 62.5, got {diff}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -490,7 +537,10 @@ END_PROGRAM
 "#;
     let state = jit_run(source, "counter_scan", 2, 100);
     let count = read_i16(&state, 0);
-    assert_eq!(count, 100, "after 100 scans count should be 100, got {count}");
+    assert_eq!(
+        count, 100,
+        "after 100 scans count should be 100, got {count}"
+    );
 }
 
 #[test]
@@ -505,7 +555,10 @@ END_PROGRAM
 "#;
     let state = jit_run(source, "counter2_scan", 2, 1000);
     let count = read_i16(&state, 0);
-    assert_eq!(count, 1000, "after 1000 scans count should be 1000, got {count}");
+    assert_eq!(
+        count, 1000,
+        "after 1000 scans count should be 1000, got {count}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -545,7 +598,10 @@ END_PROGRAM
     // Inc(2) = 3, Square(3) = 9, Negate(9) = -9
     let state = jit_run(source, "chain_scan", 2, 1);
     let result = read_i16(&state, 0);
-    assert_eq!(result, -9, "Negate(Square(Inc(2))) should be -9, got {result}");
+    assert_eq!(
+        result, -9,
+        "Negate(Square(Inc(2))) should be -9, got {result}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -571,7 +627,10 @@ END_PROGRAM
     // Triple(4) = 12, Triple(5) = 15, sum = 27
     let state = jit_run(source, "fnexpr_scan", 2, 1);
     let result = read_i16(&state, 0);
-    assert_eq!(result, 27, "Triple(4) + Triple(5) should be 27, got {result}");
+    assert_eq!(
+        result, 27,
+        "Triple(4) + Triple(5) should be 27, got {result}"
+    );
 }
 
 // ---------------------------------------------------------------------------

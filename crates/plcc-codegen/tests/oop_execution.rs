@@ -2,8 +2,8 @@
 
 //! Tests for OOP features: FB methods, CLASS compilation, method calls.
 
-use inkwell::context::Context;
 use inkwell::OptimizationLevel;
+use inkwell::context::Context;
 use plcc_codegen::Compiler;
 
 /// Helper: compile, JIT execute with init + multiple scans, return state bytes.
@@ -85,7 +85,10 @@ END_PROGRAM
 
     // result is at offset 2 (after the 2-byte Accumulator struct)
     let result = read_i16(&state, 2);
-    assert_eq!(result, 8, "after Add(5) + Add(3), GetTotal should be 8, got {result}");
+    assert_eq!(
+        result, 8,
+        "after Add(5) + Add(3), GetTotal should be 8, got {result}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -118,7 +121,10 @@ END_PROGRAM
 
     let state = jit_run(source, "calctest_scan", 64, 1);
     let result = read_i16(&state, 2);
-    assert_eq!(result, 10, "AddAndReturn(10) should return 10, got {result}");
+    assert_eq!(
+        result, 10,
+        "AddAndReturn(10) should return 10, got {result}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -153,7 +159,10 @@ END_PROGRAM
     // After 3 scans, Increment is called 3 times
     let state = jit_run(source, "scantest_scan", 64, 3);
     let result = read_i16(&state, 2);
-    assert_eq!(result, 3, "after 3 scans with Increment(), count should be 3, got {result}");
+    assert_eq!(
+        result, 3,
+        "after 3 scans with Increment(), count should be 3, got {result}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -241,7 +250,10 @@ END_PROGRAM
 
     let state = jit_run(source, "doubletest_scan", 64, 1);
     let result = read_i16(&state, 2);
-    assert_eq!(result, 14, "DoubleAndStore(7) should return 14, got {result}");
+    assert_eq!(
+        result, 14,
+        "DoubleAndStore(7) should return 14, got {result}"
+    );
 }
 
 // ---------------------------------------------------------------------------

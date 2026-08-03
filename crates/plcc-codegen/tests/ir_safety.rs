@@ -6,8 +6,8 @@
 //! properties that are essential for safe, deterministic PLC execution.
 
 use inkwell::context::Context;
-use regex::Regex;
 use plcc_codegen::Compiler;
+use regex::Regex;
 
 // ---------------------------------------------------------------------------
 // Test programs
@@ -160,7 +160,9 @@ fn extract_block<'a>(ir: &'a str, label: &str) -> Option<&'a str> {
         }
         let trimmed = line.trim();
         // A new label or closing brace ends the block.
-        if (!trimmed.is_empty() && !trimmed.starts_with(';') && line.chars().next().map_or(false, |c| !c.is_whitespace()))
+        if (!trimmed.is_empty()
+            && !trimmed.starts_with(';')
+            && line.chars().next().map_or(false, |c| !c.is_whitespace()))
             || trimmed == "}"
         {
             end = after[..].find(line).unwrap_or(after.len());
@@ -214,7 +216,8 @@ fn all_gep_inbounds() {
         let total = gep_re.find_iter(&ir).count();
         let inbounds = gep_inbounds_re.find_iter(&ir).count();
         assert_eq!(
-            total, inbounds,
+            total,
+            inbounds,
             "[{name}] {total} GEP instructions but only {inbounds} are inbounds — \
              {diff} lack the inbounds flag",
             diff = total - inbounds,
@@ -302,7 +305,15 @@ fn all_branches_terminate() {
     // In LLVM IR textual form, a basic block is introduced by a label
     // (or the implicit entry) and ends at the next label or closing `}`.
     // Terminators: ret, br, switch, indirectbr, invoke, resume, unreachable.
-    let terminators = ["ret ", "ret\n", "br ", "switch ", "indirectbr ", "invoke ", "unreachable"];
+    let terminators = [
+        "ret ",
+        "ret\n",
+        "br ",
+        "switch ",
+        "indirectbr ",
+        "invoke ",
+        "unreachable",
+    ];
 
     let define_re = Regex::new(r"(?ms)^define\s.*?\{(.+?)\n\}").unwrap();
     // A label line looks like: `name:` (possibly with preds comment).
@@ -315,10 +326,7 @@ fn all_branches_terminate() {
             let fn_header = func_cap[0].lines().next().unwrap_or("");
 
             // Split body into basic blocks by label boundaries.
-            let labels: Vec<usize> = label_re
-                .find_iter(body)
-                .map(|m| m.start())
-                .collect();
+            let labels: Vec<usize> = label_re.find_iter(body).map(|m| m.start()).collect();
 
             // Check each block (region between consecutive labels, or from
             // start to first label, or from last label to end).
@@ -332,9 +340,7 @@ fn all_branches_terminate() {
                 if trimmed.is_empty() {
                     continue;
                 }
-                let has_terminator = terminators
-                    .iter()
-                    .any(|t| trimmed.contains(t));
+                let has_terminator = terminators.iter().any(|t| trimmed.contains(t));
                 assert!(
                     has_terminator,
                     "[{name}] basic block in `{fn_header}` lacks a terminator:\n{trimmed}"
@@ -359,8 +365,10 @@ fn for_loop_has_exit_condition() {
         );
         // Must have a comparison instruction (icmp) for the loop bound
         assert!(
-            ir.contains("icmp sle") || ir.contains("icmp slt")
-                || ir.contains("icmp ule") || ir.contains("icmp ult"),
+            ir.contains("icmp sle")
+                || ir.contains("icmp slt")
+                || ir.contains("icmp ule")
+                || ir.contains("icmp ult"),
             "FOR loop IR lacks a comparison instruction for exit condition"
         );
         // Must have a conditional branch in the for_loop block
@@ -414,10 +422,9 @@ fn case_has_default() {
 /// operate on same-width integer types — no mismatched widths like `add i16, i32`.
 #[test]
 fn no_type_mismatch_in_ops() {
-    let bin_op_re = Regex::new(
-        r"\b(add|sub|mul|sdiv|udiv|srem|urem)\s+(?:nsw\s+|nuw\s+|nsw nuw\s+)?(i\d+)\s"
-    )
-    .unwrap();
+    let bin_op_re =
+        Regex::new(r"\b(add|sub|mul|sdiv|udiv|srem|urem)\s+(?:nsw\s+|nuw\s+|nsw nuw\s+)?(i\d+)\s")
+            .unwrap();
     let int_type_re = Regex::new(r"\bi(\d+)\b").unwrap();
 
     for (name, src) in ALL_PROGRAMS {
@@ -484,7 +491,8 @@ fn store_matches_alloca_type() {
             let dest_name = &cap[2];
             if let Some(expected_type) = alloca_types.get(dest_name) {
                 assert_eq!(
-                    store_type, expected_type.as_str(),
+                    store_type,
+                    expected_type.as_str(),
                     "[{name}] store type mismatch: storing {store_type} into alloca \
                      %{dest_name} of type {expected_type}"
                 );
