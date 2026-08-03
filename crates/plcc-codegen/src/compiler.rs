@@ -4279,6 +4279,12 @@ impl<'ctx> Compiler<'ctx> {
                         };
                         self.compile_expression(&call_expr, function)?;
                     }
+                } else if self.compile_indirect_fb_call(callee, args, function)? {
+                    // An FB instance reached through a chain rather than by name:
+                    // `a[1](s := 4)`, `s.arr[2](...)`. `fb_instances` is keyed by
+                    // instance name, so this used to fall through to
+                    // `compile_expression`, which has no arm for a call on an
+                    // ArrayIndex — the call emitted nothing at all, no diagnostic.
                 } else {
                     let call_expr = Expression {
                         kind: ExpressionKind::FunctionCall {
@@ -4342,18 +4348,83 @@ impl<'ctx> Compiler<'ctx> {
             )
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
 
+        self.emit_fb_call(
+            fb_ptr,
+            info.struct_type,
+            &info.fields,
+            &info.fb_type_name,
+            &info.scan_fn_name,
+            args,
+            function,
+            instance_name,
+        )
+    }
+
+    /// Compile a call on an FB instance that is *not* reached by a bare name —
+    /// `a[1](s := 4)`, `s.parts[2](...)`. Returns `false` when the callee is not an
+    /// FB instance, so the caller can fall through to its other dispatch paths.
+    ///
+    /// `fb_instances` is keyed by instance name and GEPs off the parent state struct
+    /// by field index, so it can only describe a directly named instance. Anything
+    /// else used to reach `compile_expression`, which has no arm for a call on an
+    /// `ArrayIndex` — `a[1](s := 4);` emitted no code and no diagnostic.
+    fn compile_indirect_fb_call(
+        &mut self,
+        callee: &Expression,
+        args: &[CallArg],
+        function: FunctionValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let Some(IecType::FbInstance(fb_type_name)) = self.lvalue_iec_type(callee) else {
+            return Ok(false);
+        };
+        let Some(layout) = self.compiled_fbs.get(&fb_type_name.to_uppercase()).cloned() else {
+            return Ok(false);
+        };
+        let Some(fb_ptr) = self.compile_lvalue_with_fn(callee, function)? else {
+            return Err(CodegenError::UnsupportedType(format!(
+                "`{}` is an instance of `{fb_type_name}` but has no address, so it cannot be called",
+                Self::describe_lvalue(callee)
+            )));
+        };
+        let label = Self::describe_lvalue(callee);
+        self.emit_fb_call(
+            fb_ptr,
+            layout.struct_type,
+            &layout.fields,
+            &fb_type_name,
+            &layout.scan_fn_name,
+            args,
+            function,
+            &label,
+        )?;
+        Ok(true)
+    }
+
+    /// Store the named inputs into an FB instance's state and call its scan function.
+    /// Shared by the named-instance and chained-instance call paths.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_fb_call(
+        &mut self,
+        fb_ptr: PointerValue<'ctx>,
+        struct_type: StructType<'ctx>,
+        fields: &[(String, IecType)],
+        fb_type_name: &str,
+        scan_fn_name: &str,
+        args: &[CallArg],
+        function: FunctionValue<'ctx>,
+        label: &str,
+    ) -> Result<(), CodegenError> {
         // Write named arguments (inputs) to the FB struct fields
         for arg in args {
             if let Some(arg_name) = &arg.name {
                 // Find the field index in the FB's struct
-                let field_idx = info
-                    .fields
+                let field_idx = fields
                     .iter()
                     .position(|(name, _)| name.eq_ignore_ascii_case(&arg_name.name))
                     .ok_or_else(|| {
                         CodegenError::UndefinedVariable(format!(
                             "FB field '{}' not found in '{}'",
-                            arg_name.name, info.fb_type_name
+                            arg_name.name, fb_type_name
                         ))
                     })?;
 
@@ -4361,18 +4432,13 @@ impl<'ctx> Compiler<'ctx> {
                 if let Some(val) = self.compile_expression(&arg.value, function)? {
                     let field_ptr = self
                         .builder
-                        .build_struct_gep(
-                            info.struct_type,
-                            fb_ptr,
-                            field_idx as u32,
-                            &arg_name.name,
-                        )
+                        .build_struct_gep(struct_type, fb_ptr, field_idx as u32, &arg_name.name)
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                     // Widen/narrow to the declared input type. Integer literals
                     // default to INT (i16), so `ctr(PV := 100000)` on a DINT input
                     // used to store a truncated 16-bit value into a 32-bit field.
                     let src = self.rvalue_iec_type(&arg.value);
-                    let val = self.coerce_value(val, src.as_ref(), &info.fields[field_idx].1)?;
+                    let val = self.coerce_value(val, src.as_ref(), &fields[field_idx].1)?;
                     self.builder
                         .build_store(field_ptr, val)
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
@@ -4381,21 +4447,11 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         // Call the FB's scan function
-        let scan_fn = self
-            .module
-            .get_function(&info.scan_fn_name)
-            .ok_or_else(|| {
-                CodegenError::LlvmError(format!(
-                    "FB scan function '{}' not found",
-                    info.scan_fn_name
-                ))
-            })?;
+        let scan_fn = self.module.get_function(scan_fn_name).ok_or_else(|| {
+            CodegenError::LlvmError(format!("FB scan function '{scan_fn_name}' not found"))
+        })?;
         self.builder
-            .build_call(
-                scan_fn,
-                &[fb_ptr.into()],
-                &format!("{}_call", instance_name),
-            )
+            .build_call(scan_fn, &[fb_ptr.into()], &format!("{label}_call"))
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
 
         Ok(())
@@ -4948,6 +5004,16 @@ impl<'ctx> Compiler<'ctx> {
                         .iter()
                         .find(|(name, _)| name.eq_ignore_ascii_case(&member.name))
                         .map(|(_, t)| t.clone()),
+                    // An FB instance reached through a chain rather than by name —
+                    // `a[1].o`, `s.arr[2].o`. `fb_instances` is keyed by instance
+                    // name, so only the compiled layout can answer here.
+                    Some(IecType::FbInstance(fb_type_name)) => self
+                        .compiled_fbs
+                        .get(&fb_type_name.to_uppercase())?
+                        .fields
+                        .iter()
+                        .find(|(name, _)| name.eq_ignore_ascii_case(&member.name))
+                        .map(|(_, t)| t.clone()),
                     _ => None,
                 }
             }
@@ -5242,6 +5308,49 @@ impl<'ctx> Compiler<'ctx> {
                         Self::describe_lvalue(expr)
                     ))
                 })?;
+                // An FB instance reached through a chain — `a[1].o`, `s.arr[2].o`.
+                // The instance has an address like any other aggregate; only its
+                // field list lives on the compiled layout rather than on `obj_ty`.
+                if let IecType::FbInstance(ref fb_type_name) = obj_ty {
+                    let layout = self
+                        .compiled_fbs
+                        .get(&fb_type_name.to_uppercase())
+                        .cloned()
+                        .ok_or_else(|| {
+                            CodegenError::UnsupportedType(format!(
+                                "`{}` is an instance of `{fb_type_name}`, which has no compiled layout",
+                                Self::describe_lvalue(object)
+                            ))
+                        })?;
+                    let field_idx = layout
+                        .fields
+                        .iter()
+                        .position(|(name, _)| name.eq_ignore_ascii_case(&member.name))
+                        .ok_or_else(|| {
+                            CodegenError::UndefinedVariable(format!(
+                                "{}.{}",
+                                Self::describe_lvalue(object),
+                                member.name
+                            ))
+                        })?;
+                    let Some(obj_ptr) = self.compile_lvalue_inner(object, function)? else {
+                        return Err(CodegenError::UnsupportedType(format!(
+                            "`{}` has no address, so `{}` cannot be reached",
+                            Self::describe_lvalue(object),
+                            Self::describe_lvalue(expr)
+                        )));
+                    };
+                    let field_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            layout.struct_type,
+                            obj_ptr,
+                            field_idx as u32,
+                            &member.name,
+                        )
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    return Ok(Some(field_ptr));
+                }
                 let IecType::Struct { ref fields, .. } = obj_ty else {
                     return Err(CodegenError::UnsupportedType(format!(
                         "`{}` is {obj_ty}, which has no member `{}`",
