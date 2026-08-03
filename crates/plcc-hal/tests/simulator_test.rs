@@ -144,7 +144,10 @@ fn retain_storage_rejects_oversized_data() {
 
     let big_data = vec![0xAA; 32];
     let result = sim.retain_storage_mut().save(&big_data);
-    assert!(result.is_err(), "save should reject data exceeding capacity");
+    assert!(
+        result.is_err(),
+        "save should reject data exceeding capacity"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -159,12 +162,18 @@ fn diagnostic_sink_report_and_count() {
         .report(DiagLevel::Info, DiagCode::None, "informational");
     assert_eq!(sim.diagnostic_sink().error_count(), 0);
 
-    sim.diagnostic_sink_mut()
-        .report(DiagLevel::Warning, DiagCode::ScanOverrun, "scan took too long");
+    sim.diagnostic_sink_mut().report(
+        DiagLevel::Warning,
+        DiagCode::ScanOverrun,
+        "scan took too long",
+    );
     assert_eq!(sim.diagnostic_sink().error_count(), 0);
 
-    sim.diagnostic_sink_mut()
-        .report(DiagLevel::Error, DiagCode::DivisionByZero, "div/0 at line 42");
+    sim.diagnostic_sink_mut().report(
+        DiagLevel::Error,
+        DiagCode::DivisionByZero,
+        "div/0 at line 42",
+    );
     assert_eq!(sim.diagnostic_sink().error_count(), 1);
 
     sim.diagnostic_sink_mut()
@@ -206,9 +215,6 @@ fn full_scan_cycle() {
 fn platform_double_init_fails() {
     let mut sim = LinuxSimulator::new();
     sim.init().expect("first init should succeed");
-    assert!(
-        sim.init().is_err(),
-        "second init should fail"
-    );
+    assert!(sim.init().is_err(), "second init should fail");
     sim.shutdown().expect("shutdown should succeed");
 }

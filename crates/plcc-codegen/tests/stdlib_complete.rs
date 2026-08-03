@@ -295,14 +295,14 @@ PROGRAM RealToLrealTest
 VAR
     result : LREAL;
 END_VAR
-    result := REAL_TO_LREAL(3.14);
+    result := REAL_TO_LREAL(3.5);
 END_PROGRAM
 "#;
     let state = compile_and_run(source, "realtolrealtest_scan", 8, 1);
     let result = read_f64(&state, 0);
     assert!(
-        (result - 3.14).abs() < 0.01,
-        "REAL_TO_LREAL(3.14) should be ~3.14, got {result}"
+        (result - 3.5).abs() < 0.01,
+        "REAL_TO_LREAL(3.5) should be ~3.5, got {result}"
     );
 }
 

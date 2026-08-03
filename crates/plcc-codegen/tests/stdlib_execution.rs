@@ -101,14 +101,14 @@ PROGRAM AbsRealTest
 VAR
     result : REAL;
 END_VAR
-    result := ABS(-3.14);
+    result := ABS(-3.5);
 END_PROGRAM
 "#;
     let state = compile_and_run(source, "absrealtest_scan", 4, 1);
     let result = read_f32(&state, 0);
     assert!(
-        (result - 3.14).abs() < 0.01,
-        "ABS(-3.14) should be ~3.14, got {result}"
+        (result - 3.5).abs() < 0.01,
+        "ABS(-3.5) should be ~3.5, got {result}"
     );
 }
 

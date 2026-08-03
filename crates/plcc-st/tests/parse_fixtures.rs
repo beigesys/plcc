@@ -50,7 +50,9 @@ fn parse_fixture_pou_function() {
 
 #[test]
 fn parse_fixture_pou_function_block() {
-    parse_file(Path::new("../../tests/fixtures/parse/pou_function_block.st"));
+    parse_file(Path::new(
+        "../../tests/fixtures/parse/pou_function_block.st",
+    ));
 }
 
 #[test]
@@ -80,7 +82,9 @@ fn parse_program_pid_simple() {
 
 #[test]
 fn parse_fixture_direct_representation() {
-    parse_file(Path::new("../../tests/fixtures/parse/direct_representation.st"));
+    parse_file(Path::new(
+        "../../tests/fixtures/parse/direct_representation.st",
+    ));
 }
 
 /// Helper that parses a file and expects errors (for error recovery tests).
@@ -116,12 +120,16 @@ fn parse_fixture_typecheck_type_errors() {
 
 #[test]
 fn parse_fixture_typecheck_implicit_conversions() {
-    parse_file(Path::new("../../tests/fixtures/typecheck/implicit_conversions.st"));
+    parse_file(Path::new(
+        "../../tests/fixtures/typecheck/implicit_conversions.st",
+    ));
 }
 
 #[test]
 fn parse_fixture_typecheck_fb_instantiation() {
-    parse_file(Path::new("../../tests/fixtures/typecheck/fb_instantiation.st"));
+    parse_file(Path::new(
+        "../../tests/fixtures/typecheck/fb_instantiation.st",
+    ));
 }
 
 #[test]

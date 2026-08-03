@@ -274,8 +274,10 @@ END_PROGRAM
     // State: PI(f32) + result(f32) = 8 bytes
     let state = jit_run(source, "constval_scan", 8, 1);
     let result = read_f32(&state, 4);
+    // The ST source really does declare PI, so compare against the constant
+    // rather than repeating a literal clippy reads as a botched approximation.
     assert!(
-        (result - 3.14159).abs() < 0.001,
+        (result - std::f32::consts::PI).abs() < 0.001,
         "CONSTANT PI should be 3.14159, got {result}"
     );
 }

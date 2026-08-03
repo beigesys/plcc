@@ -6,7 +6,7 @@
 //! `plcc_st::parse()`, then runs `plcc_hir::check()` and asserts on
 //! the resulting errors (or absence thereof).
 
-use plcc_hir::{check, CheckError};
+use plcc_hir::{CheckError, check};
 use plcc_st::parse;
 
 /// Helper: parse + check, return errors only.
@@ -219,7 +219,9 @@ fn bool_plus_int_arithmetic_rejected() {
     let errors = check_src(src);
     assert!(!errors.is_empty(), "BOOL + INT should produce an error");
     // Should be a type mismatch — BOOL is not in ANY_NUM
-    let has_type_mismatch = errors.iter().any(|e| matches!(e, CheckError::TypeMismatch { .. }));
+    let has_type_mismatch = errors
+        .iter()
+        .any(|e| matches!(e, CheckError::TypeMismatch { .. }));
     assert!(
         has_type_mismatch,
         "expected TypeMismatch for BOOL + INT, got: {errors:?}"
@@ -241,7 +243,9 @@ fn string_assigned_to_int_rejected() {
         !errors.is_empty(),
         "STRING assigned to INT should produce an error"
     );
-    let has_type_mismatch = errors.iter().any(|e| matches!(e, CheckError::TypeMismatch { .. }));
+    let has_type_mismatch = errors
+        .iter()
+        .any(|e| matches!(e, CheckError::TypeMismatch { .. }));
     assert!(
         has_type_mismatch,
         "expected TypeMismatch for STRING -> INT, got: {errors:?}"

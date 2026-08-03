@@ -4,9 +4,9 @@
 use crate::scope::{PouInfo, PouKind, Scope, SymbolTable, VarInfo};
 use crate::types::{IecType, TypeRegistry};
 use miette::Diagnostic;
-use thiserror::Error;
-use plcc_st::ast::*;
 use plcc_st::Span;
+use plcc_st::ast::*;
+use thiserror::Error;
 
 #[derive(Debug, Clone, Error, Diagnostic)]
 pub enum CheckError {
@@ -100,8 +100,10 @@ impl TypeChecker {
                     self.build_pou_info(PouKind::FunctionBlock, &fb.name, None, &fb.var_blocks);
                 self.symbols.register_pou(info);
                 // Register FB as a type
-                self.types
-                    .register(fb.name.name.to_uppercase(), IecType::FbInstance(fb.name.name.clone()));
+                self.types.register(
+                    fb.name.name.to_uppercase(),
+                    IecType::FbInstance(fb.name.name.clone()),
+                );
             }
             Declaration::TypeDecl(td) => {
                 let ty = self.resolve_type_spec(&td.type_spec);
@@ -571,10 +573,7 @@ impl TypeChecker {
             }
             TypeSpecKind::Pointer(base) => IecType::Pointer(Box::new(self.resolve_type_spec(base))),
             TypeSpecKind::Subrange { base, low, high } => {
-                let base_ty = self
-                    .types
-                    .resolve(&base.name)
-                    .unwrap_or(IecType::Int);
+                let base_ty = self.types.resolve(&base.name).unwrap_or(IecType::Int);
                 let lo = if let ExpressionKind::IntegerLiteral(v) = &low.kind {
                     *v as i64
                 } else {

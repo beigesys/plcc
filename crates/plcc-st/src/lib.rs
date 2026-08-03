@@ -6,5 +6,5 @@ pub mod span;
 pub mod token;
 
 pub use ast::*;
-pub use parser::{parse, ParseError};
+pub use parser::{ParseError, parse};
 pub use span::Span;

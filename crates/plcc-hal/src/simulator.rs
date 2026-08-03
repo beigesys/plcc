@@ -250,8 +250,7 @@ impl RetainStorage for SimRetainStorage {
             });
         }
         match &self.path {
-            Some(path) => std::fs::write(path, data)
-                .map_err(|e| RetainError::Io(e.to_string())),
+            Some(path) => std::fs::write(path, data).map_err(|e| RetainError::Io(e.to_string())),
             None => Err(RetainError::NotAvailable),
         }
     }
@@ -272,8 +271,7 @@ impl RetainStorage for SimRetainStorage {
         match &self.path {
             Some(path) => {
                 if path.exists() {
-                    std::fs::remove_file(path)
-                        .map_err(|e| RetainError::Io(e.to_string()))?;
+                    std::fs::remove_file(path).map_err(|e| RetainError::Io(e.to_string()))?;
                 }
                 Ok(())
             }

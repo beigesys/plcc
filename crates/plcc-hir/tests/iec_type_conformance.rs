@@ -7,7 +7,7 @@
 //! `plcc_st::parse()`, then runs `plcc_hir::check()` and asserts on
 //! the resulting errors (or absence thereof).
 
-use plcc_hir::{check, CheckError};
+use plcc_hir::{CheckError, check};
 use plcc_st::parse;
 
 /// Helper: parse + check, return errors only.
@@ -39,8 +39,13 @@ fn iec_any_num_required_for_arithmetic() {
         END_PROGRAM
     "#;
     let errors = check_src(src);
-    assert!(!errors.is_empty(), "BOOL + INT should produce an error (BOOL not in ANY_NUM)");
-    let has_type_mismatch = errors.iter().any(|e| matches!(e, CheckError::TypeMismatch { .. }));
+    assert!(
+        !errors.is_empty(),
+        "BOOL + INT should produce an error (BOOL not in ANY_NUM)"
+    );
+    let has_type_mismatch = errors
+        .iter()
+        .any(|e| matches!(e, CheckError::TypeMismatch { .. }));
     assert!(
         has_type_mismatch,
         "expected TypeMismatch for BOOL + INT, got: {errors:?}"
@@ -65,7 +70,9 @@ fn iec_any_bit_required_for_logical() {
         !errors.is_empty(),
         "INT AND REAL should produce an error (REAL not in ANY_BIT)"
     );
-    let has_type_mismatch = errors.iter().any(|e| matches!(e, CheckError::TypeMismatch { .. }));
+    let has_type_mismatch = errors
+        .iter()
+        .any(|e| matches!(e, CheckError::TypeMismatch { .. }));
     assert!(
         has_type_mismatch,
         "expected TypeMismatch for INT AND REAL, got: {errors:?}"
@@ -131,7 +138,9 @@ fn iec_no_implicit_narrowing() {
         !errors.is_empty(),
         "DINT -> INT narrowing should produce an error"
     );
-    let has_type_mismatch = errors.iter().any(|e| matches!(e, CheckError::TypeMismatch { .. }));
+    let has_type_mismatch = errors
+        .iter()
+        .any(|e| matches!(e, CheckError::TypeMismatch { .. }));
     assert!(
         has_type_mismatch,
         "expected TypeMismatch for DINT -> INT narrowing, got: {errors:?}"
@@ -155,7 +164,9 @@ fn iec_no_implicit_real_to_int() {
         !errors.is_empty(),
         "REAL -> INT should produce an error (no implicit narrowing)"
     );
-    let has_type_mismatch = errors.iter().any(|e| matches!(e, CheckError::TypeMismatch { .. }));
+    let has_type_mismatch = errors
+        .iter()
+        .any(|e| matches!(e, CheckError::TypeMismatch { .. }));
     assert!(
         has_type_mismatch,
         "expected TypeMismatch for REAL -> INT, got: {errors:?}"

@@ -12,12 +12,12 @@
 #[cfg(feature = "runner")]
 fn main() {
     use clap::Parser;
-    use inkwell::context::Context;
     use inkwell::OptimizationLevel;
-    use std::path::PathBuf;
+    use inkwell::context::Context;
     use plcc_hal::platform::Platform;
     use plcc_hal::process_image::ProcessImage;
     use plcc_hal::simulator::LinuxSimulator;
+    use std::path::PathBuf;
 
     #[derive(Parser)]
     #[command(name = "plcc-sim", about = "Run ST programs on the Linux simulator")]

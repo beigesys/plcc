@@ -46,9 +46,7 @@ fn parse_oscat_basic() {
     }
 
     let fail_rate = (total - passed) as f64 / total as f64 * 100.0;
-    eprintln!(
-        "\nOSCAT parse results: {passed}/{total} passed ({fail_rate:.1}% failure rate)"
-    );
+    eprintln!("\nOSCAT parse results: {passed}/{total} passed ({fail_rate:.1}% failure rate)");
 
     if !failed_files.is_empty() {
         eprintln!("\nFailed files ({}):", failed_files.len());

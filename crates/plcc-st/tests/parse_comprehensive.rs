@@ -18,10 +18,7 @@ fn parse_ok(source: &str) -> CompilationUnit {
 
 fn parse_expect_errors(source: &str) -> (CompilationUnit, Vec<ParseError>) {
     let (unit, errors) = plcc_st::parse(source);
-    assert!(
-        !errors.is_empty(),
-        "expected parse errors but got none"
-    );
+    assert!(!errors.is_empty(), "expected parse errors but got none");
     (unit, errors)
 }
 
@@ -52,7 +49,10 @@ END_CONFIGURATION
             assert_eq!(res.tasks[0].properties.len(), 2);
             assert_eq!(res.program_configs.len(), 1);
             assert_eq!(res.program_configs[0].name.name, "Main");
-            assert_eq!(res.program_configs[0].task.as_ref().unwrap().name, "FastTask");
+            assert_eq!(
+                res.program_configs[0].task.as_ref().unwrap().name,
+                "FastTask"
+            );
             assert_eq!(res.program_configs[0].program_type.name, "MainProg");
         }
         _ => panic!("expected Configuration declaration"),
@@ -254,14 +254,12 @@ END_PROGRAM
             assert_eq!(p.body.len(), 3);
             // First statement is p.x := 1.0 (member access assignment)
             match &p.body[0].kind {
-                StatementKind::Assignment { target, .. } => {
-                    match &target.kind {
-                        ExpressionKind::MemberAccess { member, .. } => {
-                            assert_eq!(member.name, "x");
-                        }
-                        _ => panic!("expected MemberAccess on assignment target"),
+                StatementKind::Assignment { target, .. } => match &target.kind {
+                    ExpressionKind::MemberAccess { member, .. } => {
+                        assert_eq!(member.name, "x");
                     }
-                }
+                    _ => panic!("expected MemberAccess on assignment target"),
+                },
                 _ => panic!("expected Assignment"),
             }
         }
@@ -378,23 +376,19 @@ END_PROGRAM
             // Check pointer type
             let ts = &p.var_blocks[0].declarations[0].type_spec;
             match &ts.kind {
-                TypeSpecKind::Pointer(inner) => {
-                    match &inner.kind {
-                        TypeSpecKind::Named(ident) => assert_eq!(ident.name, "INT"),
-                        _ => panic!("expected Named inner type"),
-                    }
-                }
+                TypeSpecKind::Pointer(inner) => match &inner.kind {
+                    TypeSpecKind::Named(ident) => assert_eq!(ident.name, "INT"),
+                    _ => panic!("expected Named inner type"),
+                },
                 _ => panic!("expected Pointer type"),
             }
             // Check dereference in body
             assert_eq!(p.body.len(), 1);
             match &p.body[0].kind {
-                StatementKind::Assignment { value, .. } => {
-                    match &value.kind {
-                        ExpressionKind::Dereference(_) => {}
-                        _ => panic!("expected Dereference expression"),
-                    }
-                }
+                StatementKind::Assignment { value, .. } => match &value.kind {
+                    ExpressionKind::Dereference(_) => {}
+                    _ => panic!("expected Dereference expression"),
+                },
                 _ => panic!("expected Assignment"),
             }
         }
@@ -553,7 +547,11 @@ END_PROGRAM
         Declaration::Program(p) => {
             assert_eq!(p.name.name, "AllStatements");
             // Verify we have many statements (assignment, call, if, case, for, while, repeat, for+exit, for+continue, return)
-            assert!(p.body.len() >= 10, "expected at least 10 statements, got {}", p.body.len());
+            assert!(
+                p.body.len() >= 10,
+                "expected at least 10 statements, got {}",
+                p.body.len()
+            );
 
             // Check statement kinds
             assert!(matches!(p.body[0].kind, StatementKind::Assignment { .. }));
@@ -566,7 +564,11 @@ END_PROGRAM
 
             // Check IF has ELSIF and ELSE
             match &p.body[2].kind {
-                StatementKind::If { elsif_branches, else_body, .. } => {
+                StatementKind::If {
+                    elsif_branches,
+                    else_body,
+                    ..
+                } => {
                     assert_eq!(elsif_branches.len(), 1);
                     assert!(else_body.is_some());
                 }
@@ -575,7 +577,11 @@ END_PROGRAM
 
             // Check CASE has branches and else
             match &p.body[3].kind {
-                StatementKind::Case { branches, else_body, .. } => {
+                StatementKind::Case {
+                    branches,
+                    else_body,
+                    ..
+                } => {
                     assert_eq!(branches.len(), 3);
                     assert!(else_body.is_some());
                 }
@@ -646,73 +652,73 @@ END_PROGRAM
     let unit = parse_ok(src);
     match &unit.declarations[0] {
         Declaration::Program(p) => {
-            assert!(p.body.len() >= 10, "expected many statements, got {}", p.body.len());
+            assert!(
+                p.body.len() >= 10,
+                "expected many statements, got {}",
+                p.body.len()
+            );
 
             // Check deeply nested parens produce Parenthesized
             match &p.body[0].kind {
-                StatementKind::Assignment { value, .. } => {
-                    match &value.kind {
-                        ExpressionKind::Parenthesized(_) => {}
-                        _ => panic!("expected Parenthesized expression"),
-                    }
-                }
+                StatementKind::Assignment { value, .. } => match &value.kind {
+                    ExpressionKind::Parenthesized(_) => {}
+                    _ => panic!("expected Parenthesized expression"),
+                },
                 _ => panic!("expected Assignment"),
             }
 
             // Check power expression
             match &p.body[1].kind {
-                StatementKind::Assignment { value, .. } => {
-                    match &value.kind {
-                        ExpressionKind::BinaryOp { op: BinaryOp::Add, .. } => {}
-                        _ => panic!("expected Add at top level of power expression (precedence)"),
-                    }
-                }
+                StatementKind::Assignment { value, .. } => match &value.kind {
+                    ExpressionKind::BinaryOp {
+                        op: BinaryOp::Add, ..
+                    } => {}
+                    _ => panic!("expected Add at top level of power expression (precedence)"),
+                },
                 _ => panic!("expected Assignment"),
             }
 
             // Check MOD
             match &p.body[2].kind {
-                StatementKind::Assignment { value, .. } => {
-                    match &value.kind {
-                        ExpressionKind::BinaryOp { op: BinaryOp::Mod, .. } => {}
-                        _ => panic!("expected Mod expression"),
-                    }
-                }
+                StatementKind::Assignment { value, .. } => match &value.kind {
+                    ExpressionKind::BinaryOp {
+                        op: BinaryOp::Mod, ..
+                    } => {}
+                    _ => panic!("expected Mod expression"),
+                },
                 _ => panic!("expected Assignment"),
             }
 
             // Check NOT (index 4: b := NOT b)
             match &p.body[4].kind {
-                StatementKind::Assignment { value, .. } => {
-                    match &value.kind {
-                        ExpressionKind::UnaryOp { op: UnaryOp::Not, .. } => {}
-                        _ => panic!("expected NOT expression"),
-                    }
-                }
+                StatementKind::Assignment { value, .. } => match &value.kind {
+                    ExpressionKind::UnaryOp {
+                        op: UnaryOp::Not, ..
+                    } => {}
+                    _ => panic!("expected NOT expression"),
+                },
                 _ => panic!("expected Assignment"),
             }
 
             // Check negation (index 5: x := -x)
             match &p.body[5].kind {
-                StatementKind::Assignment { value, .. } => {
-                    match &value.kind {
-                        ExpressionKind::UnaryOp { op: UnaryOp::Neg, .. } => {}
-                        _ => panic!("expected Neg expression"),
-                    }
-                }
+                StatementKind::Assignment { value, .. } => match &value.kind {
+                    ExpressionKind::UnaryOp {
+                        op: UnaryOp::Neg, ..
+                    } => {}
+                    _ => panic!("expected Neg expression"),
+                },
                 _ => panic!("expected Assignment"),
             }
 
             // Check typed literal (index 7: x := INT#5)
             match &p.body[7].kind {
-                StatementKind::Assignment { value, .. } => {
-                    match &value.kind {
-                        ExpressionKind::TypedLiteral { type_name, .. } => {
-                            assert_eq!(type_name.name, "INT");
-                        }
-                        _ => panic!("expected TypedLiteral expression"),
+                StatementKind::Assignment { value, .. } => match &value.kind {
+                    ExpressionKind::TypedLiteral { type_name, .. } => {
+                        assert_eq!(type_name.name, "INT");
                     }
-                }
+                    _ => panic!("expected TypedLiteral expression"),
+                },
                 _ => panic!("expected Assignment"),
             }
         }
@@ -868,10 +874,7 @@ END_PROGRAM
 "#;
     let (_unit, errors) = parse_expect_errors(src);
     // Should have errors about missing END_IF
-    assert!(
-        !errors.is_empty(),
-        "expected errors for missing END_IF"
-    );
+    assert!(!errors.is_empty(), "expected errors for missing END_IF");
 }
 
 // ── 16. Negative: missing semicolon ──
@@ -998,40 +1001,34 @@ END_PROGRAM
 
             // x := %IW0
             match &p.body[0].kind {
-                StatementKind::Assignment { value, .. } => {
-                    match &value.kind {
-                        ExpressionKind::DirectVariable(repr) => {
-                            assert_eq!(repr, "%IW0");
-                        }
-                        _ => panic!("expected DirectVariable expression"),
+                StatementKind::Assignment { value, .. } => match &value.kind {
+                    ExpressionKind::DirectVariable(repr) => {
+                        assert_eq!(repr, "%IW0");
                     }
-                }
+                    _ => panic!("expected DirectVariable expression"),
+                },
                 _ => panic!("expected Assignment"),
             }
 
             // b := %MX0.1
             match &p.body[1].kind {
-                StatementKind::Assignment { value, .. } => {
-                    match &value.kind {
-                        ExpressionKind::DirectVariable(repr) => {
-                            assert_eq!(repr, "%MX0.1");
-                        }
-                        _ => panic!("expected DirectVariable expression"),
+                StatementKind::Assignment { value, .. } => match &value.kind {
+                    ExpressionKind::DirectVariable(repr) => {
+                        assert_eq!(repr, "%MX0.1");
                     }
-                }
+                    _ => panic!("expected DirectVariable expression"),
+                },
                 _ => panic!("expected Assignment"),
             }
 
             // %QW10 := x (direct variable as assignment target)
             match &p.body[2].kind {
-                StatementKind::Assignment { target, .. } => {
-                    match &target.kind {
-                        ExpressionKind::DirectVariable(repr) => {
-                            assert_eq!(repr, "%QW10");
-                        }
-                        _ => panic!("expected DirectVariable as assignment target"),
+                StatementKind::Assignment { target, .. } => match &target.kind {
+                    ExpressionKind::DirectVariable(repr) => {
+                        assert_eq!(repr, "%QW10");
                     }
-                }
+                    _ => panic!("expected DirectVariable as assignment target"),
+                },
                 _ => panic!("expected Assignment"),
             }
         }
@@ -1144,7 +1141,11 @@ END_PROGRAM
     match &unit.declarations[0] {
         Declaration::Program(p) => {
             match &p.body[0].kind {
-                StatementKind::Case { branches, else_body, .. } => {
+                StatementKind::Case {
+                    branches,
+                    else_body,
+                    ..
+                } => {
                     assert_eq!(branches.len(), 3);
                     assert!(else_body.is_none());
                     // First branch: range 1..5
@@ -1175,23 +1176,19 @@ END_PROGRAM
 "#;
     let unit = parse_ok(src);
     match &unit.declarations[0] {
-        Declaration::Program(p) => {
-            match &p.body[0].kind {
-                StatementKind::Assignment { value, .. } => {
-                    match &value.kind {
-                        ExpressionKind::FunctionCall { args, .. } => {
-                            assert_eq!(args.len(), 2);
-                            assert!(args[0].name.is_some());
-                            assert_eq!(args[0].name.as_ref().unwrap().name, "a");
-                            assert!(args[1].name.is_some());
-                            assert_eq!(args[1].name.as_ref().unwrap().name, "b");
-                        }
-                        _ => panic!("expected FunctionCall"),
-                    }
+        Declaration::Program(p) => match &p.body[0].kind {
+            StatementKind::Assignment { value, .. } => match &value.kind {
+                ExpressionKind::FunctionCall { args, .. } => {
+                    assert_eq!(args.len(), 2);
+                    assert!(args[0].name.is_some());
+                    assert_eq!(args[0].name.as_ref().unwrap().name, "a");
+                    assert!(args[1].name.is_some());
+                    assert_eq!(args[1].name.as_ref().unwrap().name, "b");
                 }
-                _ => panic!("expected Assignment"),
-            }
-        }
+                _ => panic!("expected FunctionCall"),
+            },
+            _ => panic!("expected Assignment"),
+        },
         _ => panic!("expected Program"),
     }
 }
@@ -1315,44 +1312,36 @@ END_PROGRAM
             assert_eq!(p.body.len(), 4);
             // TRUE
             match &p.body[0].kind {
-                StatementKind::Assignment { value, .. } => {
-                    match &value.kind {
-                        ExpressionKind::BoolLiteral(true) => {}
-                        _ => panic!("expected BoolLiteral(true)"),
-                    }
-                }
+                StatementKind::Assignment { value, .. } => match &value.kind {
+                    ExpressionKind::BoolLiteral(true) => {}
+                    _ => panic!("expected BoolLiteral(true)"),
+                },
                 _ => panic!("expected Assignment"),
             }
             // FALSE
             match &p.body[1].kind {
-                StatementKind::Assignment { value, .. } => {
-                    match &value.kind {
-                        ExpressionKind::BoolLiteral(false) => {}
-                        _ => panic!("expected BoolLiteral(false)"),
-                    }
-                }
+                StatementKind::Assignment { value, .. } => match &value.kind {
+                    ExpressionKind::BoolLiteral(false) => {}
+                    _ => panic!("expected BoolLiteral(false)"),
+                },
                 _ => panic!("expected Assignment"),
             }
             // TIME literal
             match &p.body[2].kind {
-                StatementKind::Assignment { value, .. } => {
-                    match &value.kind {
-                        ExpressionKind::TimeLiteral(_) => {}
-                        _ => panic!("expected TimeLiteral"),
-                    }
-                }
+                StatementKind::Assignment { value, .. } => match &value.kind {
+                    ExpressionKind::TimeLiteral(_) => {}
+                    _ => panic!("expected TimeLiteral"),
+                },
                 _ => panic!("expected Assignment"),
             }
             // String literal
             match &p.body[3].kind {
-                StatementKind::Assignment { value, .. } => {
-                    match &value.kind {
-                        ExpressionKind::StringLiteral(s) => {
-                            assert_eq!(s, "hello world");
-                        }
-                        _ => panic!("expected StringLiteral"),
+                StatementKind::Assignment { value, .. } => match &value.kind {
+                    ExpressionKind::StringLiteral(s) => {
+                        assert_eq!(s, "hello world");
                     }
-                }
+                    _ => panic!("expected StringLiteral"),
+                },
                 _ => panic!("expected Assignment"),
             }
         }
@@ -1429,7 +1418,10 @@ END_PROGRAM
     let unit = parse_ok(src);
     assert_eq!(unit.declarations.len(), 3);
     assert!(matches!(unit.declarations[0], Declaration::Function(_)));
-    assert!(matches!(unit.declarations[1], Declaration::FunctionBlock(_)));
+    assert!(matches!(
+        unit.declarations[1],
+        Declaration::FunctionBlock(_)
+    ));
     assert!(matches!(unit.declarations[2], Declaration::Program(_)));
 }
 
@@ -1450,11 +1442,15 @@ END_PROGRAM
     match &unit.declarations[0] {
         Declaration::Program(p) => {
             // Should have empty statements plus the assignment
-            let non_empty: Vec<_> = p.body.iter()
+            let non_empty: Vec<_> = p
+                .body
+                .iter()
                 .filter(|s| !matches!(s.kind, StatementKind::Empty))
                 .collect();
             assert_eq!(non_empty.len(), 1);
-            let empties: Vec<_> = p.body.iter()
+            let empties: Vec<_> = p
+                .body
+                .iter()
                 .filter(|s| matches!(s.kind, StatementKind::Empty))
                 .collect();
             assert_eq!(empties.len(), 3);
@@ -1474,17 +1470,13 @@ END_PROGRAM
 "#;
     let unit = parse_ok(src);
     match &unit.declarations[0] {
-        Declaration::Program(p) => {
-            match &p.var_blocks[0].declarations[0].type_spec.kind {
-                TypeSpecKind::Pointer(inner) => {
-                    match &inner.kind {
-                        TypeSpecKind::Named(ident) => assert_eq!(ident.name, "INT"),
-                        _ => panic!("expected Named inner type for REF_TO"),
-                    }
-                }
-                _ => panic!("expected Pointer type for REF_TO"),
-            }
-        }
+        Declaration::Program(p) => match &p.var_blocks[0].declarations[0].type_spec.kind {
+            TypeSpecKind::Pointer(inner) => match &inner.kind {
+                TypeSpecKind::Named(ident) => assert_eq!(ident.name, "INT"),
+                _ => panic!("expected Named inner type for REF_TO"),
+            },
+            _ => panic!("expected Pointer type for REF_TO"),
+        },
         _ => panic!("expected Program"),
     }
 }
@@ -1502,17 +1494,15 @@ END_TYPE
 "#;
     let unit = parse_ok(src);
     match &unit.declarations[0] {
-        Declaration::TypeDecl(td) => {
-            match &td.type_spec.kind {
-                TypeSpecKind::Struct(fields) => {
-                    assert_eq!(fields.len(), 3);
-                    assert!(fields[0].initializer.is_some());
-                    assert!(fields[1].initializer.is_some());
-                    assert!(fields[2].initializer.is_some());
-                }
-                _ => panic!("expected Struct type"),
+        Declaration::TypeDecl(td) => match &td.type_spec.kind {
+            TypeSpecKind::Struct(fields) => {
+                assert_eq!(fields.len(), 3);
+                assert!(fields[0].initializer.is_some());
+                assert!(fields[1].initializer.is_some());
+                assert!(fields[2].initializer.is_some());
             }
-        }
+            _ => panic!("expected Struct type"),
+        },
         _ => panic!("expected TypeDecl"),
     }
 }
@@ -1584,14 +1574,12 @@ END_PROGRAM
             assert_eq!(p.body.len(), 2);
             // b := w.0 — member access with integer member
             match &p.body[0].kind {
-                StatementKind::Assignment { value, .. } => {
-                    match &value.kind {
-                        ExpressionKind::MemberAccess { member, .. } => {
-                            assert_eq!(member.name, "0");
-                        }
-                        _ => panic!("expected MemberAccess for bit access"),
+                StatementKind::Assignment { value, .. } => match &value.kind {
+                    ExpressionKind::MemberAccess { member, .. } => {
+                        assert_eq!(member.name, "0");
                     }
-                }
+                    _ => panic!("expected MemberAccess for bit access"),
+                },
                 _ => panic!("expected Assignment"),
             }
         }
@@ -1614,14 +1602,12 @@ END_PROGRAM
 "#;
     let unit = parse_ok(src);
     match &unit.declarations[0] {
-        Declaration::Program(p) => {
-            match &p.body[0].kind {
-                StatementKind::For { by, .. } => {
-                    assert!(by.is_none(), "expected no BY clause");
-                }
-                _ => panic!("expected For statement"),
+        Declaration::Program(p) => match &p.body[0].kind {
+            StatementKind::For { by, .. } => {
+                assert!(by.is_none(), "expected no BY clause");
             }
-        }
+            _ => panic!("expected For statement"),
+        },
         _ => panic!("expected Program"),
     }
 }
@@ -1653,12 +1639,18 @@ END_PROGRAM
         Declaration::Program(p) => {
             assert_eq!(p.body.len(), 1);
             match &p.body[0].kind {
-                StatementKind::If { then_body, elsif_branches, .. } => {
+                StatementKind::If {
+                    then_body,
+                    elsif_branches,
+                    ..
+                } => {
                     assert_eq!(then_body.len(), 1);
                     assert_eq!(elsif_branches.len(), 1);
                     // Nested IF inside then_body
                     match &then_body[0].kind {
-                        StatementKind::If { then_body: inner, .. } => {
+                        StatementKind::If {
+                            then_body: inner, ..
+                        } => {
                             assert_eq!(inner.len(), 1);
                             assert!(matches!(inner[0].kind, StatementKind::If { .. }));
                         }
@@ -1794,20 +1786,18 @@ END_PROGRAM
             assert_eq!(p.body.len(), 2);
             // result := obj.GetValue() — assignment with method call
             match &p.body[0].kind {
-                StatementKind::Assignment { value, .. } => {
-                    match &value.kind {
-                        ExpressionKind::FunctionCall { callee, args } => {
-                            assert!(args.is_empty());
-                            match &callee.kind {
-                                ExpressionKind::MemberAccess { member, .. } => {
-                                    assert_eq!(member.name, "GetValue");
-                                }
-                                _ => panic!("expected MemberAccess callee"),
+                StatementKind::Assignment { value, .. } => match &value.kind {
+                    ExpressionKind::FunctionCall { callee, args } => {
+                        assert!(args.is_empty());
+                        match &callee.kind {
+                            ExpressionKind::MemberAccess { member, .. } => {
+                                assert_eq!(member.name, "GetValue");
                             }
+                            _ => panic!("expected MemberAccess callee"),
                         }
-                        _ => panic!("expected FunctionCall expression"),
                     }
-                }
+                    _ => panic!("expected FunctionCall expression"),
+                },
                 _ => panic!("expected Assignment"),
             }
         }
@@ -1833,12 +1823,16 @@ END_PROGRAM
             assert_eq!(decls.len(), 3);
             // x := 2 + 3 should be BinaryOp
             match &decls[0].initializer.as_ref().unwrap().kind {
-                ExpressionKind::BinaryOp { op: BinaryOp::Add, .. } => {}
+                ExpressionKind::BinaryOp {
+                    op: BinaryOp::Add, ..
+                } => {}
                 other => panic!("expected Add expression initializer, got {other:?}"),
             }
             // z := NOT FALSE should be UnaryOp
             match &decls[2].initializer.as_ref().unwrap().kind {
-                ExpressionKind::UnaryOp { op: UnaryOp::Not, .. } => {}
+                ExpressionKind::UnaryOp {
+                    op: UnaryOp::Not, ..
+                } => {}
                 other => panic!("expected Not expression initializer, got {other:?}"),
             }
         }

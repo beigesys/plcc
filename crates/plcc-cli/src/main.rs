@@ -109,7 +109,11 @@ fn main() -> Result<()> {
                 println!("OK: {} declaration(s) parsed", unit.declarations.len());
             }
 
-            if errors.is_empty() { Ok(()) } else { std::process::exit(1); }
+            if errors.is_empty() {
+                Ok(())
+            } else {
+                std::process::exit(1);
+            }
         }
         Commands::Check { input } => {
             let source = read_source(&input)?;
@@ -138,7 +142,11 @@ fn main() -> Result<()> {
             println!("OK: {} declaration(s) checked", unit.declarations.len());
             Ok(())
         }
-        Commands::Compile { inputs, output, target } => {
+        Commands::Compile {
+            inputs,
+            output,
+            target,
+        } => {
             if inputs.is_empty() {
                 eprintln!("Error: at least one input file is required");
                 std::process::exit(1);
@@ -146,7 +154,8 @@ fn main() -> Result<()> {
 
             let merged = parse_inputs(&inputs)?;
             let context = inkwell::context::Context::create();
-            let mut compiler = plcc_codegen::Compiler::new(&context, &inputs[0].display().to_string());
+            let mut compiler =
+                plcc_codegen::Compiler::new(&context, &inputs[0].display().to_string());
 
             if let Err(e) = compiler.compile(&merged) {
                 eprintln!("Codegen error: {e}");
@@ -159,13 +168,20 @@ fn main() -> Result<()> {
             } else if out_str.ends_with(".bc") {
                 compiler.emit_bitcode(&output);
             } else {
-                compiler.emit_object(&output, &target).map_err(|e| miette::miette!("{e}"))?;
+                compiler
+                    .emit_object(&output, &target)
+                    .map_err(|e| miette::miette!("{e}"))?;
             }
 
             println!("Compiled {} file(s) to {}", inputs.len(), output.display());
             Ok(())
         }
-        Commands::Sim { inputs, scans, interval_ms, modbus } => {
+        Commands::Sim {
+            inputs,
+            scans,
+            interval_ms,
+            modbus,
+        } => {
             if inputs.is_empty() {
                 eprintln!("Usage: plcc sim <program.st> [--scans 0] [--modbus 502]");
                 std::process::exit(1);
@@ -180,14 +196,18 @@ fn main() -> Result<()> {
             }
 
             let ir = compiler.emit_ir();
-            let scan_fns: Vec<String> = ir.lines()
+            let scan_fns: Vec<String> = ir
+                .lines()
                 .filter_map(|line| {
                     if line.starts_with("define void @") && line.contains("_scan(") {
                         line.trim_start_matches("define void @")
-                            .split('(').next()
+                            .split('(')
+                            .next()
                             .filter(|n| n.ends_with("_scan"))
                             .map(|n| n.to_string())
-                    } else { None }
+                    } else {
+                        None
+                    }
                 })
                 .collect();
 
@@ -200,18 +220,31 @@ fn main() -> Result<()> {
             let init_name = scan_name.replace("_scan", "_init");
             let prog_name = scan_name.trim_end_matches("_scan").to_string();
 
-            let ee = compiler.module()
+            let ee = compiler
+                .module()
                 .create_jit_execution_engine(inkwell::OptimizationLevel::None)
                 .map_err(|e| miette::miette!("JIT error: {e}"))?;
 
             // Provide plcc_print for JIT (PRINT statement calls this)
             ee.add_global_mapping(
-                &compiler.module().get_function("plcc_print").unwrap_or_else(|| {
-                    let fn_type = compiler.module().get_context().void_type()
-                        .fn_type(&[compiler.module().get_context().ptr_type(inkwell::AddressSpace::default()).into()], false);
-                    compiler.module().add_function("plcc_print", fn_type, None)
-                }),
-                plcc_print_impl as usize,
+                &compiler
+                    .module()
+                    .get_function("plcc_print")
+                    .unwrap_or_else(|| {
+                        let fn_type = compiler.module().get_context().void_type().fn_type(
+                            &[compiler
+                                .module()
+                                .get_context()
+                                .ptr_type(inkwell::AddressSpace::default())
+                                .into()],
+                            false,
+                        );
+                        compiler.module().add_function("plcc_print", fn_type, None)
+                    }),
+                // Cast through a pointer, not straight to usize: a bare `fn item
+                // as usize` is a zero-sized item type, and rustc's
+                // function_casts_as_integer lint flags it as ambiguous.
+                plcc_print_impl as *const () as usize,
             );
 
             let state = std::sync::Arc::new(std::sync::Mutex::new(vec![0u8; 4096]));
@@ -225,7 +258,8 @@ fn main() -> Result<()> {
                 }
             }
 
-            let scan_ptr = ee.get_function_address(scan_name)
+            let scan_ptr = ee
+                .get_function_address(scan_name)
                 .map_err(|_| miette::miette!("Function {scan_name} not found"))?;
             let scan_fn: extern "C" fn(*mut u8) = unsafe { std::mem::transmute(scan_ptr) };
 
@@ -258,15 +292,26 @@ fn main() -> Result<()> {
                     let rd = |off: usize| -> i16 {
                         if off * 2 + 1 < s.len() {
                             i16::from_ne_bytes([s[off * 2], s[off * 2 + 1]])
-                        } else { 0 }
+                        } else {
+                            0
+                        }
                     };
-                    println!("scan {cycle:>6} | run={} raw={}% clean={}% cycle={}",
-                        rd(10), rd(15), rd(16), rd(14));
+                    println!(
+                        "scan {cycle:>6} | run={} raw={}% clean={}% cycle={}",
+                        rd(10),
+                        rd(15),
+                        rd(16),
+                        rd(14)
+                    );
                 }
 
                 cycle += 1;
-                if !run_forever && cycle >= scans as u64 { break; }
-                if interval_ms > 0 { std::thread::sleep(interval); }
+                if !run_forever && cycle >= scans as u64 {
+                    break;
+                }
+                if interval_ms > 0 {
+                    std::thread::sleep(interval);
+                }
             }
 
             eprintln!("\n{prog_name} done.");
@@ -277,7 +322,9 @@ fn main() -> Result<()> {
 
 /// PRINT implementation for JIT — outputs to stderr
 extern "C" fn plcc_print_impl(msg: *const u8) {
-    if msg.is_null() { return; }
+    if msg.is_null() {
+        return;
+    }
     let cstr = unsafe { std::ffi::CStr::from_ptr(msg as *const std::ffi::c_char) };
     if let Ok(s) = cstr.to_str() {
         eprintln!("[PLC] {s}");
@@ -307,7 +354,9 @@ fn modbus_tcp_server(port: u16, state: std::sync::Arc<std::sync::Mutex<Vec<u8>>>
                     Ok(0) | Err(_) => break,
                     Ok(n) => n,
                 };
-                if n < 12 { continue; }
+                if n < 12 {
+                    continue;
+                }
 
                 let tx_id = [buf[0], buf[1]];
                 let unit_id = buf[6];
@@ -316,7 +365,8 @@ fn modbus_tcp_server(port: u16, state: std::sync::Arc<std::sync::Mutex<Vec<u8>>>
                 // Coil address N maps to state INT at byte offset (N-1)*2
                 // Value is bool: INT != 0 → true
                 match fc {
-                    0x01 => { // Read Coils (FC01)
+                    0x01 => {
+                        // Read Coils (FC01)
                         let start = u16::from_be_bytes([buf[8], buf[9]]) as usize;
                         let count = u16::from_be_bytes([buf[10], buf[11]]) as usize;
                         let byte_count = (count + 7) / 8;
@@ -336,7 +386,9 @@ fn modbus_tcp_server(port: u16, state: std::sync::Arc<std::sync::Mutex<Vec<u8>>>
                                     let off = coil * 2; // each coil = one INT16 in state
                                     if off + 1 < s.len() {
                                         let v = i16::from_ne_bytes([s[off], s[off + 1]]);
-                                        if v != 0 { byte_val |= 1 << bit; }
+                                        if v != 0 {
+                                            byte_val |= 1 << bit;
+                                        }
                                     }
                                 }
                             }
@@ -345,16 +397,19 @@ fn modbus_tcp_server(port: u16, state: std::sync::Arc<std::sync::Mutex<Vec<u8>>>
                         drop(s);
                         let _ = sock.write_all(&resp);
                     }
-                    0x05 => { // Write Single Coil (FC05)
+                    0x05 => {
+                        // Write Single Coil (FC05)
                         let addr = u16::from_be_bytes([buf[8], buf[9]]) as usize;
                         let raw_val = u16::from_be_bytes([buf[10], buf[11]]);
                         let value: i16 = if raw_val == 0xFF00 { 1 } else { 0 };
                         let off = addr * 2;
-                        { let mut s = st.lock().unwrap();
-                          if off + 1 < s.len() {
-                              let b = value.to_ne_bytes();
-                              s[off] = b[0]; s[off+1] = b[1];
-                          }
+                        {
+                            let mut s = st.lock().unwrap();
+                            if off + 1 < s.len() {
+                                let b = value.to_ne_bytes();
+                                s[off] = b[0];
+                                s[off + 1] = b[1];
+                            }
                         }
                         let mut resp = Vec::with_capacity(12);
                         resp.extend_from_slice(&tx_id);
@@ -363,7 +418,8 @@ fn modbus_tcp_server(port: u16, state: std::sync::Arc<std::sync::Mutex<Vec<u8>>>
                         resp.extend_from_slice(&buf[6..12]);
                         let _ = sock.write_all(&resp);
                     }
-                    0x03 => { // Read Holding Registers (FC03)
+                    0x03 => {
+                        // Read Holding Registers (FC03)
                         let start = u16::from_be_bytes([buf[8], buf[9]]) as usize;
                         let count = u16::from_be_bytes([buf[10], buf[11]]) as usize;
                         let mut resp = Vec::with_capacity(9 + count * 2);
@@ -378,21 +434,26 @@ fn modbus_tcp_server(port: u16, state: std::sync::Arc<std::sync::Mutex<Vec<u8>>>
                             let off = (start + i) * 2;
                             let val = if off + 1 < s.len() {
                                 i16::from_ne_bytes([s[off], s[off + 1]])
-                            } else { 0 };
+                            } else {
+                                0
+                            };
                             resp.extend_from_slice(&(val as u16).to_be_bytes());
                         }
                         drop(s);
                         let _ = sock.write_all(&resp);
                     }
-                    0x06 => { // Write Single Register (FC06)
+                    0x06 => {
+                        // Write Single Register (FC06)
                         let addr = u16::from_be_bytes([buf[8], buf[9]]) as usize;
                         let value = u16::from_be_bytes([buf[10], buf[11]]);
                         let off = addr * 2;
-                        { let mut s = st.lock().unwrap();
-                          if off + 1 < s.len() {
-                              let b = (value as i16).to_ne_bytes();
-                              s[off] = b[0]; s[off+1] = b[1];
-                          }
+                        {
+                            let mut s = st.lock().unwrap();
+                            if off + 1 < s.len() {
+                                let b = (value as i16).to_ne_bytes();
+                                s[off] = b[0];
+                                s[off + 1] = b[1];
+                            }
                         }
                         let mut resp = Vec::with_capacity(12);
                         resp.extend_from_slice(&tx_id);

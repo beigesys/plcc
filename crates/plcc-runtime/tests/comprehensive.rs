@@ -47,7 +47,10 @@ fn sr_set_dominant_simultaneous() {
     sr.set1 = true;
     sr.reset = true;
     sr.scan();
-    assert!(sr.q1, "SR: set+reset simultaneously => Q1 stays true (set-dominant)");
+    assert!(
+        sr.q1,
+        "SR: set+reset simultaneously => Q1 stays true (set-dominant)"
+    );
 }
 
 #[test]
@@ -86,7 +89,10 @@ fn rs_reset_dominant_simultaneous() {
     rs.set = true;
     rs.reset1 = true;
     rs.scan();
-    assert!(!rs.q1, "RS: set+reset simultaneously => Q1 false (reset-dominant)");
+    assert!(
+        !rs.q1,
+        "RS: set+reset simultaneously => Q1 false (reset-dominant)"
+    );
 }
 
 #[test]
@@ -143,7 +149,10 @@ fn f_trig_full_sequence() {
     // Start HIGH
     ft.clk = true;
     ft.scan();
-    assert!(!ft.q, "F_TRIG: initial HIGH => no pulse (prev was false, but clk is true)");
+    assert!(
+        !ft.q,
+        "F_TRIG: initial HIGH => no pulse (prev was false, but clk is true)"
+    );
 
     // HIGH -> LOW => pulse
     ft.clk = false;
@@ -177,11 +186,21 @@ fn ctu_counts_on_rising_edges_only() {
     for i in 0..5 {
         ctu.cu = true;
         ctu.scan();
-        assert_eq!(ctu.cv, i + 1, "CTU: CV should be {} after pulse {}", i + 1, i + 1);
+        assert_eq!(
+            ctu.cv,
+            i + 1,
+            "CTU: CV should be {} after pulse {}",
+            i + 1,
+            i + 1
+        );
 
         // Holding CU high should NOT increment again
         ctu.scan();
-        assert_eq!(ctu.cv, i + 1, "CTU: CV should not increment while CU held high");
+        assert_eq!(
+            ctu.cv,
+            i + 1,
+            "CTU: CV should not increment while CU held high"
+        );
 
         ctu.cu = false;
         ctu.scan();
@@ -250,7 +269,11 @@ fn ctd_counts_down_from_pv() {
     for i in 0..3 {
         ctd.cd = true;
         ctd.scan();
-        assert_eq!(ctd.cv, 2 - i as i32, "CTD: CV should decrement on rising edge");
+        assert_eq!(
+            ctd.cv,
+            2 - i as i32,
+            "CTD: CV should decrement on rising edge"
+        );
         ctd.cd = false;
         ctd.scan();
     }
@@ -404,7 +427,11 @@ fn tof_delays_off() {
     tof.input = false;
     for i in 1..50 {
         tof.scan_with_time(1);
-        assert!(tof.q, "TOF: Q should stay true during off-delay (tick {})", i);
+        assert!(
+            tof.q,
+            "TOF: Q should stay true during off-delay (tick {})",
+            i
+        );
     }
 
     // After PT elapsed => Q goes false
@@ -471,7 +498,10 @@ fn tp_ignores_edges_during_pulse() {
     // Toggle input during pulse -- should be ignored
     tp.input = false;
     tp.scan_with_time(1);
-    assert!(tp.q, "TP: pulse should continue regardless of input changes");
+    assert!(
+        tp.q,
+        "TP: pulse should continue regardless of input changes"
+    );
 
     tp.input = true;
     tp.scan_with_time(1);
@@ -566,7 +596,10 @@ fn ton_multiple_cycles() {
     for _ in 0..5 {
         ton.scan_with_time(1);
     }
-    assert!(ton.q, "TON cycle 2: Q should be true after PT elapsed again");
+    assert!(
+        ton.q,
+        "TON cycle 2: Q should be true after PT elapsed again"
+    );
 
     // Cycle 3: partial, then off
     ton.input = false;
@@ -575,7 +608,10 @@ fn ton_multiple_cycles() {
     for _ in 0..3 {
         ton.scan_with_time(1);
     }
-    assert!(!ton.q, "TON cycle 3: partial timing, Q should still be false");
+    assert!(
+        !ton.q,
+        "TON cycle 3: partial timing, Q should still be false"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -586,8 +622,10 @@ fn ton_multiple_cycles() {
 
 #[test]
 fn test_abs_real() {
-    assert!((abs_real(3.14) - 3.14).abs() < EPSILON);
-    assert!((abs_real(-2.71) - 2.71).abs() < EPSILON);
+    // Deliberately not 3.14 / 2.71 — clippy's approx_constant lint reads those
+    // as botched PI and E. The values here are arbitrary; abs is what's tested.
+    assert!((abs_real(3.5) - 3.5).abs() < EPSILON);
+    assert!((abs_real(-2.25) - 2.25).abs() < EPSILON);
     assert!((abs_real(0.0)).abs() < EPSILON);
     assert!((abs_real(-0.0)).abs() < EPSILON);
 }
@@ -619,7 +657,10 @@ fn test_sqrt() {
 
 #[test]
 fn test_ln() {
-    assert!((ln(std::f64::consts::E) - 1.0).abs() < EPSILON, "ln(e) should be 1");
+    assert!(
+        (ln(std::f64::consts::E) - 1.0).abs() < EPSILON,
+        "ln(e) should be 1"
+    );
     assert!((ln(1.0)).abs() < EPSILON, "ln(1) should be 0");
 }
 
@@ -633,7 +674,10 @@ fn test_log10() {
 #[test]
 fn test_exp() {
     assert!((exp(0.0) - 1.0).abs() < EPSILON, "exp(0) should be 1");
-    assert!((exp(1.0) - std::f64::consts::E).abs() < EPSILON, "exp(1) should be e");
+    assert!(
+        (exp(1.0) - std::f64::consts::E).abs() < EPSILON,
+        "exp(1) should be e"
+    );
     assert!((exp(2.0) - std::f64::consts::E * std::f64::consts::E).abs() < EPSILON);
 }
 
@@ -646,7 +690,10 @@ fn test_sin() {
         (sin(std::f64::consts::FRAC_PI_2) - 1.0).abs() < EPSILON,
         "sin(pi/2) should be 1"
     );
-    assert!((sin(std::f64::consts::PI)).abs() < EPSILON, "sin(pi) should be ~0");
+    assert!(
+        (sin(std::f64::consts::PI)).abs() < EPSILON,
+        "sin(pi) should be ~0"
+    );
 }
 
 #[test]
@@ -698,10 +745,7 @@ fn test_atan2_quadrants() {
         (atan2(-1.0, 1.0) - (-std::f64::consts::FRAC_PI_4)).abs() < EPSILON,
         "atan2(-1,1) should be -pi/4"
     );
-    assert!(
-        (atan2(0.0, 1.0)).abs() < EPSILON,
-        "atan2(0,1) should be 0"
-    );
+    assert!((atan2(0.0, 1.0)).abs() < EPSILON, "atan2(0,1) should be 0");
     assert!(
         (atan2(1.0, 0.0) - std::f64::consts::FRAC_PI_2).abs() < EPSILON,
         "atan2(1,0) should be pi/2"
@@ -712,7 +756,10 @@ fn test_atan2_quadrants() {
 
 #[test]
 fn test_expt() {
-    assert!((expt(2.0, 10.0) - 1024.0).abs() < EPSILON, "2^10 should be 1024");
+    assert!(
+        (expt(2.0, 10.0) - 1024.0).abs() < EPSILON,
+        "2^10 should be 1024"
+    );
     assert!((expt(3.0, 3.0) - 27.0).abs() < EPSILON, "3^3 should be 27");
     assert!((expt(5.0, 0.0) - 1.0).abs() < EPSILON, "x^0 should be 1");
     assert!((expt(10.0, 1.0) - 10.0).abs() < EPSILON, "x^1 should be x");
@@ -738,11 +785,17 @@ fn test_sel() {
 fn test_max_min_real() {
     assert!((max_real(3.0, 5.0) - 5.0).abs() < EPSILON);
     assert!((max_real(-1.0, -3.0) - (-1.0)).abs() < EPSILON);
-    assert!((max_real(7.0, 7.0) - 7.0).abs() < EPSILON, "max of equal values");
+    assert!(
+        (max_real(7.0, 7.0) - 7.0).abs() < EPSILON,
+        "max of equal values"
+    );
 
     assert!((min_real(3.0, 5.0) - 3.0).abs() < EPSILON);
     assert!((min_real(-1.0, -3.0) - (-3.0)).abs() < EPSILON);
-    assert!((min_real(7.0, 7.0) - 7.0).abs() < EPSILON, "min of equal values");
+    assert!(
+        (min_real(7.0, 7.0) - 7.0).abs() < EPSILON,
+        "min of equal values"
+    );
 }
 
 #[test]
@@ -808,9 +861,17 @@ fn test_int_to_real() {
 
 #[test]
 fn test_real_to_int_truncation() {
-    assert_eq!(real_to_int(3.7), 3, "real_to_int should truncate toward zero");
+    assert_eq!(
+        real_to_int(3.7),
+        3,
+        "real_to_int should truncate toward zero"
+    );
     assert_eq!(real_to_int(3.0), 3);
-    assert_eq!(real_to_int(-2.3), -2, "real_to_int should truncate toward zero for negatives");
+    assert_eq!(
+        real_to_int(-2.3),
+        -2,
+        "real_to_int should truncate toward zero for negatives"
+    );
     assert_eq!(real_to_int(-2.9), -2);
     assert_eq!(real_to_int(0.0), 0);
 }
@@ -833,11 +894,23 @@ fn test_real_to_dint() {
 
 #[test]
 fn test_trunc() {
-    assert!((trunc(3.7) - 3.0).abs() < EPSILON, "trunc(3.7) should be 3.0");
-    assert!((trunc(-2.3) - (-2.0)).abs() < EPSILON, "trunc(-2.3) should be -2.0");
+    assert!(
+        (trunc(3.7) - 3.0).abs() < EPSILON,
+        "trunc(3.7) should be 3.0"
+    );
+    assert!(
+        (trunc(-2.3) - (-2.0)).abs() < EPSILON,
+        "trunc(-2.3) should be -2.0"
+    );
     assert!((trunc(0.0)).abs() < EPSILON);
-    assert!((trunc(5.0) - 5.0).abs() < EPSILON, "trunc of integer value is unchanged");
-    assert!((trunc(-0.9) - (0.0)).abs() < EPSILON, "trunc(-0.9) should be 0.0");
+    assert!(
+        (trunc(5.0) - 5.0).abs() < EPSILON,
+        "trunc of integer value is unchanged"
+    );
+    assert!(
+        (trunc(-0.9) - (0.0)).abs() < EPSILON,
+        "trunc(-0.9) should be 0.0"
+    );
 }
 
 // ── 27. bit string: shl, shr, rol, ror ──

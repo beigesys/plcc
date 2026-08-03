@@ -184,20 +184,14 @@ impl<'s> Parser<'s> {
                 // already handles this as separate tokens.
                 Some(Declaration::Function(self.parse_function()))
             }
-            Token::FunctionBlock => {
-                Some(Declaration::FunctionBlock(self.parse_function_block()))
-            }
+            Token::FunctionBlock => Some(Declaration::FunctionBlock(self.parse_function_block())),
             Token::Class | Token::Abstract | Token::Final => {
                 Some(Declaration::Class(self.parse_class()))
             }
             Token::Interface => Some(Declaration::Interface(self.parse_interface())),
             Token::Type => self.parse_type_decl_block(),
-            Token::VarGlobal => {
-                Some(Declaration::GlobalVarDecl(self.parse_var_block()))
-            }
-            Token::Configuration => {
-                Some(Declaration::Configuration(self.parse_configuration()))
-            }
+            Token::VarGlobal => Some(Declaration::GlobalVarDecl(self.parse_var_block())),
+            Token::Configuration => Some(Declaration::Configuration(self.parse_configuration())),
             _ => {
                 let span = self.ts.peek_span();
                 self.errors.push(ParseError::General {
@@ -709,7 +703,10 @@ impl<'s> Parser<'s> {
             None
         };
 
-        let end = self.ts.eat(&Token::Semicolon).unwrap_or(self.ts.peek_span());
+        let end = self
+            .ts
+            .eat(&Token::Semicolon)
+            .unwrap_or(self.ts.peek_span());
 
         // Emit one VarDecl per name, sharing the same type/initializer
         for name in names {
@@ -812,7 +809,10 @@ impl<'s> Parser<'s> {
             } else {
                 None
             };
-            let end_span = self.ts.eat(&Token::Semicolon).unwrap_or(self.ts.peek_span());
+            let end_span = self
+                .ts
+                .eat(&Token::Semicolon)
+                .unwrap_or(self.ts.peek_span());
             // Safety guard: prevent infinite loop
             if self.ts.pos == pos_before {
                 self.ts.advance();
@@ -846,7 +846,10 @@ impl<'s> Parser<'s> {
             let name = self.expect_ident();
             self.ts.expect(&Token::Colon, &mut self.errors);
             let type_spec = self.parse_type_spec();
-            let end_span = self.ts.eat(&Token::Semicolon).unwrap_or(self.ts.peek_span());
+            let end_span = self
+                .ts
+                .eat(&Token::Semicolon)
+                .unwrap_or(self.ts.peek_span());
             let span = name.span.merge(end_span);
             fields.push(StructField {
                 name,
@@ -896,10 +899,7 @@ impl<'s> Parser<'s> {
             None
         };
 
-        let end = length
-            .as_ref()
-            .map(|e| e.span)
-            .unwrap_or(start);
+        let end = length.as_ref().map(|e| e.span).unwrap_or(start);
 
         TypeSpec {
             kind: TypeSpecKind::StringType { wide, length },
@@ -1092,7 +1092,10 @@ impl<'s> Parser<'s> {
                 if self.ts.eat(&Token::Assign).is_some() {
                     // Assignment
                     let value = self.parse_expression();
-                    let end = self.ts.eat(&Token::Semicolon).unwrap_or(self.ts.peek_span());
+                    let end = self
+                        .ts
+                        .eat(&Token::Semicolon)
+                        .unwrap_or(self.ts.peek_span());
                     Some(Statement {
                         kind: StatementKind::Assignment {
                             target: expr,
@@ -1102,7 +1105,10 @@ impl<'s> Parser<'s> {
                     })
                 } else {
                     // Expression statement (function call or bare expression)
-                    let end = self.ts.eat(&Token::Semicolon).unwrap_or(self.ts.peek_span());
+                    let end = self
+                        .ts
+                        .eat(&Token::Semicolon)
+                        .unwrap_or(self.ts.peek_span());
                     match expr.kind {
                         ExpressionKind::FunctionCall { callee, args } => Some(Statement {
                             kind: StatementKind::FunctionCall {
@@ -1141,11 +1147,7 @@ impl<'s> Parser<'s> {
             let cond = self.parse_expression();
             self.ts.expect(&Token::Then, &mut self.errors);
             let body = self.parse_statement_list(&[Token::Elsif, Token::Else, Token::EndIf]);
-            let span = elsif_start.merge(
-                body.last()
-                    .map(|s| s.span)
-                    .unwrap_or(elsif_start),
-            );
+            let span = elsif_start.merge(body.last().map(|s| s.span).unwrap_or(elsif_start));
             elsif_branches.push(ElsifBranch {
                 condition: cond,
                 body,
@@ -1209,14 +1211,9 @@ impl<'s> Parser<'s> {
                     }
                     self.ts.expect(&Token::Colon, &mut self.errors);
                     let body = self.parse_case_branch_body();
-                    let span = branch_start.merge(
-                        body.last().map(|s| s.span).unwrap_or(branch_start),
-                    );
-                    branches.push(CaseBranch {
-                        labels,
-                        body,
-                        span,
-                    });
+                    let span =
+                        branch_start.merge(body.last().map(|s| s.span).unwrap_or(branch_start));
+                    branches.push(CaseBranch { labels, body, span });
                 }
             }
         }

@@ -36,8 +36,12 @@ pub enum IecType {
     Ltod,
     Ldt,
     // ANY_ELEMENTARY -> ANY_CHARS
-    StringType { max_len: Option<usize> },
-    WstringType { max_len: Option<usize> },
+    StringType {
+        max_len: Option<usize>,
+    },
+    WstringType {
+        max_len: Option<usize>,
+    },
     Char,
     Wchar,
     // ANY_DERIVED
