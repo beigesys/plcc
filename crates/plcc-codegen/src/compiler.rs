@@ -4691,23 +4691,19 @@ impl<'ctx> Compiler<'ctx> {
                 _ => None,
             },
             ExpressionKind::MemberAccess { object, member } => {
-                let ExpressionKind::Identifier(ident) = &object.kind else {
-                    return None;
-                };
-                // FB instance field (t.ET, ctr.CV, ...)
-                if let Some(info) = self.fb_instances.get(&ident.name.to_uppercase()) {
-                    return info
-                        .fields
-                        .iter()
-                        .find(|(name, _)| name.eq_ignore_ascii_case(&member.name))
-                        .map(|(_, t)| t.clone());
+                // FB instance field (t.ET, ctr.CV, ...). Only a directly named
+                // instance can be one; FB instances are not nested inside STRUCTs.
+                if let ExpressionKind::Identifier(ident) = &object.kind {
+                    if let Some(info) = self.fb_instances.get(&ident.name.to_uppercase()) {
+                        return info
+                            .fields
+                            .iter()
+                            .find(|(name, _)| name.eq_ignore_ascii_case(&member.name))
+                            .map(|(_, t)| t.clone());
+                    }
                 }
-                // Plain STRUCT field
-                match self
-                    .variables
-                    .get(&ident.name.to_uppercase())
-                    .map(|(_, t)| t)
-                {
+                // STRUCT field, at any depth: `s.i.v` asks the type of `s.i` first.
+                match self.lvalue_iec_type(object) {
                     Some(IecType::Struct { fields, .. }) => fields
                         .iter()
                         .find(|(name, _)| name.eq_ignore_ascii_case(&member.name))
@@ -4953,41 +4949,36 @@ impl<'ctx> Compiler<'ctx> {
                             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                         return Ok(Some(field_ptr));
                     }
-
-                    // Fall back to struct field access
-                    if let Some((obj_ptr, iec_ty)) =
-                        self.variables.get(&ident.name.to_uppercase()).cloned()
-                    {
-                        if let IecType::Struct { fields, .. } = &iec_ty {
-                            let field_idx = fields
-                                .iter()
-                                .position(|(name, _)| name.eq_ignore_ascii_case(&member.name))
-                                .ok_or_else(|| {
-                                    CodegenError::UndefinedVariable(format!(
-                                        "{}.{}",
-                                        ident.name, member.name
-                                    ))
-                                })?;
-                            let struct_llvm_ty = self.iec_to_llvm_type(&iec_ty);
-                            let field_ptr = self
-                                .builder
-                                .build_struct_gep(
-                                    struct_llvm_ty.into_struct_type(),
-                                    obj_ptr,
-                                    field_idx as u32,
-                                    &member.name,
-                                )
-                                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                            Ok(Some(field_ptr))
-                        } else {
-                            Ok(None)
-                        }
-                    } else {
-                        Ok(None)
-                    }
-                } else {
-                    Ok(None)
                 }
+
+                // STRUCT field at any depth. The object is resolved as an lvalue in
+                // its own right, so `s.i.v` GEPs through `s.i` — matching only a bare
+                // identifier here dropped every chain longer than one level, silently:
+                // `s.i.v := 7;` emitted nothing at all.
+                let Some(IecType::Struct { fields, .. }) = self.lvalue_iec_type(object) else {
+                    return Ok(None);
+                };
+                let field_idx = fields
+                    .iter()
+                    .position(|(name, _)| name.eq_ignore_ascii_case(&member.name))
+                    .ok_or_else(|| CodegenError::UndefinedVariable(member.name.clone()))?;
+                let obj_ty = self
+                    .lvalue_iec_type(object)
+                    .ok_or_else(|| CodegenError::UndefinedVariable(member.name.clone()))?;
+                let Some(obj_ptr) = self.compile_lvalue_inner(object, function)? else {
+                    return Ok(None);
+                };
+                let struct_llvm_ty = self.iec_to_llvm_type(&obj_ty);
+                let field_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        struct_llvm_ty.into_struct_type(),
+                        obj_ptr,
+                        field_idx as u32,
+                        &member.name,
+                    )
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(Some(field_ptr))
             }
             _ => Ok(None),
         }
@@ -5179,31 +5170,21 @@ impl<'ctx> Compiler<'ctx> {
                         return Ok(Some(val));
                     }
                 }
-                // Fall back to struct field access via lvalue
-                if let Some(field_ptr) = self.compile_lvalue_with_fn(expr, function)? {
-                    if let ExpressionKind::Identifier(ident) = &object.kind {
-                        if let Some((_, iec_ty)) =
-                            self.variables.get(&ident.name.to_uppercase()).cloned()
-                        {
-                            if let IecType::Struct { fields, .. } = &iec_ty {
-                                if let Some((_, field_ty)) = fields
-                                    .iter()
-                                    .find(|(name, _)| name.eq_ignore_ascii_case(&member.name))
-                                {
-                                    let field_llvm_ty = self.iec_to_llvm_type(field_ty);
-                                    let val = self
-                                        .builder
-                                        .build_load(field_llvm_ty, field_ptr, &member.name)
-                                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                                    return Ok(Some(val));
-                                }
-                            }
-                        }
-                    }
-                    Ok(None)
-                } else {
-                    Ok(None)
-                }
+                // STRUCT field at any depth. The field's type comes from the same
+                // walk the lvalue path uses, so `o := s.i.v;` loads instead of
+                // silently producing nothing.
+                let Some(field_ty) = self.lvalue_iec_type(expr) else {
+                    return Ok(None);
+                };
+                let Some(field_ptr) = self.compile_lvalue_with_fn(expr, function)? else {
+                    return Ok(None);
+                };
+                let field_llvm_ty = self.iec_to_llvm_type(&field_ty);
+                let val = self
+                    .builder
+                    .build_load(field_llvm_ty, field_ptr, &member.name)
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(Some(val))
             }
             _ => Ok(None),
         }
