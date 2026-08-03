@@ -211,6 +211,12 @@ pub struct Compiler<'ctx> {
     type_checker: TypeChecker,
     /// Target block for EXIT statements inside loops.
     loop_exit_bb: Option<inkwell::basic_block::BasicBlock<'ctx>>,
+    /// Target block for CONTINUE statements inside loops.
+    ///
+    /// This is the block that resumes the *next* iteration, which is not the same as
+    /// the loop's condition test: a FOR loop has to run its increment first, or
+    /// `CONTINUE` would spin on the same control value forever.
+    loop_continue_bb: Option<inkwell::basic_block::BasicBlock<'ctx>>,
     /// Global variables: (global LLVM value, struct type, field names+types).
     global_var: Option<(GlobalValue<'ctx>, StructType<'ctx>, Vec<(String, IecType)>)>,
     /// Compiled FB layouts, keyed by uppercase FB type name.
@@ -242,6 +248,7 @@ impl<'ctx> Compiler<'ctx> {
             type_registry: TypeRegistry::new(),
             type_checker: TypeChecker::new(),
             loop_exit_bb: None,
+            loop_continue_bb: None,
             global_var: None,
             compiled_fbs: HashMap::new(),
             fb_instances: HashMap::new(),
@@ -4764,7 +4771,22 @@ impl<'ctx> Compiler<'ctx> {
                     self.builder.position_at_end(after_exit);
                 }
             }
-            StatementKind::Return { .. } | StatementKind::Continue | StatementKind::Empty => {
+            StatementKind::Continue => {
+                // Jump to the enclosing loop's *continue target*, which for a FOR loop
+                // is the increment block rather than the condition test. Compiling
+                // CONTINUE to nothing at all made it a no-op: the rest of the body ran
+                // anyway, so `IF i <= 2 THEN CONTINUE; END_IF; n := n + 1;` counted
+                // every iteration.
+                if let Some(cont_bb) = self.loop_continue_bb {
+                    self.builder
+                        .build_unconditional_branch(cont_bb)
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    let after_continue =
+                        self.context.append_basic_block(function, "after_continue");
+                    self.builder.position_at_end(after_continue);
+                }
+            }
+            StatementKind::Return { .. } | StatementKind::Empty => {
                 // TODO: implement these
             }
         }
@@ -5251,11 +5273,17 @@ impl<'ctx> Compiler<'ctx> {
 
         let loop_bb = self.context.append_basic_block(function, "for_loop");
         let body_bb = self.context.append_basic_block(function, "for_body");
+        // The increment lives in its own block so CONTINUE has somewhere to jump that
+        // still advances the control variable. Branching straight back to `loop_bb`
+        // would re-test the same value and never terminate.
+        let inc_bb = self.context.append_basic_block(function, "for_inc");
         let end_bb = self.context.append_basic_block(function, "for_end");
 
-        // Save and set loop_exit_bb for EXIT support
+        // Save and set loop_exit_bb for EXIT support, loop_continue_bb for CONTINUE
         let prev_exit_bb = self.loop_exit_bb;
+        let prev_continue_bb = self.loop_continue_bb;
         self.loop_exit_bb = Some(end_bb);
+        self.loop_continue_bb = Some(inc_bb);
 
         self.builder
             .build_unconditional_branch(loop_bb)
@@ -5316,8 +5344,10 @@ impl<'ctx> Compiler<'ctx> {
         for stmt in body {
             self.compile_statement(stmt, function)?;
         }
+        self.branch_to_join(inc_bb)?;
 
         // Increment
+        self.builder.position_at_end(inc_bb);
         let cur_val2 = self
             .builder
             .build_load(llvm_ty, var_ptr, "cur2")
@@ -5344,6 +5374,7 @@ impl<'ctx> Compiler<'ctx> {
 
         self.builder.position_at_end(end_bb);
         self.loop_exit_bb = prev_exit_bb;
+        self.loop_continue_bb = prev_continue_bb;
         Ok(())
     }
 
@@ -5357,9 +5388,12 @@ impl<'ctx> Compiler<'ctx> {
         let body_bb = self.context.append_basic_block(function, "while_body");
         let end_bb = self.context.append_basic_block(function, "while_end");
 
-        // Save and set loop_exit_bb for EXIT support
+        // Save and set loop_exit_bb for EXIT support, loop_continue_bb for CONTINUE.
+        // A WHILE loop's next iteration starts at the condition test.
         let prev_exit_bb = self.loop_exit_bb;
+        let prev_continue_bb = self.loop_continue_bb;
         self.loop_exit_bb = Some(end_bb);
+        self.loop_continue_bb = Some(cond_bb);
 
         self.builder
             .build_unconditional_branch(cond_bb)
@@ -5383,6 +5417,7 @@ impl<'ctx> Compiler<'ctx> {
 
         self.builder.position_at_end(end_bb);
         self.loop_exit_bb = prev_exit_bb;
+        self.loop_continue_bb = prev_continue_bb;
         Ok(())
     }
 
@@ -5396,9 +5431,13 @@ impl<'ctx> Compiler<'ctx> {
         let cond_bb = self.context.append_basic_block(function, "repeat_cond");
         let end_bb = self.context.append_basic_block(function, "repeat_end");
 
-        // Save and set loop_exit_bb for EXIT support
+        // Save and set loop_exit_bb for EXIT support, loop_continue_bb for CONTINUE.
+        // CONTINUE in a REPEAT skips to the UNTIL test — the test still decides whether
+        // another iteration runs, so the loop cannot be made to spin by it.
         let prev_exit_bb = self.loop_exit_bb;
+        let prev_continue_bb = self.loop_continue_bb;
         self.loop_exit_bb = Some(end_bb);
+        self.loop_continue_bb = Some(cond_bb);
 
         // Jump into body (do-while: body executes at least once)
         self.builder
@@ -5425,6 +5464,7 @@ impl<'ctx> Compiler<'ctx> {
 
         self.builder.position_at_end(end_bb);
         self.loop_exit_bb = prev_exit_bb;
+        self.loop_continue_bb = prev_continue_bb;
         Ok(())
     }
 
