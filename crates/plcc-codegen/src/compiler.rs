@@ -17,6 +17,9 @@ use std::collections::HashMap;
 use std::path::Path;
 use thiserror::Error;
 
+/// Name of the generated function that initializes VAR_GLOBAL FB instances.
+const GLOBALS_INIT_FN: &str = "plcc_globals_init";
+
 /// Parse a TIME literal string (e.g., "T#100ms", "T#1s500ms", "T#1h30m") into nanoseconds.
 fn parse_time_literal_ns(s: &str) -> i64 {
     let s = s.trim();
@@ -97,6 +100,9 @@ struct MethodInfo {
 struct FbLayout<'ctx> {
     struct_type: StructType<'ctx>,
     scan_fn_name: String,
+    /// Name of the generated `<pou>_init` function that applies declared initial
+    /// values to an instance (and recursively initializes nested FB instances).
+    init_fn_name: String,
     /// Ordered field names and their IEC types (inputs, outputs, locals — all in declaration order).
     fields: Vec<(String, IecType)>,
     /// Compiled methods, keyed by uppercase method name.
@@ -2482,6 +2488,15 @@ impl<'ctx> Compiler<'ctx> {
             self.type_checker.types.register(name.clone(), fb_type);
         }
 
+        // Lay out every FB/CLASS state struct *before* anything that needs to know
+        // their size. This makes FB instance fields work regardless of declaration
+        // order (an FB may contain an instance of an FB declared later in the file).
+        self.layout_pou_structs(unit);
+
+        // Declare the `<pou>_init` prototypes up front so init bodies can call each
+        // other without regard to declaration order.
+        self.declare_init_prototypes(unit);
+
         // Scan for VAR_GLOBAL declarations and create a global struct
         let mut global_fields = Vec::new();
         let mut global_names = Vec::new();
@@ -2530,13 +2545,338 @@ impl<'ctx> Compiler<'ctx> {
                 _ => {}
             }
         }
+        // Now that every `<fb>_init` has a body, emit the global initializer that
+        // initializes VAR_GLOBAL FB instances. Programs' `_init` will call it.
+        self.emit_globals_init()?;
+
         // Then compile programs (which may instantiate FBs)
         for decl in &unit.declarations {
+            if let Declaration::Program(p) = decl {
+                self.compile_program(p)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Name of the generated init function for a POU.
+    fn init_fn_name_for(name: &str) -> String {
+        format!("{}_init", name.to_lowercase())
+    }
+
+    /// Init function name recorded on a compiled FB/CLASS layout, if it has one.
+    fn fb_init_fn_name(&self, fb_type_name: &str) -> String {
+        self.compiled_fbs
+            .get(&fb_type_name.to_uppercase())
+            .map(|l| l.init_fn_name.clone())
+            .unwrap_or_else(|| Self::init_fn_name_for(fb_type_name))
+    }
+
+    /// True when every FB-instance type reachable from `ty` already has a recorded layout.
+    fn fb_layout_ready(&self, ty: &IecType) -> bool {
+        match ty {
+            IecType::FbInstance(name) => self.compiled_fbs.contains_key(&name.to_uppercase()),
+            IecType::Array { element_type, .. } => self.fb_layout_ready(element_type),
+            IecType::Struct { fields, .. } => fields.iter().all(|(_, t)| self.fb_layout_ready(t)),
+            _ => true,
+        }
+    }
+
+    /// Record (or overwrite) the struct layout for an FB/CLASS.
+    fn record_pou_layout(&mut self, name: &str, fields: Vec<(String, IecType)>) {
+        let field_types: Vec<BasicTypeEnum<'ctx>> = fields
+            .iter()
+            .map(|(_, t)| self.iec_to_llvm_type(t))
+            .collect();
+        let struct_type = self.context.struct_type(&field_types, false);
+        self.compiled_fbs.insert(
+            name.to_uppercase(),
+            FbLayout {
+                struct_type,
+                scan_fn_name: format!("{}_scan", name.to_lowercase()),
+                init_fn_name: Self::init_fn_name_for(name),
+                fields,
+                methods: HashMap::new(),
+            },
+        );
+    }
+
+    /// Resolve the ordered (name, type) field list of a POU's variable blocks.
+    fn resolve_pou_fields(&mut self, var_blocks: &[VarBlock]) -> Vec<(String, IecType)> {
+        let mut fields = Vec::new();
+        for block in var_blocks {
+            for decl in &block.declarations {
+                let ty = self.resolve_type_spec(&decl.type_spec);
+                fields.push((decl.name.name.clone(), ty));
+            }
+        }
+        fields
+    }
+
+    /// Compute the LLVM struct layout of every FUNCTION_BLOCK and CLASS in the unit,
+    /// in dependency order, so that nested FB instances get the right member type
+    /// regardless of the order the POUs appear in the source.
+    fn layout_pou_structs(&mut self, unit: &CompilationUnit) {
+        let mut pending: Vec<(String, &[VarBlock])> = Vec::new();
+        for decl in &unit.declarations {
             match decl {
-                Declaration::Program(p) => self.compile_program(p)?,
+                Declaration::FunctionBlock(fb) => {
+                    pending.push((fb.name.name.clone(), &fb.var_blocks))
+                }
+                Declaration::Class(cls) => pending.push((cls.name.name.clone(), &cls.var_blocks)),
                 _ => {}
             }
         }
+
+        while !pending.is_empty() {
+            let mut deferred: Vec<(String, &[VarBlock])> = Vec::new();
+            let mut progress = false;
+            for (name, blocks) in std::mem::take(&mut pending) {
+                let fields = self.resolve_pou_fields(blocks);
+                if fields.iter().all(|(_, t)| self.fb_layout_ready(t)) {
+                    self.record_pou_layout(&name, fields);
+                    progress = true;
+                } else {
+                    deferred.push((name, blocks));
+                }
+            }
+            if !progress {
+                // Unresolvable (recursive instantiation, or an unknown type). Lay the
+                // rest out anyway with whatever iec_to_llvm_type falls back to.
+                for (name, blocks) in deferred {
+                    let fields = self.resolve_pou_fields(blocks);
+                    self.record_pou_layout(&name, fields);
+                }
+                break;
+            }
+            pending = deferred;
+        }
+    }
+
+    /// Declare `<pou>_init(ptr) -> void` for every PROGRAM, FUNCTION_BLOCK and CLASS.
+    /// Bodies are filled in later; declaring them all first lets init bodies call each
+    /// other regardless of declaration order.
+    fn declare_init_prototypes(&mut self, unit: &CompilationUnit) {
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let fn_type = self.context.void_type().fn_type(&[ptr_ty.into()], false);
+        for decl in &unit.declarations {
+            let name = match decl {
+                Declaration::FunctionBlock(fb) => &fb.name.name,
+                Declaration::Class(cls) => &cls.name.name,
+                Declaration::Program(p) => &p.name.name,
+                _ => continue,
+            };
+            let init_name = Self::init_fn_name_for(name);
+            if self.module.get_function(&init_name).is_none() {
+                self.module.add_function(&init_name, fn_type, None);
+            }
+        }
+    }
+
+    /// Emit `plcc_globals_init()`, which initializes VAR_GLOBAL FB instances by
+    /// calling their `<fb>_init`. Scalar globals are already handled by the constant
+    /// aggregate initializer on the global itself; a constant aggregate cannot call a
+    /// function, so FB instances need this runtime pass.
+    fn emit_globals_init(&mut self) -> Result<(), CodegenError> {
+        let Some((global_val, global_struct, names)) = self.global_var.clone() else {
+            return Ok(());
+        };
+        if !names
+            .iter()
+            .any(|(_, t)| matches!(t, IecType::FbInstance(_)))
+        {
+            return Ok(());
+        }
+
+        let fn_type = self.context.void_type().fn_type(&[], false);
+        let func = self.module.add_function(GLOBALS_INIT_FN, fn_type, None);
+        let entry = self.context.append_basic_block(func, "entry");
+        self.builder.position_at_end(entry);
+
+        let global_ptr = global_val.as_pointer_value();
+        for (i, (name, ty)) in names.iter().enumerate() {
+            let IecType::FbInstance(fb_name) = ty else {
+                continue;
+            };
+            let init_name = self.fb_init_fn_name(fb_name);
+            let Some(init_fn) = self
+                .module
+                .get_function(&init_name)
+                .filter(|f| f.count_basic_blocks() > 0)
+            else {
+                continue;
+            };
+            let ptr = self
+                .builder
+                .build_struct_gep(global_struct, global_ptr, i as u32, name)
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+            self.builder
+                .build_call(init_fn, &[ptr.into()], "")
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+        }
+
+        self.builder
+            .build_return(None)
+            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Widen/narrow/convert an initializer value so it matches the member's storage type.
+    /// Without this, `x : DINT := -1` would store a 16-bit -1 into a 32-bit slot.
+    fn coerce_init_value(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        ty: &IecType,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let target = self.iec_to_llvm_type(ty);
+        let unsigned = matches!(
+            ty,
+            IecType::Bool
+                | IecType::Byte
+                | IecType::Word
+                | IecType::Dword
+                | IecType::Lword
+                | IecType::Usint
+                | IecType::Uint
+                | IecType::Udint
+                | IecType::Ulint
+                | IecType::Char
+                | IecType::Wchar
+        );
+        match (val, target) {
+            (BasicValueEnum::IntValue(iv), BasicTypeEnum::IntType(it)) => {
+                let (sw, tw) = (iv.get_type().get_bit_width(), it.get_bit_width());
+                if sw == tw {
+                    Ok(val)
+                } else if sw < tw {
+                    let ext = if unsigned {
+                        self.builder.build_int_z_extend(iv, it, "initzext")
+                    } else {
+                        self.builder.build_int_s_extend(iv, it, "initsext")
+                    }
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    Ok(ext.into())
+                } else {
+                    let tr = self
+                        .builder
+                        .build_int_truncate(iv, it, "inittrunc")
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    Ok(tr.into())
+                }
+            }
+            (BasicValueEnum::IntValue(iv), BasicTypeEnum::FloatType(ft)) => {
+                let f = self
+                    .builder
+                    .build_signed_int_to_float(iv, ft, "initsitofp")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(f.into())
+            }
+            (BasicValueEnum::FloatValue(fv), BasicTypeEnum::FloatType(ft)) => {
+                if fv.get_type() == ft {
+                    Ok(val)
+                } else {
+                    let c = self
+                        .builder
+                        .build_float_cast(fv, ft, "initfpcast")
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    Ok(c.into())
+                }
+            }
+            (BasicValueEnum::FloatValue(fv), BasicTypeEnum::IntType(it)) => {
+                let i = self
+                    .builder
+                    .build_float_to_signed_int(fv, it, "initfptosi")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(i.into())
+            }
+            _ => Ok(val),
+        }
+    }
+
+    /// Emit the body of `<pou>_init(state_ptr)`.
+    ///
+    /// Walks `var_blocks` in the *same* order used to build the state struct, storing
+    /// each declared initial value into its field. FB-instance fields recurse into the
+    /// nested type's own `_init`, so arbitrarily deep nesting is initialized.
+    fn emit_init_body(
+        &mut self,
+        pou_name: &str,
+        var_blocks: &[VarBlock],
+        struct_type: StructType<'ctx>,
+        call_globals_init: bool,
+    ) -> Result<(), CodegenError> {
+        let init_name = Self::init_fn_name_for(pou_name);
+        let init_fn = match self.module.get_function(&init_name) {
+            Some(f) if f.count_basic_blocks() == 0 => f,
+            Some(_) => return Ok(()), // already emitted
+            None => {
+                let ptr_ty = self.context.ptr_type(AddressSpace::default());
+                let fn_type = self.context.void_type().fn_type(&[ptr_ty.into()], false);
+                self.module.add_function(&init_name, fn_type, None)
+            }
+        };
+
+        let entry = self.context.append_basic_block(init_fn, "entry");
+        self.builder.position_at_end(entry);
+
+        let state_ptr = init_fn
+            .get_nth_param(0)
+            .ok_or_else(|| CodegenError::LlvmError("init fn missing state param".into()))?
+            .into_pointer_value();
+
+        let saved_struct_type = self.current_struct_type;
+        let saved_state_ptr = self.current_state_ptr;
+        self.variables.clear();
+        self.current_struct_type = Some(struct_type);
+        self.current_state_ptr = Some(state_ptr);
+
+        // Globals first so that same-named POU members shadow them.
+        self.add_globals_to_variables()?;
+
+        if call_globals_init {
+            if let Some(f) = self.module.get_function(GLOBALS_INIT_FN) {
+                self.builder
+                    .build_call(f, &[], "")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+            }
+        }
+
+        let mut field_idx = 0u32;
+        for block in var_blocks {
+            for decl in &block.declarations {
+                let iec_ty = self.resolve_type_spec(&decl.type_spec);
+                let ptr = self
+                    .builder
+                    .build_struct_gep(struct_type, state_ptr, field_idx, &decl.name.name)
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                self.variables
+                    .insert(decl.name.name.to_uppercase(), (ptr, iec_ty.clone()));
+
+                if let IecType::FbInstance(inner) = &iec_ty {
+                    // Recurse into the nested instance's own initializer.
+                    let inner_init_name = self.fb_init_fn_name(inner);
+                    if let Some(inner_init) = self.module.get_function(&inner_init_name) {
+                        self.builder
+                            .build_call(inner_init, &[ptr.into()], "")
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    }
+                } else if let Some(init_expr) = &decl.initializer {
+                    if let Some(val) = self.compile_expression(init_expr, init_fn)? {
+                        let val = self.coerce_init_value(val, &iec_ty)?;
+                        self.builder
+                            .build_store(ptr, val)
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    }
+                }
+                field_idx += 1;
+            }
+        }
+
+        self.builder
+            .build_return(None)
+            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+
+        self.current_struct_type = saved_struct_type;
+        self.current_state_ptr = saved_state_ptr;
         Ok(())
     }
 
@@ -2772,45 +3112,9 @@ impl<'ctx> Compiler<'ctx> {
             .build_return(None)
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
 
-        // Generate _init() function that applies variable initializers
-        let init_fn_name = format!("{}_init", prog.name.name.to_lowercase());
-        let init_fn = self.module.add_function(&init_fn_name, fn_type, None);
-        let init_entry = self.context.append_basic_block(init_fn, "entry");
-        self.builder.position_at_end(init_entry);
-
-        let init_state_ptr = init_fn.get_nth_param(0).unwrap().into_pointer_value();
-
-        // Re-create GEPs for init function
-        let mut field_idx = 0u32;
-        for block in &prog.var_blocks {
-            for decl in &block.declarations {
-                let iec_ty = self.resolve_type_spec(&decl.type_spec);
-                // Skip FB instance fields in init — they are zeroed which is fine
-                // (FB internal vars with initializers would need their own _init, but
-                // zero-init is correct default for IEC FBs)
-                let ptr = self
-                    .builder
-                    .build_struct_gep(struct_type, init_state_ptr, field_idx, &decl.name.name)
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                self.variables
-                    .insert(decl.name.name.to_uppercase(), (ptr, iec_ty.clone()));
-
-                if !matches!(iec_ty, IecType::FbInstance(_)) {
-                    if let Some(init_expr) = &decl.initializer {
-                        if let Some(val) = self.compile_expression(init_expr, init_fn)? {
-                            self.builder
-                                .build_store(ptr, val)
-                                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                        }
-                    }
-                }
-                field_idx += 1;
-            }
-        }
-
-        self.builder
-            .build_return(None)
-            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+        // Generate _init() function that applies variable initializers, initializes
+        // VAR_GLOBAL FB instances, and recursively initializes FB instance members.
+        self.emit_init_body(&prog.name.name, &prog.var_blocks, struct_type, true)?;
 
         Ok(())
     }
@@ -2991,6 +3295,7 @@ impl<'ctx> Compiler<'ctx> {
             FbLayout {
                 struct_type,
                 scan_fn_name: fn_name.clone(),
+                init_fn_name: Self::init_fn_name_for(&fb.name.name),
                 fields: fb_fields,
                 methods: method_infos,
             },
@@ -3022,6 +3327,9 @@ impl<'ctx> Compiler<'ctx> {
         self.builder
             .build_return(None)
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+
+        // Emit `<fb>_init` so declared initial values reach every instance.
+        self.emit_init_body(&fb.name.name, &fb.var_blocks, struct_type, false)?;
         Ok(())
     }
 
@@ -3082,10 +3390,14 @@ impl<'ctx> Compiler<'ctx> {
             FbLayout {
                 struct_type,
                 scan_fn_name: fn_name,
+                init_fn_name: Self::init_fn_name_for(&cls.name.name),
                 fields: fb_fields,
                 methods: method_infos,
             },
         );
+
+        // Emit `<cls>_init` so declared initial values reach every instance.
+        self.emit_init_body(&cls.name.name, &cls.var_blocks, struct_type, false)?;
 
         Ok(())
     }
