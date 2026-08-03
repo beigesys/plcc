@@ -93,6 +93,24 @@ pub enum CodegenError {
     LlvmError(String),
     #[error("target error: {0}")]
     TargetError(String),
+    /// A variable was declared with a type name that resolves to nothing: not an
+    /// elementary type, not a user TYPE, and not a FUNCTION_BLOCK/CLASS in scope.
+    ///
+    /// This used to be swallowed — the declaration silently became an `i32` slot and
+    /// every statement touching it was dropped from the generated code, so a program
+    /// using `TON` without a `TON` definition compiled to an empty `scan()`. It is now
+    /// a hard error.
+    #[error(
+        "unknown type `{type_name}` for variable `{var_name}` in {pou_kind} `{pou_name}` \
+         (no elementary type, TYPE declaration, FUNCTION_BLOCK or CLASS with that name is \
+         in scope; standard function blocks come from the bundled stdlib — check --stdlib)"
+    )]
+    UnknownType {
+        pou_kind: &'static str,
+        pou_name: String,
+        var_name: String,
+        type_name: String,
+    },
 }
 
 /// Information about a compiled method on an FB/Class.
@@ -2499,6 +2517,30 @@ impl<'ctx> Compiler<'ctx> {
             self.type_checker.types.register(name.clone(), fb_type);
         }
 
+        // Register user TYPE declarations (STRUCT / ENUM / subrange / alias) so that a
+        // `v : MyStruct;` declaration resolves instead of falling through to the
+        // "unknown type" fallback. Two passes so a TYPE may reference another TYPE
+        // declared later in the file.
+        for _ in 0..2 {
+            for decl in &unit.declarations {
+                if let Declaration::TypeDecl(td) = decl {
+                    let ty = self.resolve_type_spec(&td.type_spec);
+                    self.type_registry
+                        .register(td.name.name.to_uppercase(), ty.clone());
+                    self.type_checker
+                        .types
+                        .register(td.name.name.to_uppercase(), ty.clone());
+                    self.type_checker.types.register(td.name.name.clone(), ty);
+                }
+            }
+        }
+
+        // Every declared type must resolve to something real *before* we lay out any
+        // struct. Previously an unknown type name (`t : TON;` with no TON in scope)
+        // silently became an i32 field and every statement referring to it was dropped
+        // from the generated code — a silent miscompile with no diagnostic at all.
+        self.validate_declared_types(unit)?;
+
         // Lay out every FB/CLASS state struct *before* anything that needs to know
         // their size. This makes FB instance fields work regardless of declaration
         // order (an FB may contain an instance of an FB declared later in the file).
@@ -2564,6 +2606,81 @@ impl<'ctx> Compiler<'ctx> {
         for decl in &unit.declarations {
             if let Declaration::Program(p) = decl {
                 self.compile_program(p)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// First unresolved type name reachable from `ty`, if any.
+    ///
+    /// Walks through the aggregate types so `ARRAY [1..4] OF TON` and
+    /// `STRUCT t : TON; END_STRUCT` are caught too, not just a bare `t : TON;`.
+    fn first_unresolved(ty: &IecType) -> Option<String> {
+        match ty {
+            IecType::Unresolved(name) => Some(name.clone()),
+            IecType::Array { element_type, .. } => Self::first_unresolved(element_type),
+            IecType::Pointer(inner)
+            | IecType::Alias {
+                base_type: inner, ..
+            } => Self::first_unresolved(inner),
+            IecType::Struct { fields, .. } => {
+                fields.iter().find_map(|(_, t)| Self::first_unresolved(t))
+            }
+            _ => None,
+        }
+    }
+
+    /// Reject any declaration whose type name does not resolve.
+    ///
+    /// This is deliberately in codegen rather than in `plcc-hir`: `plcc compile` and
+    /// `plcc sim` never run the HIR checker, so a HIR-only diagnostic would leave the
+    /// actual miscompile in place. Codegen is the layer that would otherwise emit the
+    /// wrong code, so codegen is where the guarantee has to hold. (A HIR diagnostic on
+    /// top of this would be a nicer *message* — with a source span — but it cannot be
+    /// the enforcement point.)
+    fn validate_declared_types(&mut self, unit: &CompilationUnit) -> Result<(), CodegenError> {
+        let mut check = |this: &mut Self,
+                         pou_kind: &'static str,
+                         pou_name: &str,
+                         blocks: &[VarBlock]|
+         -> Result<(), CodegenError> {
+            for block in blocks {
+                for decl in &block.declarations {
+                    let ty = this.resolve_type_spec(&decl.type_spec);
+                    if let Some(type_name) = Self::first_unresolved(&ty) {
+                        return Err(CodegenError::UnknownType {
+                            pou_kind,
+                            pou_name: pou_name.to_string(),
+                            var_name: decl.name.name.clone(),
+                            type_name,
+                        });
+                    }
+                }
+            }
+            Ok(())
+        };
+
+        for decl in &unit.declarations {
+            match decl {
+                Declaration::Program(p) => {
+                    check(self, "PROGRAM", &p.name.name.clone(), &p.var_blocks)?
+                }
+                Declaration::Function(f) => {
+                    check(self, "FUNCTION", &f.name.name.clone(), &f.var_blocks)?
+                }
+                Declaration::FunctionBlock(fb) => check(
+                    self,
+                    "FUNCTION_BLOCK",
+                    &fb.name.name.clone(),
+                    &fb.var_blocks,
+                )?,
+                Declaration::Class(cls) => {
+                    check(self, "CLASS", &cls.name.name.clone(), &cls.var_blocks)?
+                }
+                Declaration::GlobalVarDecl(block) => {
+                    check(self, "VAR_GLOBAL", "", std::slice::from_ref(block))?
+                }
+                _ => {}
             }
         }
         Ok(())
