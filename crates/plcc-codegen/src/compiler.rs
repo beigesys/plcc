@@ -195,6 +195,13 @@ pub struct Compiler<'ctx> {
     compiled_fbs: HashMap<String, FbLayout<'ctx>>,
     /// FB instances in the current POU being compiled, keyed by uppercase instance name.
     fb_instances: HashMap<String, FbInstanceInfo<'ctx>>,
+    /// Declared VAR_INPUT parameters of every user FUNCTION, keyed by lowercased name.
+    ///
+    /// Recorded before any body is compiled so a call site can coerce its arguments to
+    /// the declared parameter types. Without this an `INT` literal passed to a `DINT`
+    /// parameter reached `build_call` unconverted and LLVM's verifier rejected the
+    /// module — `F(5)` against `FUNCTION F : DINT VAR_INPUT x : DINT`.
+    fn_signatures: HashMap<String, Vec<(String, IecType)>>,
     /// The parent struct type for the current POU being compiled (needed for GEP on FB instances).
     current_struct_type: Option<StructType<'ctx>>,
     /// The state pointer for the current POU being compiled.
@@ -216,6 +223,7 @@ impl<'ctx> Compiler<'ctx> {
             global_var: None,
             compiled_fbs: HashMap::new(),
             fb_instances: HashMap::new(),
+            fn_signatures: HashMap::new(),
             current_struct_type: None,
             current_state_ptr: None,
         }
@@ -2634,6 +2642,11 @@ impl<'ctx> Compiler<'ctx> {
         // resolves through the owner's recorded `methods` map.
         self.layout_pou_methods(unit);
 
+        // And every FUNCTION signature, for the same reason one level over: a call site
+        // has to coerce its arguments to the declared parameter types, and it may be
+        // compiled before the callee's own body is.
+        self.layout_function_signatures(unit);
+
         // Declare the `<pou>_init` prototypes up front so init bodies can call each
         // other without regard to declaration order.
         self.declare_init_prototypes(unit);
@@ -3965,6 +3978,30 @@ impl<'ctx> Compiler<'ctx> {
 
     /// Record every FB/CLASS method signature (and declare its prototype) before any
     /// body is compiled, so method calls resolve regardless of declaration order.
+    /// Record the declared VAR_INPUT parameters of every user FUNCTION.
+    ///
+    /// Runs before any body is compiled, so `compile_expression`'s call path can widen
+    /// or narrow each argument to the parameter's declared type regardless of the order
+    /// the functions appear in.
+    fn layout_function_signatures(&mut self, unit: &CompilationUnit) {
+        for decl in &unit.declarations {
+            let Declaration::Function(func) = decl else {
+                continue;
+            };
+            let mut params: Vec<(String, IecType)> = Vec::new();
+            for block in &func.var_blocks {
+                if block.kind == VarBlockKind::VarInput {
+                    for d in &block.declarations {
+                        let ty = self.resolve_type_spec(&d.type_spec);
+                        params.push((d.name.name.clone(), ty));
+                    }
+                }
+            }
+            self.fn_signatures
+                .insert(func.name.name.to_lowercase(), params);
+        }
+    }
+
     fn layout_pou_methods(&mut self, unit: &CompilationUnit) {
         for decl in &unit.declarations {
             let (name, methods) = match decl {
@@ -5300,9 +5337,25 @@ impl<'ctx> Compiler<'ctx> {
 
                     // Fall back to user-defined functions
                     if let Some(fn_val) = self.module.get_function(&ident.name.to_lowercase()) {
+                        let params = self
+                            .fn_signatures
+                            .get(&ident.name.to_lowercase())
+                            .cloned()
+                            .unwrap_or_default();
                         let mut compiled_args = Vec::new();
-                        for arg in args {
+                        for (i, arg) in args.iter().enumerate() {
                             if let Some(val) = self.compile_expression(&arg.value, function)? {
+                                // Coerce to the declared parameter type. Passing the value
+                                // through unconverted produces a call whose argument width
+                                // does not match the signature, which LLVM's verifier
+                                // rejects outright.
+                                let val = match params.get(i) {
+                                    Some((_, param_ty)) => {
+                                        let src = self.rvalue_iec_type(&arg.value);
+                                        self.coerce_value(val, src.as_ref(), param_ty)?
+                                    }
+                                    None => val,
+                                };
                                 compiled_args.push(val.into());
                             }
                         }
