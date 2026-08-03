@@ -2827,14 +2827,27 @@ impl<'ctx> Compiler<'ctx> {
                 Declaration::Function(f) => {
                     check(self, "FUNCTION", &f.name.name.clone(), &f.var_blocks)?
                 }
-                Declaration::FunctionBlock(fb) => check(
-                    self,
-                    "FUNCTION_BLOCK",
-                    &fb.name.name.clone(),
-                    &fb.var_blocks,
-                )?,
+                Declaration::FunctionBlock(fb) => {
+                    check(
+                        self,
+                        "FUNCTION_BLOCK",
+                        &fb.name.name.clone(),
+                        &fb.var_blocks,
+                    )?;
+                    // A METHOD has its own VAR blocks. Walking only the POU's blocks
+                    // let `METHOD M VAR t : TON; END_VAR` through untouched — the same
+                    // silent i32-slot miscompile, just one level down.
+                    for m in &fb.methods {
+                        let name = format!("{}.{}", fb.name.name, m.name.name);
+                        check(self, "METHOD", &name, &m.var_blocks)?;
+                    }
+                }
                 Declaration::Class(cls) => {
-                    check(self, "CLASS", &cls.name.name.clone(), &cls.var_blocks)?
+                    check(self, "CLASS", &cls.name.name.clone(), &cls.var_blocks)?;
+                    for m in &cls.methods {
+                        let name = format!("{}.{}", cls.name.name, m.name.name);
+                        check(self, "METHOD", &name, &m.var_blocks)?;
+                    }
                 }
                 Declaration::GlobalVarDecl(block) => {
                     check(self, "VAR_GLOBAL", "", std::slice::from_ref(block))?

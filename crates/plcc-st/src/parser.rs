@@ -151,16 +151,21 @@ impl<'s> Parser<'s> {
         let mut declarations = Vec::new();
 
         while self.ts.peek().is_some() {
-            match self.parse_declaration() {
-                Some(decl) => {
-                    declarations.push(decl);
-                    declarations.append(&mut self.pending);
-                }
-                None => {
-                    // Error recovery: skip token
-                    if self.ts.advance().is_none() {
-                        break;
-                    }
+            let parsed = self.parse_declaration();
+            // Drain `pending` on both arms and in declaration order. A construct that
+            // yields several declarations may also fail to produce a first one — a
+            // TYPE block whose first entry is malformed, say — and draining only on
+            // success left the extras queued until the *next* successful declaration,
+            // which reordered the unit around a parse error.
+            let had_decl = parsed.is_some();
+            if let Some(decl) = parsed {
+                declarations.push(decl);
+            }
+            declarations.append(&mut self.pending);
+            if !had_decl {
+                // Error recovery: skip token
+                if self.ts.advance().is_none() {
+                    break;
                 }
             }
         }

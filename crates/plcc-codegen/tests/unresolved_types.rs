@@ -253,3 +253,126 @@ END_PROGRAM
     assert_eq!(i16::from_ne_bytes([state[2], state[3]]), 4, "p.y");
     assert_eq!(i16::from_ne_bytes([state[4], state[5]]), 7, "m");
 }
+
+// ---------------------------------------------------------------------------
+// METHOD variable blocks
+// ---------------------------------------------------------------------------
+
+/// A METHOD carries its own VAR blocks. The validation walk covered
+/// PROGRAM/FUNCTION/FUNCTION_BLOCK/CLASS/VAR_GLOBAL but not METHOD, so an unknown
+/// type one level down kept the old silent-i32-slot behavior.
+#[test]
+fn an_unknown_type_in_a_function_block_method_is_rejected() {
+    let source = r#"
+FUNCTION_BLOCK Holder
+VAR_INPUT
+    a : INT;
+END_VAR
+METHOD Delayed : INT
+VAR
+    t : TON;
+END_VAR
+    Delayed := a;
+END_METHOD
+    a := a;
+END_FUNCTION_BLOCK
+
+PROGRAM Main
+VAR
+    h : Holder;
+END_VAR
+    h(a := 1);
+END_PROGRAM
+"#;
+    let msg = expect_error(source);
+    assert!(msg.contains("TON"), "the diagnostic must name TON: {msg}");
+    assert!(
+        msg.contains("METHOD"),
+        "the diagnostic must say it is a METHOD: {msg}"
+    );
+    assert!(msg.contains("Holder.Delayed"), "and which method: {msg}");
+}
+
+#[test]
+fn an_unknown_type_in_a_class_method_is_rejected() {
+    let source = r#"
+CLASS Widget
+VAR
+    n : INT;
+END_VAR
+METHOD Run : INT
+VAR
+    c : CTU;
+END_VAR
+    Run := n;
+END_METHOD
+END_CLASS
+
+PROGRAM Main
+VAR
+    w : Widget;
+END_VAR
+    ;
+END_PROGRAM
+"#;
+    let msg = expect_error(source);
+    assert!(msg.contains("CTU"), "the diagnostic must name CTU: {msg}");
+    assert!(msg.contains("Widget.Run"), "and which method: {msg}");
+}
+
+/// A method whose locals all resolve must still compile and run.
+#[test]
+fn a_method_with_resolvable_locals_still_compiles() {
+    let source = r#"
+FUNCTION_BLOCK Adder
+VAR_INPUT
+    a : INT;
+END_VAR
+VAR_OUTPUT
+    total : INT;
+END_VAR
+METHOD Twice : INT
+VAR
+    tmp : INT;
+END_VAR
+    tmp := a * 2;
+    Twice := tmp;
+END_METHOD
+    total := a;
+END_FUNCTION_BLOCK
+
+PROGRAM Main
+VAR
+    ad : Adder;
+    out : INT;
+END_VAR
+    ad(a := 21);
+    out := ad.Twice(a := 21);
+END_PROGRAM
+"#;
+    let (unit, errors) = plcc_st::parse(source);
+    assert!(errors.is_empty(), "parse errors: {errors:?}");
+    let context = Context::create();
+    let mut compiler = Compiler::new(&context, "methodok");
+    compiler.compile(&unit).expect("codegen failed");
+
+    let ee = compiler
+        .module()
+        .create_jit_execution_engine(OptimizationLevel::None)
+        .expect("failed to create JIT");
+    let mut state = vec![0u8; 1024];
+    let ptr = state.as_mut_ptr();
+    if let Ok(a) = ee.get_function_address("main_init") {
+        let f: extern "C" fn(*mut u8) = unsafe { std::mem::transmute(a) };
+        f(ptr);
+    }
+    let a = ee
+        .get_function_address("main_scan")
+        .expect("main_scan missing");
+    let scan: extern "C" fn(*mut u8) = unsafe { std::mem::transmute(a) };
+    scan(ptr);
+
+    // Main state: { ad:{i16 a, i16 total}, i16 out } => a@0, total@2, out@4
+    assert_eq!(i16::from_ne_bytes([state[2], state[3]]), 21, "ad.total");
+    assert_eq!(i16::from_ne_bytes([state[4], state[5]]), 42, "ad.Twice(21)");
+}
