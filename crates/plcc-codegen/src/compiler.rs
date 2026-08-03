@@ -4145,7 +4145,7 @@ impl<'ctx> Compiler<'ctx> {
                         .compile_lvalue_with_fn(target, function)?
                         .ok_or_else(|| {
                             CodegenError::UnsupportedType(format!(
-                                "'{}' is not an assignable location",
+                                "`{}` is not an assignable location",
                                 Self::describe_lvalue(target)
                             ))
                         })?;
@@ -4977,8 +4977,11 @@ impl<'ctx> Compiler<'ctx> {
             ExpressionKind::FunctionCall { callee, .. } => {
                 format!("{}(..)", Self::describe_lvalue(callee))
             }
+            ExpressionKind::Dereference(inner) => format!("{}^", Self::describe_lvalue(inner)),
             ExpressionKind::DirectVariable(addr) => format!("%{addr}"),
-            ExpressionKind::StringLiteral(_) => "a string literal".into(),
+            ExpressionKind::StringLiteral(s) | ExpressionKind::WstringLiteral(s) => {
+                format!("'{s}'")
+            }
             ExpressionKind::IntegerLiteral(v) => v.to_string(),
             ExpressionKind::RealLiteral(v) => v.to_string(),
             ExpressionKind::BoolLiteral(v) => {
@@ -4988,7 +4991,16 @@ impl<'ctx> Compiler<'ctx> {
                     "FALSE".into()
                 }
             }
-            _ => "expression".into(),
+            ExpressionKind::TimeLiteral(s)
+            | ExpressionKind::DateLiteral(s)
+            | ExpressionKind::TodLiteral(s)
+            | ExpressionKind::DtLiteral(s) => s.clone(),
+            ExpressionKind::TypedLiteral { type_name, value } => {
+                format!("{}#{}", type_name.name, Self::describe_lvalue(value))
+            }
+            ExpressionKind::BinaryOp { .. } | ExpressionKind::UnaryOp { .. } => {
+                "an arithmetic expression".into()
+            }
         }
     }
 
@@ -5021,8 +5033,9 @@ impl<'ctx> Compiler<'ctx> {
                 // such chain silently — `o[1][2].a := 7;` and `n := o[1][2].a;` both
                 // emitted no code at all, with no diagnostic.
                 let Some(iec_ty) = self.lvalue_iec_type(array) else {
-                    return Err(CodegenError::UndefinedVariable(format!(
-                        "cannot resolve the array indexed by '{}'",
+                    return Err(CodegenError::UnsupportedType(format!(
+                        "cannot determine the type of `{}`, the array indexed in `{}`",
+                        Self::describe_lvalue(array),
                         Self::describe_lvalue(expr)
                     )));
                 };
@@ -5039,7 +5052,8 @@ impl<'ctx> Compiler<'ctx> {
                 })?;
                 let Some(arr_ptr) = self.compile_lvalue_inner(array, Some(function))? else {
                     return Err(CodegenError::UnsupportedType(format!(
-                        "unsupported array base in '{}'",
+                        "`{}` has no address, so `{}` cannot be indexed",
+                        Self::describe_lvalue(array),
                         Self::describe_lvalue(expr)
                     )));
                 };
@@ -5185,15 +5199,15 @@ impl<'ctx> Compiler<'ctx> {
                 // identifier here dropped every chain longer than one level, silently:
                 // `s.i.v := 7;` emitted nothing at all.
                 let obj_ty = self.lvalue_iec_type(object).ok_or_else(|| {
-                    CodegenError::UndefinedVariable(format!(
-                        "cannot resolve '{}' in '{}'",
+                    CodegenError::UnsupportedType(format!(
+                        "cannot determine the type of `{}`, whose member is taken in `{}`",
                         Self::describe_lvalue(object),
                         Self::describe_lvalue(expr)
                     ))
                 })?;
                 let IecType::Struct { ref fields, .. } = obj_ty else {
                     return Err(CodegenError::UnsupportedType(format!(
-                        "'{}' is {obj_ty}, which has no member '{}'",
+                        "`{}` is {obj_ty}, which has no member `{}`",
                         Self::describe_lvalue(object),
                         member.name
                     )));
@@ -5204,7 +5218,7 @@ impl<'ctx> Compiler<'ctx> {
                     .ok_or_else(|| CodegenError::UndefinedVariable(member.name.clone()))?;
                 let Some(obj_ptr) = self.compile_lvalue_inner(object, function)? else {
                     return Err(CodegenError::UnsupportedType(format!(
-                        "'{}' has no address, so '{}' cannot be reached",
+                        "`{}` has no address, so `{}` cannot be reached",
                         Self::describe_lvalue(object),
                         Self::describe_lvalue(expr)
                     )));
