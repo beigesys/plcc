@@ -3343,6 +3343,56 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     /// Ensure two integer values have the same bit width by extending the smaller one.
+    /// Widen `v` to `to`, extending by the signedness of its *own* IEC type.
+    ///
+    /// `None` means the value has no static IEC type (a bare literal), and bare
+    /// integer literals are signed.
+    fn extend_int(
+        &self,
+        v: inkwell::values::IntValue<'ctx>,
+        ty: Option<&IecType>,
+        to: inkwell::types::IntType<'ctx>,
+    ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+        if ty.is_some_and(Self::widens_unsigned) {
+            self.builder.build_int_z_extend(v, to, "zext")
+        } else {
+            self.builder.build_int_s_extend(v, to, "sext")
+        }
+        .map_err(|e| CodegenError::LlvmError(e.to_string()))
+    }
+
+    /// Bring two integers to a common width, extending each by its own type's
+    /// signedness.
+    ///
+    /// [`Self::match_int_widths`] sign-extends unconditionally, which is wrong for
+    /// every ANY_BIT and ANY_UNSIGNED value: a BYTE holding `16#FF` is 255, and
+    /// sign-extending it to i32 makes it -1. That is how
+    /// `FOR i := 1 TO raw BY 100` with `raw : BYTE := 16#FF` ran zero iterations
+    /// instead of three, silently and with no diagnostic.
+    fn match_int_widths_typed(
+        &self,
+        a: inkwell::values::IntValue<'ctx>,
+        a_ty: Option<&IecType>,
+        b: inkwell::values::IntValue<'ctx>,
+        b_ty: Option<&IecType>,
+    ) -> Result<
+        (
+            inkwell::values::IntValue<'ctx>,
+            inkwell::values::IntValue<'ctx>,
+        ),
+        CodegenError,
+    > {
+        let aw = a.get_type().get_bit_width();
+        let bw = b.get_type().get_bit_width();
+        if aw == bw {
+            Ok((a, b))
+        } else if aw < bw {
+            Ok((self.extend_int(a, a_ty, b.get_type())?, b))
+        } else {
+            Ok((a, self.extend_int(b, b_ty, a.get_type())?))
+        }
+    }
+
     fn match_int_widths(
         &self,
         a: inkwell::values::IntValue<'ctx>,
@@ -4500,8 +4550,14 @@ impl<'ctx> Compiler<'ctx> {
         let to_val = self
             .compile_expression(to, function)?
             .ok_or_else(|| CodegenError::LlvmError("failed to compile to".into()))?;
+        let to_ty = self.rvalue_iec_type(to);
 
-        // Store initial value
+        // Store the initial value at the control variable's own width. A raw store
+        // of a narrower value wrote only its low bytes and left the rest of the slot
+        // holding whatever was there, so `FOR i := lo TO 260` with `i : DINT` and
+        // `lo : BYTE := 16#FE` started at 0x000000FE-or-worse rather than at 254.
+        let from_ty = self.rvalue_iec_type(from);
+        let from_val = self.coerce_value(from_val, from_ty.as_ref(), &var_ty)?;
         self.builder
             .build_store(var_ptr, from_val)
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
@@ -4525,8 +4581,13 @@ impl<'ctx> Compiler<'ctx> {
             .builder
             .build_load(llvm_ty, var_ptr, "cur")
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-        let (cur_i, to_i) =
-            self.match_int_widths(cur_val.into_int_value(), to_val.into_int_value())?;
+        // The bound widens by *its* signedness, not the control variable's.
+        let (cur_i, to_i) = self.match_int_widths_typed(
+            cur_val.into_int_value(),
+            Some(&var_ty),
+            to_val.into_int_value(),
+            to_ty.as_ref(),
+        )?;
         // Determine loop direction: if BY is negative, compare with SGE instead of SLE
         let step_is_negative = if let Some(by_expr) = by {
             if let ExpressionKind::UnaryOp {
@@ -4566,23 +4627,37 @@ impl<'ctx> Compiler<'ctx> {
             .builder
             .build_load(llvm_ty, var_ptr, "cur2")
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-        let step = if let Some(by_expr) = by {
-            self.compile_expression(by_expr, function)?
-                .ok_or_else(|| CodegenError::LlvmError("failed to compile step".into()))?
+        let (step, step_ty) = if let Some(by_expr) = by {
+            let val = self
+                .compile_expression(by_expr, function)?
+                .ok_or_else(|| CodegenError::LlvmError("failed to compile step".into()))?;
+            (val, self.rvalue_iec_type(by_expr))
         } else {
             // Default step = 1 with same type as loop variable
-            cur_val2
-                .into_int_value()
-                .get_type()
-                .const_int(1, false)
-                .into()
+            (
+                cur_val2
+                    .into_int_value()
+                    .get_type()
+                    .const_int(1, false)
+                    .into(),
+                Some(var_ty.clone()),
+            )
         };
-        let (cur_i, step_i) =
-            self.match_int_widths(cur_val2.into_int_value(), step.into_int_value())?;
+        // Same rule for the step: `BY st` with `st : BYTE := 16#C8` is +200, and
+        // sign-extending it to -56 walked the control variable downward forever.
+        let (cur_i, step_i) = self.match_int_widths_typed(
+            cur_val2.into_int_value(),
+            Some(&var_ty),
+            step.into_int_value(),
+            step_ty.as_ref(),
+        )?;
         let next_val = self
             .builder
             .build_int_add(cur_i, step_i, "next")
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+        // A wider step widens the sum, so narrow it back before it goes into the
+        // control variable's slot.
+        let next_val = self.coerce_value(next_val.into(), Some(&var_ty), &var_ty)?;
         self.builder
             .build_store(var_ptr, next_val)
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
