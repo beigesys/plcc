@@ -73,7 +73,8 @@ plcc/
 │   ├── plcc-st/           Lexer (logos) + recursive-descent parser + AST
 │   ├── plcc-hir/          Type checker, name resolution, IEC type hierarchy
 │   ├── plcc-codegen/      LLVM codegen via inkwell
-│   ├── plcc-runtime/      Standard FBs (TON, CTU, etc.) + standard functions
+│   ├── plcc-stdlib/       IEC standard FBs as bundled ST source (TON, CTU, ...)
+│   ├── plcc-runtime/      Runtime contract: host clock, FB traits, function specs
 │   ├── plcc-hal/          Hardware Abstraction Layer for platform integration
 │   └── plcc-cli/          CLI binary
 └── tests/
@@ -116,9 +117,33 @@ Complete IEC 61131-3:2013 (3rd edition) Structured Text:
 | Time | ADD_TIME, SUB_TIME, MUL_TIME, DIV_TIME |
 | Type conversion | 40+ variants: INT_TO_REAL, REAL_TO_INT, BYTE_TO_WORD, BOOL_TO_DINT, etc. |
 
-**11 standard function blocks:**
+**10 standard function blocks**, per IEC 61131-3 section 2.5.2:
 
-SR, RS, R_TRIG, F_TRIG, CTU, CTD, CTUD, TON, TOF, TP, RTC
+SR, RS, R_TRIG, F_TRIG, CTU, CTD, CTUD, TON, TOF, TP
+
+These are written in ST (`crates/plcc-stdlib/st/`), embedded in the compiler with
+`include_str!`, and compiled into your module alongside your own POUs. There is no
+runtime library to link and no ABI boundary — LLVM optimizes across the whole
+program. Control it with `--stdlib`:
+
+```
+plcc compile prog.st -o prog.o                  # bundled-st (default)
+plcc compile prog.st -o prog.o --stdlib none    # no prelude at all
+```
+
+A POU you define yourself supersedes the bundled one of the same name; the
+bundled declaration is dropped.
+
+`RTC` is not provided: it needs a wall clock, and the runtime contract
+deliberately defines only a monotonic one.
+
+The timers read time through the external `plcc_monotonic_ns()` symbol, so
+elapsed time is real time and does not drift with scan period. Host and
+simulator builds get an implementation from `plcc-runtime`; bare-metal
+integrators supply their own. See [docs/runtime-symbols.md](docs/runtime-symbols.md).
+
+Instantiating a function block that is not in scope is a **compile error** naming
+the type — never a silently empty `scan()`.
 
 ## Cross-Compilation Targets
 

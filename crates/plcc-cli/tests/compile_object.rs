@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! `plcc compile` all the way to a native object file.
+//! `plcc compile` all the way to a native object file, with the default stdlib.
 //!
 //! Every other end-to-end test either stops at `.ll` (no backend runs) or JITs at
 //! `OptimizationLevel::None`. `emit_object` runs LLVM at `OptimizationLevel::Default`,
@@ -93,15 +93,15 @@ fn assert_object_produced(name: &str, src: &Path, extra: &[&str]) {
     std::fs::remove_file(&out).ok();
 }
 
-/// The exact command the bug report used.
+/// The exact command the bug report used, with the default (bundled-ST) stdlib.
 #[test]
-fn blink_compiles_to_an_object() {
+fn blink_compiles_to_an_object_with_the_default_stdlib() {
     let src = workspace_root().join("demo/st-programs/blink.st");
     assert!(src.exists(), "missing fixture {}", src.display());
     assert_object_produced("blink", &src, &[]);
 }
 
-/// Every demo program to a native object. These are the programs a user
+/// Every demo program, default stdlib, native object. These are the programs a user
 /// actually runs; all fifteen of them hung.
 #[test]
 fn every_demo_program_compiles_to_an_object() {
@@ -124,7 +124,7 @@ fn every_demo_program_compiles_to_an_object() {
 
 /// A nested IF/ELSIF as the last statement of a later ELSIF branch — the shape the
 /// bundled CTUD body has, and the one that produced the self-looping join block.
-/// A pure control-flow regression test: nested IF/ELSIF inside a later ELSIF branch.
+/// Compiled with `--stdlib none` so this is a pure control-flow regression test.
 #[test]
 fn nested_elsif_tail_compiles_to_an_object() {
     let src = tmp_dir().join("nested_elsif.st");
@@ -155,6 +155,6 @@ END_PROGRAM
 "#,
     )
     .expect("write source");
-    assert_object_produced("nested_elsif", &src, &[]);
+    assert_object_produced("nested_elsif", &src, &["--stdlib", "none"]);
     std::fs::remove_file(&src).ok();
 }

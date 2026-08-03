@@ -36,6 +36,9 @@ enum Commands {
         /// Target triple (e.g. x86_64-unknown-linux-gnu, wasm32-unknown-unknown)
         #[arg(long, default_value = "x86_64-unknown-linux-gnu")]
         target: String,
+        /// Standard function block library to compile alongside the program
+        #[arg(long, value_enum, default_value_t = StdlibOpt::BundledSt)]
+        stdlib: StdlibOpt,
     },
     /// Compile and JIT-run ST programs, optionally with Modbus TCP for SCADA
     Sim {
@@ -50,7 +53,21 @@ enum Commands {
         /// Modbus TCP port for SCADA (e.g. 502)
         #[arg(long)]
         modbus: Option<u16>,
+        /// Standard function block library to compile alongside the program
+        #[arg(long, value_enum, default_value_t = StdlibOpt::BundledSt)]
+        stdlib: StdlibOpt,
     },
+}
+
+/// `--stdlib` values.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum StdlibOpt {
+    /// Compile the bundled IEC 61131-3 standard function blocks (written in ST)
+    /// into the module: SR, RS, R_TRIG, F_TRIG, CTU, CTD, CTUD, TON, TOF, TP.
+    BundledSt,
+    /// Compile no standard library. Every FB the program instantiates must be
+    /// defined in the input files.
+    None,
 }
 
 /// Read source file, falling back to Latin-1 if not valid UTF-8.
@@ -62,7 +79,22 @@ fn read_source(path: &std::path::Path) -> Result<String> {
     }
 }
 
-fn parse_inputs(inputs: &[PathBuf]) -> Result<plcc_st::ast::CompilationUnit> {
+/// Name of a top-level declaration, uppercased, when it has one.
+fn declaration_name(decl: &plcc_st::ast::Declaration) -> Option<String> {
+    use plcc_st::ast::Declaration as D;
+    let name = match decl {
+        D::Program(d) => &d.name.name,
+        D::Function(d) => &d.name.name,
+        D::FunctionBlock(d) => &d.name.name,
+        D::Class(d) => &d.name.name,
+        D::Interface(d) => &d.name.name,
+        D::TypeDecl(d) => &d.name.name,
+        D::GlobalVarDecl(_) | D::Configuration(_) => return None,
+    };
+    Some(name.to_uppercase())
+}
+
+fn parse_inputs(inputs: &[PathBuf], stdlib: StdlibOpt) -> Result<plcc_st::ast::CompilationUnit> {
     let mut all_declarations = Vec::new();
     for input in inputs {
         let source = read_source(input)?;
@@ -78,6 +110,54 @@ fn parse_inputs(inputs: &[PathBuf]) -> Result<plcc_st::ast::CompilationUnit> {
         }
         all_declarations.extend(unit.declarations);
     }
+
+    if stdlib == StdlibOpt::BundledSt {
+        // Collect the names the user defined *first*, so the prelude can step aside.
+        //
+        // Collision policy: the user definition wins, silently, and the colliding
+        // prelude declaration is dropped. Two reasons. (1) Keeping both is not an
+        // option — codegen would emit two `ton_scan` functions and LLVM would rename
+        // one, so the program would call whichever won a name lookup. (2) A hard
+        // error would break the common case of a codebase that already vendored its
+        // own TON/CTU (OSCAT-derived projects routinely do), and would make adding a
+        // block to the prelude a breaking change for every such project. `--stdlib
+        // none` remains available for anyone who wants no prelude at all.
+        let user_names: std::collections::HashSet<String> = all_declarations
+            .iter()
+            .filter_map(declaration_name)
+            .collect();
+
+        let mut prelude = Vec::new();
+        for unit_src in plcc_stdlib::UNITS {
+            let (unit, errors) = plcc_st::parse(unit_src.source);
+            if !errors.is_empty() {
+                // A parse error in the bundled library is a compiler bug, not a user
+                // error, so say so rather than blaming the user's file.
+                for err in &errors {
+                    let report = miette::Report::new(err.clone()).with_source_code(
+                        NamedSource::new(unit_src.name, unit_src.source.to_string()),
+                    );
+                    eprintln!("{:?}", report);
+                }
+                eprintln!(
+                    "internal error: the bundled ST standard library failed to parse \
+                     ({}). Re-run with --stdlib none to work around it.",
+                    unit_src.name
+                );
+                std::process::exit(1);
+            }
+            for decl in unit.declarations {
+                let superseded = declaration_name(&decl).is_some_and(|n| user_names.contains(&n));
+                if !superseded {
+                    prelude.push(decl);
+                }
+            }
+        }
+        // Prelude first: user code may instantiate a prelude FB, never the reverse.
+        prelude.extend(all_declarations);
+        all_declarations = prelude;
+    }
+
     Ok(plcc_st::ast::CompilationUnit {
         declarations: all_declarations,
         span: plcc_st::span::Span::empty(),
@@ -146,13 +226,14 @@ fn main() -> Result<()> {
             inputs,
             output,
             target,
+            stdlib,
         } => {
             if inputs.is_empty() {
                 eprintln!("Error: at least one input file is required");
                 std::process::exit(1);
             }
 
-            let merged = parse_inputs(&inputs)?;
+            let merged = parse_inputs(&inputs, stdlib)?;
             let context = inkwell::context::Context::create();
             let mut compiler =
                 plcc_codegen::Compiler::new(&context, &inputs[0].display().to_string());
@@ -181,13 +262,14 @@ fn main() -> Result<()> {
             scans,
             interval_ms,
             modbus,
+            stdlib,
         } => {
             if inputs.is_empty() {
                 eprintln!("Usage: plcc sim <program.st> [--scans 0] [--modbus 502]");
                 std::process::exit(1);
             }
 
-            let merged = parse_inputs(&inputs)?;
+            let merged = parse_inputs(&inputs, stdlib)?;
             let context = inkwell::context::Context::create();
             let mut compiler = plcc_codegen::Compiler::new(&context, "sim");
             if let Err(e) = compiler.compile(&merged) {
@@ -245,6 +327,26 @@ fn main() -> Result<()> {
                 // as usize` is a zero-sized item type, and rustc's
                 // function_casts_as_integer lint flags it as ambiguous.
                 plcc_print_impl as *const () as usize,
+            );
+
+            // Provide plcc_monotonic_ns for JIT (MONOTONIC_NS() and the bundled ST
+            // timer FBs call this). Same shape as plcc_print: declare it if the module
+            // did not already import it, then map the symbol onto the host clock.
+            ee.add_global_mapping(
+                &compiler
+                    .module()
+                    .get_function("plcc_monotonic_ns")
+                    .unwrap_or_else(|| {
+                        let fn_type = compiler
+                            .module()
+                            .get_context()
+                            .i64_type()
+                            .fn_type(&[], false);
+                        compiler
+                            .module()
+                            .add_function("plcc_monotonic_ns", fn_type, None)
+                    }),
+                plcc_runtime::host_clock::plcc_monotonic_ns as *const () as usize,
             );
 
             let state = std::sync::Arc::new(std::sync::Mutex::new(vec![0u8; 4096]));

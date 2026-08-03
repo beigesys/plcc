@@ -13,3 +13,5 @@ plcc-st = { version = "0.1.0", path = "../plcc-st" }
 [dev-dependencies]
 regex = "1.12.3"
 plcc-st = { path = "../plcc-st" }
+plcc-runtime = { path = "../plcc-runtime" }
+plcc-stdlib = { path = "../plcc-stdlib" }

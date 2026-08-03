@@ -93,6 +93,44 @@ pub enum CodegenError {
     LlvmError(String),
     #[error("target error: {0}")]
     TargetError(String),
+    /// A variable was declared with a type name that resolves to nothing: not an
+    /// elementary type, not a user TYPE, and not a FUNCTION_BLOCK/CLASS in scope.
+    ///
+    /// This used to be swallowed — the declaration silently became an `i32` slot and
+    /// every statement touching it was dropped from the generated code, so a program
+    /// using `TON` without a `TON` definition compiled to an empty `scan()`. It is now
+    /// a hard error.
+    #[error(
+        "unknown type `{type_name}` for variable `{var_name}` in {pou_kind} `{pou_name}` \
+         (no elementary type, TYPE declaration, FUNCTION_BLOCK or CLASS with that name is \
+         in scope; standard function blocks come from the bundled stdlib — check --stdlib)"
+    )]
+    UnknownType {
+        pou_kind: &'static str,
+        pou_name: String,
+        var_name: String,
+        type_name: String,
+    },
+    /// A `TYPE` declaration never becomes layout-complete: a cycle, or a name that
+    /// resolves to nothing.
+    #[error(
+        "TYPE `{type_name}` cannot be laid out: `{unresolved}` never resolves \
+         (a cyclic TYPE definition, or a name that is not declared anywhere; \
+         a type that refers to itself must go through POINTER TO)"
+    )]
+    CyclicType {
+        type_name: String,
+        unresolved: String,
+    },
+    /// Two `TYPE` declarations share a name. ST identifiers are case-insensitive, so
+    /// `Foo` and `foo` are the same type — the second silently replaced the first and
+    /// the program failed much later with something unrelated, typically
+    /// `undefined variable: a` from a field that only the shadowed declaration had.
+    #[error(
+        "TYPE `{second}` is already declared as `{first}` \
+         (ST identifiers are case-insensitive, so these are the same name)"
+    )]
+    DuplicateType { first: String, second: String },
     /// The generated module failed LLVM's own verifier.
     ///
     /// Structural IR defects (a terminator in the middle of a block, a block with no
@@ -157,6 +195,13 @@ pub struct Compiler<'ctx> {
     compiled_fbs: HashMap<String, FbLayout<'ctx>>,
     /// FB instances in the current POU being compiled, keyed by uppercase instance name.
     fb_instances: HashMap<String, FbInstanceInfo<'ctx>>,
+    /// Declared VAR_INPUT parameters of every user FUNCTION, keyed by lowercased name.
+    ///
+    /// Recorded before any body is compiled so a call site can coerce its arguments to
+    /// the declared parameter types. Without this an `INT` literal passed to a `DINT`
+    /// parameter reached `build_call` unconverted and LLVM's verifier rejected the
+    /// module — `F(5)` against `FUNCTION F : DINT VAR_INPUT x : DINT`.
+    fn_signatures: HashMap<String, Vec<(String, IecType)>>,
     /// The parent struct type for the current POU being compiled (needed for GEP on FB instances).
     current_struct_type: Option<StructType<'ctx>>,
     /// The state pointer for the current POU being compiled.
@@ -178,6 +223,7 @@ impl<'ctx> Compiler<'ctx> {
             global_var: None,
             compiled_fbs: HashMap::new(),
             fb_instances: HashMap::new(),
+            fn_signatures: HashMap::new(),
             current_struct_type: None,
             current_state_ptr: None,
         }
@@ -240,6 +286,28 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         match uname.as_str() {
+            // The platform clock, exposed to ST. Returns LINT/TIME nanoseconds.
+            // `MONOTONIC_NS` is the ST-facing spelling; `PLCC_MONOTONIC_NS` matches the
+            // symbol name for anyone who prefers to be explicit about the import.
+            "MONOTONIC_NS" | "PLCC_MONOTONIC_NS" => {
+                if !arg_vals.is_empty() {
+                    return Err(CodegenError::LlvmError(format!(
+                        "{uname} takes no arguments, got {}",
+                        arg_vals.len()
+                    )));
+                }
+                let clock_fn = self.get_or_declare_monotonic_ns();
+                let call = self
+                    .builder
+                    .build_call(clock_fn, &[], "monons")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                match call.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(v) => Ok(Some(v)),
+                    inkwell::values::ValueKind::Instruction(_) => Err(CodegenError::LlvmError(
+                        "plcc_monotonic_ns returned no value".into(),
+                    )),
+                }
+            }
             "SQRT" | "SIN" | "COS" | "EXP" | "LN" => {
                 if arg_vals.len() != 1 {
                     return Err(CodegenError::LlvmError(format!(
@@ -1241,6 +1309,36 @@ impl<'ctx> Compiler<'ctx> {
         let fn_type = void_ty.fn_type(&[ptr_ty.into()], false);
         self.module.add_function(
             "plcc_print",
+            fn_type,
+            Some(inkwell::module::Linkage::External),
+        )
+    }
+
+    /// Get or declare the extern `plcc_monotonic_ns() -> i64` function.
+    ///
+    /// This is the one time source the compiler needs and the language cannot
+    /// provide. The platform supplies it, exactly like `plcc_print`:
+    ///   * `plcc sim` / the JIT map it onto a host `std::time::Instant` clock;
+    ///   * bare-metal integrators must export a `plcc_monotonic_ns` symbol
+    ///     (e.g. from a cycle counter or SysTick).
+    ///
+    /// Signed i64, not u64: TIME and LTIME are already laid out as i64 nanoseconds
+    /// by `iec_to_llvm_type`, and every arithmetic and comparison path in codegen
+    /// treats those as signed. Returning u64 would mean the very first thing any
+    /// timer did with the value was a signedness reinterpretation. i64 nanoseconds
+    /// still spans ~292 years of uptime, which is not a real constraint.
+    ///
+    /// The value is nanoseconds since an arbitrary, fixed epoch. Only differences
+    /// are meaningful. It must never go backwards.
+    pub const MONOTONIC_NS_SYMBOL: &'static str = "plcc_monotonic_ns";
+
+    fn get_or_declare_monotonic_ns(&self) -> FunctionValue<'ctx> {
+        if let Some(f) = self.module.get_function(Self::MONOTONIC_NS_SYMBOL) {
+            return f;
+        }
+        let fn_type = self.context.i64_type().fn_type(&[], false);
+        self.module.add_function(
+            Self::MONOTONIC_NS_SYMBOL,
             fn_type,
             Some(inkwell::module::Linkage::External),
         )
@@ -2498,20 +2596,56 @@ impl<'ctx> Compiler<'ctx> {
                     cls.name.name.clone(),
                     IecType::FbInstance(cls.name.name.clone()),
                 ),
+                // An INTERFACE-typed variable is valid 3rd-edition ST (IEC 61131-3
+                // §6.6.4). It holds a *reference* to an object implementing the
+                // interface, not an inline instance, so it gets a pointer slot —
+                // registering it as an FbInstance would find no layout and silently
+                // fall back to an i32 field, which is exactly the miscompile the
+                // unknown-type error exists to prevent. Skipping it entirely made the
+                // declaration a hard error.
+                Declaration::Interface(iface) => (
+                    iface.name.name.clone(),
+                    IecType::Pointer(Box::new(IecType::FbInstance(iface.name.name.clone()))),
+                ),
                 _ => continue,
             };
-            self.type_registry
-                .register(name.to_uppercase(), fb_type.clone());
-            self.type_checker
-                .types
-                .register(name.to_uppercase(), fb_type.clone());
-            self.type_checker.types.register(name.clone(), fb_type);
+            // TypeRegistry::register case-folds the key, so one registration covers
+            // every spelling a program might use.
+            self.type_registry.register(name.clone(), fb_type.clone());
+            self.type_checker.types.register(name, fb_type);
         }
+
+        // Register user TYPE declarations (STRUCT / ENUM / subrange / alias) so that a
+        // `v : MyStruct;` declaration resolves instead of falling through to the
+        // "unknown type" fallback.
+        //
+        // A TYPE may name another TYPE declared later in the file, so this iterates to
+        // a fixed point. A fixed *count* of passes silently truncates: two passes
+        // resolve a two-deep forward chain and reject a three-deep one, which is not a
+        // property of the language, only of the loop bound. Each round re-resolves from
+        // the AST, so a round that resolves one name lets the next round resolve
+        // anything that referenced it.
+        self.register_type_declarations(unit)?;
+
+        // Every declared type must resolve to something real *before* we lay out any
+        // struct. Previously an unknown type name (`t : TON;` with no TON in scope)
+        // silently became an i32 field and every statement referring to it was dropped
+        // from the generated code — a silent miscompile with no diagnostic at all.
+        self.validate_declared_types(unit)?;
 
         // Lay out every FB/CLASS state struct *before* anything that needs to know
         // their size. This makes FB instance fields work regardless of declaration
         // order (an FB may contain an instance of an FB declared later in the file).
         self.layout_pou_structs(unit);
+
+        // Record every METHOD signature up front for the same reason: a method call
+        // resolves through the owner's recorded `methods` map.
+        self.layout_pou_methods(unit);
+
+        // And every FUNCTION signature, for the same reason one level over: a call site
+        // has to coerce its arguments to the declared parameter types, and it may be
+        // compiled before the callee's own body is.
+        self.layout_function_signatures(unit);
 
         // Declare the `<pou>_init` prototypes up front so init bodies can call each
         // other without regard to declaration order.
@@ -2586,6 +2720,212 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
+    /// Resolve every `TYPE` declaration to a fixed point.
+    ///
+    /// Returns an error if a declaration never becomes layout-complete: a genuine
+    /// cycle (`A : ARRAY OF B; B : ARRAY OF A;`) or a name that resolves to nothing.
+    /// Without that check the loop would either stop early and leave an `Unresolved`
+    /// in a struct layout, or spin forever.
+    fn register_type_declarations(&mut self, unit: &CompilationUnit) -> Result<(), CodegenError> {
+        let mut pending: Vec<&TypeDeclaration> = unit
+            .declarations
+            .iter()
+            .filter_map(|d| match d {
+                Declaration::TypeDecl(td) => Some(td),
+                _ => None,
+            })
+            .collect();
+
+        // Reject two declarations of the same name before resolving anything. The
+        // registry case-folds its keys, so `TYPE Foo` followed by `TYPE foo` was a
+        // silent last-wins overwrite, and the program failed later somewhere else
+        // entirely — `undefined variable: a` from a field only the first one had.
+        let mut seen: HashMap<String, String> = HashMap::new();
+        for td in &pending {
+            if let Some(first) = seen.insert(td.name.name.to_uppercase(), td.name.name.clone()) {
+                return Err(CodegenError::DuplicateType {
+                    first,
+                    second: td.name.name.clone(),
+                });
+            }
+        }
+
+        while !pending.is_empty() {
+            let before = pending.len();
+            let mut still = Vec::with_capacity(before);
+            for td in pending {
+                let ty = self.resolve_type_spec(&td.type_spec);
+                let incomplete = Self::first_unresolved_in_layout(&ty);
+                // Register even a partially resolved type: it is what lets the *next*
+                // round make progress on whatever referenced it.
+                self.type_registry
+                    .register(td.name.name.clone(), ty.clone());
+                self.type_checker.types.register(td.name.name.clone(), ty);
+                if let Some(name) = incomplete {
+                    still.push((td, name));
+                }
+            }
+            if still.is_empty() {
+                return Ok(());
+            }
+            if still.len() == before {
+                // A whole round with nothing resolved: no later round can do better.
+                let (td, unresolved) = &still[0];
+                return Err(CodegenError::CyclicType {
+                    type_name: td.name.name.clone(),
+                    unresolved: unresolved.clone(),
+                });
+            }
+            pending = still.into_iter().map(|(td, _)| td).collect();
+        }
+        Ok(())
+    }
+
+    /// First unresolved type name that would affect `ty`'s memory layout.
+    ///
+    /// Recursion stops at a POINTER: it is one machine word whatever it points at, so
+    /// `TYPE Node : STRUCT next : POINTER TO Node; END_STRUCT; END_TYPE` is complete
+    /// after a single round rather than regressing forever.
+    fn first_unresolved_in_layout(ty: &IecType) -> Option<String> {
+        match ty {
+            IecType::Unresolved(name) => Some(name.clone()),
+            IecType::Array { element_type, .. } => Self::first_unresolved_in_layout(element_type),
+            IecType::Alias { base_type, .. } | IecType::Subrange { base_type, .. } => {
+                Self::first_unresolved_in_layout(base_type)
+            }
+            IecType::Struct { fields, .. } => fields
+                .iter()
+                .find_map(|(_, t)| Self::first_unresolved_in_layout(t)),
+            IecType::Pointer(_) => None,
+            _ => None,
+        }
+    }
+
+    /// First unresolved type name reachable from `ty`, if any.
+    ///
+    /// Walks through the aggregate types so `ARRAY [1..4] OF TON` and
+    /// `STRUCT t : TON; END_STRUCT` are caught too, not just a bare `t : TON;`.
+    fn first_unresolved(&self, ty: &IecType) -> Option<String> {
+        match ty {
+            IecType::Unresolved(name) => Some(name.clone()),
+            IecType::Array { element_type, .. } => self.first_unresolved(element_type),
+            IecType::Alias {
+                base_type: inner, ..
+            } => self.first_unresolved(inner),
+            // A pointee is not part of this type's layout, and it may legitimately be
+            // the type currently being defined: `TYPE Node : STRUCT next : POINTER TO
+            // Node; END_STRUCT` snapshots `Node` as unresolved inside itself. So the
+            // pointee is checked by *name* against the finished registry instead of
+            // structurally — a POINTER TO something that genuinely does not exist is
+            // still rejected.
+            IecType::Pointer(inner) => match inner.as_ref() {
+                IecType::Unresolved(name) if self.type_registry.resolve(name).is_some() => None,
+                other => self.first_unresolved(other),
+            },
+            IecType::Struct { fields, .. } => {
+                fields.iter().find_map(|(_, t)| self.first_unresolved(t))
+            }
+            _ => None,
+        }
+    }
+
+    /// Reject any declaration whose type name does not resolve.
+    ///
+    /// This is deliberately in codegen rather than in `plcc-hir`: `plcc compile` and
+    /// `plcc sim` never run the HIR checker, so a HIR-only diagnostic would leave the
+    /// actual miscompile in place. Codegen is the layer that would otherwise emit the
+    /// wrong code, so codegen is where the guarantee has to hold. (A HIR diagnostic on
+    /// top of this would be a nicer *message* — with a source span — but it cannot be
+    /// the enforcement point.)
+    fn validate_declared_types(&mut self, unit: &CompilationUnit) -> Result<(), CodegenError> {
+        let mut check = |this: &mut Self,
+                         pou_kind: &'static str,
+                         pou_name: &str,
+                         blocks: &[VarBlock]|
+         -> Result<(), CodegenError> {
+            for block in blocks {
+                for decl in &block.declarations {
+                    let ty = this.resolve_type_spec(&decl.type_spec);
+                    if let Some(type_name) = this.first_unresolved(&ty) {
+                        return Err(CodegenError::UnknownType {
+                            pou_kind,
+                            pou_name: pou_name.to_string(),
+                            var_name: decl.name.name.clone(),
+                            type_name,
+                        });
+                    }
+                }
+            }
+            Ok(())
+        };
+
+        for decl in &unit.declarations {
+            match decl {
+                Declaration::Program(p) => {
+                    check(self, "PROGRAM", &p.name.name.clone(), &p.var_blocks)?
+                }
+                Declaration::Function(f) => {
+                    check(self, "FUNCTION", &f.name.name.clone(), &f.var_blocks)?
+                }
+                Declaration::FunctionBlock(fb) => {
+                    check(
+                        self,
+                        "FUNCTION_BLOCK",
+                        &fb.name.name.clone(),
+                        &fb.var_blocks,
+                    )?;
+                    // A METHOD has its own VAR blocks. Walking only the POU's blocks
+                    // let `METHOD M VAR t : TON; END_VAR` through untouched — the same
+                    // silent i32-slot miscompile, just one level down.
+                    for m in &fb.methods {
+                        let name = format!("{}.{}", fb.name.name, m.name.name);
+                        check(self, "METHOD", &name, &m.var_blocks)?;
+                    }
+                }
+                Declaration::Class(cls) => {
+                    check(self, "CLASS", &cls.name.name.clone(), &cls.var_blocks)?;
+                    for m in &cls.methods {
+                        let name = format!("{}.{}", cls.name.name, m.name.name);
+                        check(self, "METHOD", &name, &m.var_blocks)?;
+                    }
+                }
+                Declaration::GlobalVarDecl(block) => {
+                    check(self, "VAR_GLOBAL", "", std::slice::from_ref(block))?
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Register every FB-instance field of a POU's state struct in `fb_instances`.
+    ///
+    /// Without this, a statement like `i(A := X);` inside the owning POU is not
+    /// recognized as an FB call and compiles to nothing at all — no scan call, no
+    /// diagnostic. Only `compile_program` used to do it, so nesting an FB inside
+    /// another FB (or using one from a METHOD) silently dropped the call.
+    fn register_fb_instance_fields(&mut self, field_names: &[String], field_types: &[IecType]) {
+        for (i, (name, iec_ty)) in field_names.iter().zip(field_types.iter()).enumerate() {
+            let IecType::FbInstance(fb_type_name) = iec_ty else {
+                continue;
+            };
+            let Some(layout) = self.compiled_fbs.get(&fb_type_name.to_uppercase()).cloned() else {
+                continue;
+            };
+            self.fb_instances.insert(
+                name.to_uppercase(),
+                FbInstanceInfo {
+                    field_index: i as u32,
+                    fb_type_name: fb_type_name.clone(),
+                    scan_fn_name: layout.scan_fn_name.clone(),
+                    fields: layout.fields.clone(),
+                    struct_type: layout.struct_type,
+                    methods: layout.methods.clone(),
+                },
+            );
+        }
+    }
+
     /// Name of the generated init function for a POU.
     fn init_fn_name_for(name: &str) -> String {
         format!("{}_init", name.to_lowercase())
@@ -2609,19 +2949,50 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
+    /// Name of the generated scan function for a POU.
+    fn scan_fn_name_for(name: &str) -> String {
+        format!("{}_scan", name.to_lowercase())
+    }
+
+    /// Get, or declare, `<name>(ptr) -> void`.
+    ///
+    /// Declaring a prototype creates the `FunctionValue` without a body, so callers
+    /// can reference it before the definition is compiled.
+    fn declare_state_fn(&self, name: &str) -> FunctionValue<'ctx> {
+        if let Some(f) = self.module.get_function(name) {
+            return f;
+        }
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let fn_type = self.context.void_type().fn_type(&[ptr_ty.into()], false);
+        self.module.add_function(name, fn_type, None)
+    }
+
     /// Record (or overwrite) the struct layout for an FB/CLASS.
+    ///
+    /// Also declares the POU's `_scan` and `_init` prototypes. `compile_fb_call`
+    /// resolves the callee with `module.get_function(scan_fn_name)`, which only
+    /// succeeds once that `FunctionValue` exists. Creating it in the definition
+    /// (`compile_function_block`) made the whole module order-dependent: an OUTER
+    /// declared before the INNER it instantiates failed with "FB scan function
+    /// 'inner_scan' not found", and so did passing two .st files in the wrong order
+    /// on the command line. Layout runs over every POU before any body is compiled,
+    /// so declaring here makes every callee resolvable from every caller.
     fn record_pou_layout(&mut self, name: &str, fields: Vec<(String, IecType)>) {
         let field_types: Vec<BasicTypeEnum<'ctx>> = fields
             .iter()
             .map(|(_, t)| self.iec_to_llvm_type(t))
             .collect();
         let struct_type = self.context.struct_type(&field_types, false);
+        let scan_fn_name = Self::scan_fn_name_for(name);
+        let init_fn_name = Self::init_fn_name_for(name);
+        self.declare_state_fn(&scan_fn_name);
+        self.declare_state_fn(&init_fn_name);
         self.compiled_fbs.insert(
             name.to_uppercase(),
             FbLayout {
                 struct_type,
-                scan_fn_name: format!("{}_scan", name.to_lowercase()),
-                init_fn_name: Self::init_fn_name_for(name),
+                scan_fn_name,
+                init_fn_name,
                 fields,
                 methods: HashMap::new(),
             },
@@ -2684,8 +3055,6 @@ impl<'ctx> Compiler<'ctx> {
     /// Bodies are filled in later; declaring them all first lets init bodies call each
     /// other regardless of declaration order.
     fn declare_init_prototypes(&mut self, unit: &CompilationUnit) {
-        let ptr_ty = self.context.ptr_type(AddressSpace::default());
-        let fn_type = self.context.void_type().fn_type(&[ptr_ty.into()], false);
         for decl in &unit.declarations {
             let name = match decl {
                 Declaration::FunctionBlock(fb) => &fb.name.name,
@@ -2693,10 +3062,7 @@ impl<'ctx> Compiler<'ctx> {
                 Declaration::Program(p) => &p.name.name,
                 _ => continue,
             };
-            let init_name = Self::init_fn_name_for(name);
-            if self.module.get_function(&init_name).is_none() {
-                self.module.add_function(&init_name, fn_type, None);
-            }
+            self.declare_state_fn(&Self::init_fn_name_for(name));
         }
     }
 
@@ -2750,13 +3116,22 @@ impl<'ctx> Compiler<'ctx> {
 
     /// Widen/narrow/convert an initializer value so it matches the member's storage type.
     /// Without this, `x : DINT := -1` would store a 16-bit -1 into a 32-bit slot.
+    ///
+    /// The source type is unknown here, so widening falls back to the destination's
+    /// signedness. That is right for a bare literal (`x : DINT := -1` must sign-extend)
+    /// and wrong for a typed value, so anything that *has* a source type must call
+    /// [`Self::coerce_value`] instead.
     fn coerce_init_value(
         &self,
         val: BasicValueEnum<'ctx>,
         ty: &IecType,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
-        let target = self.iec_to_llvm_type(ty);
-        let unsigned = matches!(
+        self.coerce_value(val, None, ty)
+    }
+
+    /// True when values of `ty` are widened by zero-extension.
+    fn widens_unsigned(ty: &IecType) -> bool {
+        matches!(
             ty,
             IecType::Bool
                 | IecType::Byte
@@ -2769,7 +3144,29 @@ impl<'ctx> Compiler<'ctx> {
                 | IecType::Ulint
                 | IecType::Char
                 | IecType::Wchar
-        );
+        )
+    }
+
+    /// Convert `val` (of IEC type `src`, when known) to the storage type of `ty`.
+    ///
+    /// Widening signedness comes from the **source**, not the destination. A BYTE
+    /// holding 16#FF is 255, and it is still 255 after `acc : DINT := raw_b;` — taking
+    /// the sign from the DINT destination turned every ANY_BIT and ANY_UNSIGNED value
+    /// assigned into a wider signed slot into a negative number.
+    ///
+    /// `src` is `None` for values with no static IEC type (bare literals); the
+    /// destination's signedness is the fallback there.
+    fn coerce_value(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        src: Option<&IecType>,
+        ty: &IecType,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let target = self.iec_to_llvm_type(ty);
+        let unsigned = match src {
+            Some(src_ty) => Self::widens_unsigned(src_ty),
+            None => Self::widens_unsigned(ty),
+        };
         match (val, target) {
             (BasicValueEnum::IntValue(iv), BasicTypeEnum::IntType(it)) => {
                 let (sw, tw) = (iv.get_type().get_bit_width(), it.get_bit_width());
@@ -2915,10 +3312,7 @@ impl<'ctx> Compiler<'ctx> {
         _ty: &IecType,
     ) -> Option<BasicValueEnum<'ctx>> {
         match &expr.kind {
-            ExpressionKind::IntegerLiteral(v) => {
-                // Use i16 (INT) by default, matching compile_expression
-                Some(self.context.i16_type().const_int(*v as u64, true).into())
-            }
+            ExpressionKind::IntegerLiteral(v) => Some(self.int_literal(*v).into()),
             ExpressionKind::RealLiteral(v) => Some(self.context.f32_type().const_float(*v).into()),
             ExpressionKind::BoolLiteral(v) => {
                 Some(self.context.i8_type().const_int(*v as u64, false).into())
@@ -2985,6 +3379,56 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     /// Ensure two integer values have the same bit width by extending the smaller one.
+    /// Widen `v` to `to`, extending by the signedness of its *own* IEC type.
+    ///
+    /// `None` means the value has no static IEC type (a bare literal), and bare
+    /// integer literals are signed.
+    fn extend_int(
+        &self,
+        v: inkwell::values::IntValue<'ctx>,
+        ty: Option<&IecType>,
+        to: inkwell::types::IntType<'ctx>,
+    ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+        if ty.is_some_and(Self::widens_unsigned) {
+            self.builder.build_int_z_extend(v, to, "zext")
+        } else {
+            self.builder.build_int_s_extend(v, to, "sext")
+        }
+        .map_err(|e| CodegenError::LlvmError(e.to_string()))
+    }
+
+    /// Bring two integers to a common width, extending each by its own type's
+    /// signedness.
+    ///
+    /// [`Self::match_int_widths`] sign-extends unconditionally, which is wrong for
+    /// every ANY_BIT and ANY_UNSIGNED value: a BYTE holding `16#FF` is 255, and
+    /// sign-extending it to i32 makes it -1. That is how
+    /// `FOR i := 1 TO raw BY 100` with `raw : BYTE := 16#FF` ran zero iterations
+    /// instead of three, silently and with no diagnostic.
+    fn match_int_widths_typed(
+        &self,
+        a: inkwell::values::IntValue<'ctx>,
+        a_ty: Option<&IecType>,
+        b: inkwell::values::IntValue<'ctx>,
+        b_ty: Option<&IecType>,
+    ) -> Result<
+        (
+            inkwell::values::IntValue<'ctx>,
+            inkwell::values::IntValue<'ctx>,
+        ),
+        CodegenError,
+    > {
+        let aw = a.get_type().get_bit_width();
+        let bw = b.get_type().get_bit_width();
+        if aw == bw {
+            Ok((a, b))
+        } else if aw < bw {
+            Ok((self.extend_int(a, a_ty, b.get_type())?, b))
+        } else {
+            Ok((a, self.extend_int(b, b_ty, a.get_type())?))
+        }
+    }
+
     fn match_int_widths(
         &self,
         a: inkwell::values::IntValue<'ctx>,
@@ -3012,6 +3456,27 @@ impl<'ctx> Compiler<'ctx> {
                 .build_int_s_extend(b, a.get_type(), "sext")
                 .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
             Ok((a, ext))
+        }
+    }
+
+    /// Materialize an integer literal at the narrowest standard width that holds it.
+    ///
+    /// IEC 61131-3 gives an integer literal the type its context demands. Codegen has
+    /// no context here, so it picks by magnitude: INT (i16) for anything that fits —
+    /// which is the overwhelmingly common case and keeps ordinary INT arithmetic
+    /// 16-bit — then DINT (i32), then LINT (i64). Fixing the width at i16
+    /// unconditionally silently truncated every literal above 32767, so
+    /// `ctr(PV := 100000)` passed -31072.
+    ///
+    /// Binary operations sign-extend to the wider operand, and assignment coerces to
+    /// the destination, so a wider literal never leaks into a narrower slot.
+    fn int_literal(&self, v: i128) -> inkwell::values::IntValue<'ctx> {
+        if (i16::MIN as i128..=i16::MAX as i128).contains(&v) {
+            self.context.i16_type().const_int(v as u64, true)
+        } else if (i32::MIN as i128..=i32::MAX as i128).contains(&v) {
+            self.context.i32_type().const_int(v as u64, true)
+        } else {
+            self.context.i64_type().const_int(v as u64, true)
         }
     }
 
@@ -3133,24 +3598,8 @@ impl<'ctx> Compiler<'ctx> {
                 .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
             self.variables
                 .insert(name.to_uppercase(), (ptr, iec_ty.clone()));
-
-            // If this is an FB instance, register it
-            if let IecType::FbInstance(fb_type_name) = iec_ty {
-                if let Some(layout) = self.compiled_fbs.get(&fb_type_name.to_uppercase()).cloned() {
-                    self.fb_instances.insert(
-                        name.to_uppercase(),
-                        FbInstanceInfo {
-                            field_index: i as u32,
-                            fb_type_name: fb_type_name.clone(),
-                            scan_fn_name: layout.scan_fn_name.clone(),
-                            fields: layout.fields.clone(),
-                            struct_type: layout.struct_type,
-                            methods: layout.methods.clone(),
-                        },
-                    );
-                }
-            }
         }
+        self.register_fb_instance_fields(&field_names, &field_iec_types);
 
         // Add global variables
         self.add_globals_to_variables()?;
@@ -3297,8 +3746,9 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     fn compile_function_block(&mut self, fb: &FunctionBlockDecl) -> Result<(), CodegenError> {
-        // Similar to program — creates a scan function with state struct pointer
-        let fn_name = format!("{}_scan", fb.name.name.to_lowercase());
+        // Similar to program — fills in the body of the scan function that
+        // `record_pou_layout` already declared.
+        let fn_name = Self::scan_fn_name_for(&fb.name.name);
 
         let mut field_types: Vec<BasicTypeEnum<'ctx>> = Vec::new();
         let mut field_names: Vec<String> = Vec::new();
@@ -3315,12 +3765,15 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         let struct_type = self.context.struct_type(&field_types, false);
-        let state_ptr_type = self.context.ptr_type(AddressSpace::default());
-        let fn_type = self
-            .context
-            .void_type()
-            .fn_type(&[state_ptr_type.into()], false);
-        let function = self.module.add_function(&fn_name, fn_type, None);
+        // Reuse the prototype declared during layout; only create one if this FB was
+        // never laid out (defensive — layout covers every FB in the unit).
+        let function = self.declare_state_fn(&fn_name);
+        if function.count_basic_blocks() > 0 {
+            return Err(CodegenError::LlvmError(format!(
+                "duplicate FUNCTION_BLOCK definition '{}'",
+                fb.name.name
+            )));
+        }
 
         // Record this FB's layout for use by parent POUs that instantiate it
         let fb_fields: Vec<(String, IecType)> = field_names
@@ -3360,6 +3813,9 @@ impl<'ctx> Compiler<'ctx> {
 
         self.variables.clear();
         self.fb_instances.clear();
+        // An FB's own state struct is the parent struct for anything it instantiates.
+        self.current_struct_type = Some(struct_type);
+        self.current_state_ptr = Some(state_ptr);
         for (i, (name, iec_ty)) in field_names.iter().zip(field_iec_types.iter()).enumerate() {
             let ptr = self
                 .builder
@@ -3368,6 +3824,7 @@ impl<'ctx> Compiler<'ctx> {
             self.variables
                 .insert(name.to_uppercase(), (ptr, iec_ty.clone()));
         }
+        self.register_fb_instance_fields(&field_names, &field_iec_types);
 
         // Add global variables
         self.add_globals_to_variables()?;
@@ -3387,7 +3844,7 @@ impl<'ctx> Compiler<'ctx> {
 
     /// Compile a CLASS declaration. A CLASS is like an FB but has no scan body — only methods.
     fn compile_class(&mut self, cls: &ClassDecl) -> Result<(), CodegenError> {
-        let fn_name = format!("{}_scan", cls.name.name.to_lowercase());
+        let fn_name = Self::scan_fn_name_for(&cls.name.name);
 
         let mut field_types: Vec<BasicTypeEnum<'ctx>> = Vec::new();
         let mut field_names: Vec<String> = Vec::new();
@@ -3404,14 +3861,16 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         let struct_type = self.context.struct_type(&field_types, false);
-        let state_ptr_type = self.context.ptr_type(AddressSpace::default());
 
-        // Create an empty scan function (classes don't have a body like FBs)
-        let void_fn_type = self
-            .context
-            .void_type()
-            .fn_type(&[state_ptr_type.into()], false);
-        let scan_function = self.module.add_function(&fn_name, void_fn_type, None);
+        // Fill in the prototype declared during layout with an empty body (classes
+        // have no scan body like FBs).
+        let scan_function = self.declare_state_fn(&fn_name);
+        if scan_function.count_basic_blocks() > 0 {
+            return Err(CodegenError::LlvmError(format!(
+                "duplicate CLASS definition '{}'",
+                cls.name.name
+            )));
+        }
         let entry = self.context.append_basic_block(scan_function, "entry");
         self.builder.position_at_end(entry);
         self.builder
@@ -3454,16 +3913,19 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
-    /// Compile a METHOD declaration on an FB/Class.
-    /// Produces an LLVM function: `{fb_name}_{method_name}(instance_ptr, ...params) -> ret_type`
-    fn compile_method(
+    /// Compute a METHOD's signature and declare (or fetch) its LLVM prototype.
+    ///
+    /// Split out of [`Self::compile_method`] so [`Self::layout_pou_methods`] can record
+    /// every method of every POU before any body is compiled. `compile_method_call`
+    /// looks the callee up in the owner's recorded `methods` map, so calling a method
+    /// on a CLASS or FB declared *later* in the file used to fail with
+    /// "method 'X' not found on FB type 'Y'" — the same declaration-order hazard the
+    /// `_scan` prototypes had.
+    fn declare_method(
         &mut self,
         fb_name: &str,
         method: &MethodDecl,
-        fb_struct_type: StructType<'ctx>,
-        fb_field_names: &[String],
-        fb_field_iec_types: &[IecType],
-    ) -> Result<MethodInfo, CodegenError> {
+    ) -> (MethodInfo, FunctionValue<'ctx>) {
         let method_fn_name = format!(
             "{}_{}",
             fb_name.to_lowercase(),
@@ -3479,8 +3941,7 @@ impl<'ctx> Compiler<'ctx> {
         // First param is always the instance pointer
         let state_ptr_type = self.context.ptr_type(AddressSpace::default());
         let mut param_types: Vec<BasicMetadataTypeEnum<'ctx>> = vec![state_ptr_type.into()];
-        let mut param_names: Vec<String> = Vec::new();
-        let mut param_iec_types: Vec<IecType> = Vec::new();
+        let mut params: Vec<(String, IecType)> = Vec::new();
 
         for block in &method.var_blocks {
             if block.kind == VarBlockKind::VarInput {
@@ -3488,8 +3949,7 @@ impl<'ctx> Compiler<'ctx> {
                     let iec_ty = self.resolve_type_spec(&decl.type_spec);
                     let llvm_ty = self.iec_to_llvm_type(&iec_ty);
                     param_types.push(llvm_ty.into());
-                    param_names.push(decl.name.name.clone());
-                    param_iec_types.push(iec_ty);
+                    params.push((decl.name.name.clone(), iec_ty));
                 }
             }
         }
@@ -3501,7 +3961,84 @@ impl<'ctx> Compiler<'ctx> {
             ret_llvm.fn_type(&param_types, false)
         };
 
-        let function = self.module.add_function(&method_fn_name, fn_type, None);
+        let function = match self.module.get_function(&method_fn_name) {
+            Some(f) => f,
+            None => self.module.add_function(&method_fn_name, fn_type, None),
+        };
+
+        (
+            MethodInfo {
+                fn_name: method_fn_name,
+                params,
+                return_type: ret_iec_ty,
+            },
+            function,
+        )
+    }
+
+    /// Record every FB/CLASS method signature (and declare its prototype) before any
+    /// body is compiled, so method calls resolve regardless of declaration order.
+    /// Record the declared VAR_INPUT parameters of every user FUNCTION.
+    ///
+    /// Runs before any body is compiled, so `compile_expression`'s call path can widen
+    /// or narrow each argument to the parameter's declared type regardless of the order
+    /// the functions appear in.
+    fn layout_function_signatures(&mut self, unit: &CompilationUnit) {
+        for decl in &unit.declarations {
+            let Declaration::Function(func) = decl else {
+                continue;
+            };
+            let mut params: Vec<(String, IecType)> = Vec::new();
+            for block in &func.var_blocks {
+                if block.kind == VarBlockKind::VarInput {
+                    for d in &block.declarations {
+                        let ty = self.resolve_type_spec(&d.type_spec);
+                        params.push((d.name.name.clone(), ty));
+                    }
+                }
+            }
+            self.fn_signatures
+                .insert(func.name.name.to_lowercase(), params);
+        }
+    }
+
+    fn layout_pou_methods(&mut self, unit: &CompilationUnit) {
+        for decl in &unit.declarations {
+            let (name, methods) = match decl {
+                Declaration::FunctionBlock(fb) => (&fb.name.name, &fb.methods),
+                Declaration::Class(cls) => (&cls.name.name, &cls.methods),
+                _ => continue,
+            };
+            let mut infos: HashMap<String, MethodInfo> = HashMap::new();
+            for method in methods {
+                let (info, _) = self.declare_method(name, method);
+                infos.insert(method.name.name.to_uppercase(), info);
+            }
+            if let Some(layout) = self.compiled_fbs.get_mut(&name.to_uppercase()) {
+                layout.methods = infos;
+            }
+        }
+    }
+
+    /// Compile a METHOD declaration on an FB/Class.
+    /// Produces an LLVM function: `{fb_name}_{method_name}(instance_ptr, ...params) -> ret_type`
+    fn compile_method(
+        &mut self,
+        fb_name: &str,
+        method: &MethodDecl,
+        fb_struct_type: StructType<'ctx>,
+        fb_field_names: &[String],
+        fb_field_iec_types: &[IecType],
+    ) -> Result<MethodInfo, CodegenError> {
+        let (info, function) = self.declare_method(fb_name, method);
+        if function.count_basic_blocks() > 0 {
+            // Body already emitted (a duplicate POU definition). Keep the first.
+            return Ok(info);
+        }
+        let ret_iec_ty = info.return_type.clone();
+        let param_names: Vec<String> = info.params.iter().map(|(n, _)| n.clone()).collect();
+        let param_iec_types: Vec<IecType> = info.params.iter().map(|(_, t)| t.clone()).collect();
+
         let entry = self.context.append_basic_block(function, "entry");
         self.builder.position_at_end(entry);
 
@@ -3529,6 +4066,7 @@ impl<'ctx> Compiler<'ctx> {
             self.variables
                 .insert(name.to_uppercase(), (ptr, iec_ty.clone()));
         }
+        self.register_fb_instance_fields(fb_field_names, fb_field_iec_types);
 
         // Allocate method input params as local allocas
         for (i, (name, iec_ty)) in param_names.iter().zip(param_iec_types.iter()).enumerate() {
@@ -3621,16 +4159,7 @@ impl<'ctx> Compiler<'ctx> {
         self.current_struct_type = saved_struct_type;
         self.current_state_ptr = saved_state_ptr;
 
-        let params: Vec<(String, IecType)> = param_names
-            .into_iter()
-            .zip(param_iec_types.into_iter())
-            .collect();
-
-        Ok(MethodInfo {
-            fn_name: method_fn_name,
-            params,
-            return_type: ret_iec_ty,
-        })
+        Ok(info)
     }
 
     fn compile_statement(
@@ -3642,12 +4171,38 @@ impl<'ctx> Compiler<'ctx> {
             StatementKind::Assignment { target, value } => {
                 // Try string function assignment first (CONCAT, LEFT, RIGHT, MID)
                 if !self.try_compile_string_assignment(target, value, function)? {
-                    if let Some(ptr) = self.compile_lvalue_with_fn(target, function)? {
-                        if let Some(val) = self.compile_expression(value, function)? {
-                            self.builder
-                                .build_store(ptr, val)
-                                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                        }
+                    // An assignment target that resolves to no address is a
+                    // diagnostic, not a no-op. `compile_lvalue_inner` returns
+                    // `Ok(None)` for expressions with no address at all (literals,
+                    // calls, `%IX0.0`), which the string builtins ask about
+                    // speculatively — but reaching here means the user wrote it on
+                    // the left of `:=`, and dropping the store silently is how this
+                    // class of bug has repeatedly gone unnoticed.
+                    let ptr = self
+                        .compile_lvalue_with_fn(target, function)?
+                        .ok_or_else(|| {
+                            CodegenError::UnsupportedType(format!(
+                                "`{}` is not an assignable location",
+                                Self::describe_lvalue(target)
+                            ))
+                        })?;
+                    if let Some(val) = self.compile_expression(value, function)? {
+                        // Match the store width to the destination. Without this a
+                        // narrow RHS (integer literals default to INT/i16) stored
+                        // into a wider slot wrote only part of it.
+                        // Match the store width to the destination, but take the
+                        // *source's* signedness: `acc : DINT := raw_byte;` where
+                        // raw_byte is 16#FF must widen to 255, not to -1.
+                        let val = match self.lvalue_iec_type(target) {
+                            Some(ty) => {
+                                let src = self.rvalue_iec_type(value);
+                                self.coerce_value(val, src.as_ref(), &ty)?
+                            }
+                            None => val,
+                        };
+                        self.builder
+                            .build_store(ptr, val)
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                     }
                 }
             }
@@ -3813,6 +4368,11 @@ impl<'ctx> Compiler<'ctx> {
                             &arg_name.name,
                         )
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    // Widen/narrow to the declared input type. Integer literals
+                    // default to INT (i16), so `ctr(PV := 100000)` on a DINT input
+                    // used to store a truncated 16-bit value into a 32-bit field.
+                    let src = self.rvalue_iec_type(&arg.value);
+                    let val = self.coerce_value(val, src.as_ref(), &info.fields[field_idx].1)?;
                     self.builder
                         .build_store(field_ptr, val)
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
@@ -3889,10 +4449,13 @@ impl<'ctx> Compiler<'ctx> {
         // Build argument list: instance pointer + method params
         let mut call_args: Vec<BasicValueEnum<'ctx>> = vec![fb_ptr.into()];
 
-        // Method params can be positional or named
+        // Method params can be positional or named. Either way the value has to be
+        // widened/narrowed to the declared parameter type: an integer literal is an
+        // INT (i16), so `acc.Bump(amount := 7)` on a `amount : DINT` parameter would
+        // otherwise pass an i16 to an i32 parameter and produce an invalid module.
         if !args.is_empty() && args[0].name.is_some() {
             // Named arguments — match by name to method param order
-            for (param_name, _param_ty) in &method_info.params {
+            for (param_name, param_ty) in &method_info.params {
                 let arg = args
                     .iter()
                     .find(|a| {
@@ -3907,13 +4470,21 @@ impl<'ctx> Compiler<'ctx> {
                         ))
                     })?;
                 if let Some(val) = self.compile_expression(&arg.value, function)? {
-                    call_args.push(val);
+                    let src = self.rvalue_iec_type(&arg.value);
+                    call_args.push(self.coerce_value(val, src.as_ref(), param_ty)?);
                 }
             }
         } else {
             // Positional arguments
-            for arg in args {
+            for (i, arg) in args.iter().enumerate() {
                 if let Some(val) = self.compile_expression(&arg.value, function)? {
+                    let val = match method_info.params.get(i) {
+                        Some((_, param_ty)) => {
+                            let src = self.rvalue_iec_type(&arg.value);
+                            self.coerce_value(val, src.as_ref(), param_ty)?
+                        }
+                        None => val,
+                    };
                     call_args.push(val);
                 }
             }
@@ -4052,8 +4623,14 @@ impl<'ctx> Compiler<'ctx> {
         let to_val = self
             .compile_expression(to, function)?
             .ok_or_else(|| CodegenError::LlvmError("failed to compile to".into()))?;
+        let to_ty = self.rvalue_iec_type(to);
 
-        // Store initial value
+        // Store the initial value at the control variable's own width. A raw store
+        // of a narrower value wrote only its low bytes and left the rest of the slot
+        // holding whatever was there, so `FOR i := lo TO 260` with `i : DINT` and
+        // `lo : BYTE := 16#FE` started at 0x000000FE-or-worse rather than at 254.
+        let from_ty = self.rvalue_iec_type(from);
+        let from_val = self.coerce_value(from_val, from_ty.as_ref(), &var_ty)?;
         self.builder
             .build_store(var_ptr, from_val)
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
@@ -4077,8 +4654,13 @@ impl<'ctx> Compiler<'ctx> {
             .builder
             .build_load(llvm_ty, var_ptr, "cur")
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-        let (cur_i, to_i) =
-            self.match_int_widths(cur_val.into_int_value(), to_val.into_int_value())?;
+        // The bound widens by *its* signedness, not the control variable's.
+        let (cur_i, to_i) = self.match_int_widths_typed(
+            cur_val.into_int_value(),
+            Some(&var_ty),
+            to_val.into_int_value(),
+            to_ty.as_ref(),
+        )?;
         // Determine loop direction: if BY is negative, compare with SGE instead of SLE
         let step_is_negative = if let Some(by_expr) = by {
             if let ExpressionKind::UnaryOp {
@@ -4118,23 +4700,37 @@ impl<'ctx> Compiler<'ctx> {
             .builder
             .build_load(llvm_ty, var_ptr, "cur2")
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-        let step = if let Some(by_expr) = by {
-            self.compile_expression(by_expr, function)?
-                .ok_or_else(|| CodegenError::LlvmError("failed to compile step".into()))?
+        let (step, step_ty) = if let Some(by_expr) = by {
+            let val = self
+                .compile_expression(by_expr, function)?
+                .ok_or_else(|| CodegenError::LlvmError("failed to compile step".into()))?;
+            (val, self.rvalue_iec_type(by_expr))
         } else {
             // Default step = 1 with same type as loop variable
-            cur_val2
-                .into_int_value()
-                .get_type()
-                .const_int(1, false)
-                .into()
+            (
+                cur_val2
+                    .into_int_value()
+                    .get_type()
+                    .const_int(1, false)
+                    .into(),
+                Some(var_ty.clone()),
+            )
         };
-        let (cur_i, step_i) =
-            self.match_int_widths(cur_val2.into_int_value(), step.into_int_value())?;
+        // Same rule for the step: `BY st` with `st : BYTE := 16#C8` is +200, and
+        // sign-extending it to -56 walked the control variable downward forever.
+        let (cur_i, step_i) = self.match_int_widths_typed(
+            cur_val2.into_int_value(),
+            Some(&var_ty),
+            step.into_int_value(),
+            step_ty.as_ref(),
+        )?;
         let next_val = self
             .builder
             .build_int_add(cur_i, step_i, "next")
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+        // A wider step widens the sum, so narrow it back before it goes into the
+        // control variable's slot.
+        let next_val = self.coerce_value(next_val.into(), Some(&var_ty), &var_ty)?;
         self.builder
             .build_store(var_ptr, next_val)
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
@@ -4314,6 +4910,148 @@ impl<'ctx> Compiler<'ctx> {
         self.compile_lvalue_inner(expr, Some(function))
     }
 
+    /// IEC type of an assignable expression, when it can be determined statically.
+    ///
+    /// Assignment stores the compiled RHS straight into the target pointer. With
+    /// opaque pointers there is nothing to check the width against, so without this
+    /// an `INT` expression assigned to a `TIME` (i64) field stored only two of the
+    /// eight bytes and left the rest stale. `ET := 0;` was quietly broken.
+    ///
+    /// Returns `None` for anything not recognized, in which case the store happens
+    /// unchanged — no behavior is *removed* by this, only widths corrected.
+    fn lvalue_iec_type(&self, expr: &Expression) -> Option<IecType> {
+        match &expr.kind {
+            ExpressionKind::Identifier(ident) => self
+                .variables
+                .get(&ident.name.to_uppercase())
+                .map(|(_, t)| t.clone()),
+            ExpressionKind::Parenthesized(inner) => self.lvalue_iec_type(inner),
+            ExpressionKind::ArrayIndex { array, .. } => match self.lvalue_iec_type(array)? {
+                IecType::Array { element_type, .. } => Some(*element_type),
+                _ => None,
+            },
+            ExpressionKind::MemberAccess { object, member } => {
+                // FB instance field (t.ET, ctr.CV, ...). Only a directly named
+                // instance can be one; FB instances are not nested inside STRUCTs.
+                if let ExpressionKind::Identifier(ident) = &object.kind {
+                    if let Some(info) = self.fb_instances.get(&ident.name.to_uppercase()) {
+                        return info
+                            .fields
+                            .iter()
+                            .find(|(name, _)| name.eq_ignore_ascii_case(&member.name))
+                            .map(|(_, t)| t.clone());
+                    }
+                }
+                // STRUCT field, at any depth: `s.i.v` asks the type of `s.i` first.
+                match self.lvalue_iec_type(object) {
+                    Some(IecType::Struct { fields, .. }) => fields
+                        .iter()
+                        .find(|(name, _)| name.eq_ignore_ascii_case(&member.name))
+                        .map(|(_, t)| t.clone()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// IEC type of a *value-producing* expression, when it can be determined statically.
+    ///
+    /// Only used to decide whether widening the value is a zero-extension or a
+    /// sign-extension, so it is deliberately conservative: `None` means "no static
+    /// type", and the caller falls back to the destination's signedness.
+    fn rvalue_iec_type(&self, expr: &Expression) -> Option<IecType> {
+        match &expr.kind {
+            ExpressionKind::Identifier(_)
+            | ExpressionKind::ArrayIndex { .. }
+            | ExpressionKind::MemberAccess { .. } => self.lvalue_iec_type(expr),
+            ExpressionKind::Parenthesized(inner) => self.rvalue_iec_type(inner),
+            // Negation only makes sense on a signed value, and the result is signed
+            // regardless of what went in. NOT preserves its operand's type.
+            ExpressionKind::UnaryOp { op, operand } => match op {
+                UnaryOp::Neg => None,
+                UnaryOp::Not => self.rvalue_iec_type(operand),
+            },
+            ExpressionKind::BinaryOp { op, left, right } => match op {
+                // Comparisons yield BOOL whatever the operands were. Getting this
+                // wrong would sign-extend an i1 `1` into 16#FF.
+                BinaryOp::Equal
+                | BinaryOp::NotEqual
+                | BinaryOp::Less
+                | BinaryOp::LessEqual
+                | BinaryOp::Greater
+                | BinaryOp::GreaterEqual => Some(IecType::Bool),
+                _ => match (self.rvalue_iec_type(left), self.rvalue_iec_type(right)) {
+                    // The wider operand's type governs; a literal operand contributes
+                    // nothing, so the typed side wins.
+                    (Some(l), Some(r)) => {
+                        Some(if r.bit_size().unwrap_or(0) > l.bit_size().unwrap_or(0) {
+                            r
+                        } else {
+                            l
+                        })
+                    }
+                    (Some(t), None) | (None, Some(t)) => Some(t),
+                    (None, None) => None,
+                },
+            },
+            _ => None,
+        }
+    }
+
+    /// Render an assignable expression back into something a user recognizes, for
+    /// diagnostics. Indices are elided — the point is to name the construct.
+    fn describe_lvalue(expr: &Expression) -> String {
+        match &expr.kind {
+            ExpressionKind::Identifier(i) => i.name.clone(),
+            ExpressionKind::Parenthesized(inner) => Self::describe_lvalue(inner),
+            ExpressionKind::ArrayIndex { array, .. } => {
+                format!("{}[..]", Self::describe_lvalue(array))
+            }
+            ExpressionKind::MemberAccess { object, member } => {
+                format!("{}.{}", Self::describe_lvalue(object), member.name)
+            }
+            ExpressionKind::FunctionCall { callee, .. } => {
+                format!("{}(..)", Self::describe_lvalue(callee))
+            }
+            ExpressionKind::Dereference(inner) => format!("{}^", Self::describe_lvalue(inner)),
+            ExpressionKind::DirectVariable(addr) => format!("%{addr}"),
+            ExpressionKind::StringLiteral(s) | ExpressionKind::WstringLiteral(s) => {
+                format!("'{s}'")
+            }
+            ExpressionKind::IntegerLiteral(v) => v.to_string(),
+            ExpressionKind::RealLiteral(v) => v.to_string(),
+            ExpressionKind::BoolLiteral(v) => {
+                if *v {
+                    "TRUE".into()
+                } else {
+                    "FALSE".into()
+                }
+            }
+            ExpressionKind::TimeLiteral(s)
+            | ExpressionKind::DateLiteral(s)
+            | ExpressionKind::TodLiteral(s)
+            | ExpressionKind::DtLiteral(s) => s.clone(),
+            ExpressionKind::TypedLiteral { type_name, value } => {
+                format!("{}#{}", type_name.name, Self::describe_lvalue(value))
+            }
+            ExpressionKind::BinaryOp { .. } | ExpressionKind::UnaryOp { .. } => {
+                "an arithmetic expression".into()
+            }
+        }
+    }
+
+    /// Pointer to an assignable location.
+    ///
+    /// `Ok(None)` means "this expression has no address", and callers that *ask*
+    /// speculatively (the string builtins, which accept either a variable or a
+    /// literal) rely on that. It must never mean "recognized the construct and gave
+    /// up": returning `Ok(None)` from a recognized construct is how
+    /// `s.i.v := 7;` and `o[1][2].a := 7;` came to emit no code at all. Arms that
+    /// recognize a construct and cannot lower it raise a `CodegenError` naming it.
+    ///
+    /// The assignment statement path turns a `None` target into a diagnostic, so the
+    /// remaining unaddressable cases are reported rather than dropped.
     fn compile_lvalue_inner(
         &mut self,
         expr: &Expression,
@@ -4324,143 +5062,130 @@ impl<'ctx> Compiler<'ctx> {
                 .variables
                 .get(&ident.name.to_uppercase())
                 .map(|(ptr, _)| *ptr)),
+            ExpressionKind::Parenthesized(inner) => self.compile_lvalue_inner(inner, function),
             ExpressionKind::ArrayIndex { array, indices } => {
-                // Get the array variable's pointer and IEC type
-                if let ExpressionKind::Identifier(ident) = &array.kind {
-                    if let Some((arr_ptr, iec_ty)) =
-                        self.variables.get(&ident.name.to_uppercase()).cloned()
-                    {
-                        if let IecType::Array { ref ranges, .. } = iec_ty {
-                            let ranges = ranges.clone();
-                            let function = function.ok_or_else(|| {
-                                CodegenError::LlvmError(
-                                    "array index in lvalue requires function context".into(),
-                                )
+                // The indexed thing is resolved as an lvalue in its own right, so an
+                // index can sit on top of any chain: `o[1][2]`, `s.arr[3]`,
+                // `a[1].b[2]`. Matching only a bare identifier here dropped every
+                // such chain silently — `o[1][2].a := 7;` and `n := o[1][2].a;` both
+                // emitted no code at all, with no diagnostic.
+                let Some(iec_ty) = self.lvalue_iec_type(array) else {
+                    return Err(CodegenError::UnsupportedType(format!(
+                        "cannot determine the type of `{}`, the array indexed in `{}`",
+                        Self::describe_lvalue(array),
+                        Self::describe_lvalue(expr)
+                    )));
+                };
+                let IecType::Array { ref ranges, .. } = iec_ty else {
+                    return Err(CodegenError::UnsupportedType(format!(
+                        "array indexing on non-array type: {iec_ty}"
+                    )));
+                };
+                let ranges = ranges.clone();
+                let function = function.ok_or_else(|| {
+                    CodegenError::LlvmError(
+                        "array index in lvalue requires function context".into(),
+                    )
+                })?;
+                let Some(arr_ptr) = self.compile_lvalue_inner(array, Some(function))? else {
+                    return Err(CodegenError::UnsupportedType(format!(
+                        "`{}` has no address, so `{}` cannot be indexed",
+                        Self::describe_lvalue(array),
+                        Self::describe_lvalue(expr)
+                    )));
+                };
+                let arr_llvm_ty = self.iec_to_llvm_type(&iec_ty);
+
+                if indices.len() == 1 {
+                    let idx_val =
+                        self.compile_expression(&indices[0], function)?
+                            .ok_or_else(|| {
+                                CodegenError::LlvmError("failed to compile array index".into())
                             })?;
-                            let arr_llvm_ty = self.iec_to_llvm_type(&iec_ty);
 
-                            if indices.len() == 1 {
-                                let idx_val = self
-                                    .compile_expression(&indices[0], function)?
-                                    .ok_or_else(|| {
-                                        CodegenError::LlvmError(
-                                            "failed to compile array index".into(),
-                                        )
-                                    })?;
-
-                                let lo = ranges[0].0;
-                                let idx_int = idx_val.into_int_value();
-                                let adjusted = if lo != 0 {
-                                    let lo_val = idx_int.get_type().const_int(lo as u64, true);
-                                    self.builder
-                                        .build_int_sub(idx_int, lo_val, "adj_idx")
-                                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                                } else {
-                                    idx_int
-                                };
-
-                                let idx_i32 = if adjusted.get_type().get_bit_width() < 32 {
-                                    self.builder
-                                        .build_int_s_extend(
-                                            adjusted,
-                                            self.context.i32_type(),
-                                            "idx_ext",
-                                        )
-                                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                                } else {
-                                    adjusted
-                                };
-
-                                let zero = self.context.i32_type().const_zero();
-                                let elem_ptr = unsafe {
-                                    self.builder
-                                        .build_in_bounds_gep(
-                                            arr_llvm_ty,
-                                            arr_ptr,
-                                            &[zero, idx_i32],
-                                            "arr_elem",
-                                        )
-                                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                                };
-                                Ok(Some(elem_ptr))
-                            } else {
-                                // Multi-dimensional: flatten to linear index
-                                let function = function;
-                                let mut linear_idx = self.context.i32_type().const_zero();
-
-                                for (dim, idx_expr) in indices.iter().enumerate() {
-                                    let idx_val = self
-                                        .compile_expression(idx_expr, function)?
-                                        .ok_or_else(|| {
-                                            CodegenError::LlvmError(
-                                                "failed to compile array index".into(),
-                                            )
-                                        })?;
-
-                                    let lo = ranges[dim].0;
-                                    let idx_int = idx_val.into_int_value();
-                                    let idx_i32 = if idx_int.get_type().get_bit_width() < 32 {
-                                        self.builder
-                                            .build_int_s_extend(
-                                                idx_int,
-                                                self.context.i32_type(),
-                                                "idx_ext",
-                                            )
-                                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                                    } else {
-                                        idx_int
-                                    };
-
-                                    let adjusted = if lo != 0 {
-                                        let lo_val =
-                                            self.context.i32_type().const_int(lo as u64, true);
-                                        self.builder
-                                            .build_int_sub(idx_i32, lo_val, "adj_idx")
-                                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                                    } else {
-                                        idx_i32
-                                    };
-
-                                    let mut stride = 1i64;
-                                    for d in (dim + 1)..ranges.len() {
-                                        stride *= ranges[d].1 - ranges[d].0 + 1;
-                                    }
-                                    let stride_val =
-                                        self.context.i32_type().const_int(stride as u64, false);
-                                    let component = self
-                                        .builder
-                                        .build_int_mul(adjusted, stride_val, "dim_component")
-                                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                                    linear_idx = self
-                                        .builder
-                                        .build_int_add(linear_idx, component, "linear_idx")
-                                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                                }
-
-                                let zero = self.context.i32_type().const_zero();
-                                let elem_ptr = unsafe {
-                                    self.builder
-                                        .build_in_bounds_gep(
-                                            arr_llvm_ty,
-                                            arr_ptr,
-                                            &[zero, linear_idx],
-                                            "arr_elem",
-                                        )
-                                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                                };
-                                Ok(Some(elem_ptr))
-                            }
-                        } else {
-                            Err(CodegenError::UnsupportedType(format!(
-                                "array indexing on non-array type: {}",
-                                iec_ty
-                            )))
-                        }
+                    let lo = ranges[0].0;
+                    let idx_int = idx_val.into_int_value();
+                    let adjusted = if lo != 0 {
+                        let lo_val = idx_int.get_type().const_int(lo as u64, true);
+                        self.builder
+                            .build_int_sub(idx_int, lo_val, "adj_idx")
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?
                     } else {
-                        Ok(None)
-                    }
+                        idx_int
+                    };
+
+                    let idx_i32 = if adjusted.get_type().get_bit_width() < 32 {
+                        self.builder
+                            .build_int_s_extend(adjusted, self.context.i32_type(), "idx_ext")
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                    } else {
+                        adjusted
+                    };
+
+                    let zero = self.context.i32_type().const_zero();
+                    let elem_ptr = unsafe {
+                        self.builder
+                            .build_in_bounds_gep(arr_llvm_ty, arr_ptr, &[zero, idx_i32], "arr_elem")
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                    };
+                    Ok(Some(elem_ptr))
                 } else {
-                    Ok(None)
+                    // Multi-dimensional: flatten to linear index
+                    let mut linear_idx = self.context.i32_type().const_zero();
+
+                    for (dim, idx_expr) in indices.iter().enumerate() {
+                        let idx_val =
+                            self.compile_expression(idx_expr, function)?
+                                .ok_or_else(|| {
+                                    CodegenError::LlvmError("failed to compile array index".into())
+                                })?;
+
+                        let lo = ranges[dim].0;
+                        let idx_int = idx_val.into_int_value();
+                        let idx_i32 = if idx_int.get_type().get_bit_width() < 32 {
+                            self.builder
+                                .build_int_s_extend(idx_int, self.context.i32_type(), "idx_ext")
+                                .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                        } else {
+                            idx_int
+                        };
+
+                        let adjusted = if lo != 0 {
+                            let lo_val = self.context.i32_type().const_int(lo as u64, true);
+                            self.builder
+                                .build_int_sub(idx_i32, lo_val, "adj_idx")
+                                .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                        } else {
+                            idx_i32
+                        };
+
+                        let mut stride = 1i64;
+                        for d in (dim + 1)..ranges.len() {
+                            stride *= ranges[d].1 - ranges[d].0 + 1;
+                        }
+                        let stride_val = self.context.i32_type().const_int(stride as u64, false);
+                        let component = self
+                            .builder
+                            .build_int_mul(adjusted, stride_val, "dim_component")
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                        linear_idx = self
+                            .builder
+                            .build_int_add(linear_idx, component, "linear_idx")
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    }
+
+                    let zero = self.context.i32_type().const_zero();
+                    let elem_ptr = unsafe {
+                        self.builder
+                            .build_in_bounds_gep(
+                                arr_llvm_ty,
+                                arr_ptr,
+                                &[zero, linear_idx],
+                                "arr_elem",
+                            )
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                    };
+                    Ok(Some(elem_ptr))
                 }
             }
             ExpressionKind::MemberAccess { object, member } => {
@@ -4504,42 +5229,53 @@ impl<'ctx> Compiler<'ctx> {
                             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                         return Ok(Some(field_ptr));
                     }
-
-                    // Fall back to struct field access
-                    if let Some((obj_ptr, iec_ty)) =
-                        self.variables.get(&ident.name.to_uppercase()).cloned()
-                    {
-                        if let IecType::Struct { fields, .. } = &iec_ty {
-                            let field_idx = fields
-                                .iter()
-                                .position(|(name, _)| name.eq_ignore_ascii_case(&member.name))
-                                .ok_or_else(|| {
-                                    CodegenError::UndefinedVariable(format!(
-                                        "{}.{}",
-                                        ident.name, member.name
-                                    ))
-                                })?;
-                            let struct_llvm_ty = self.iec_to_llvm_type(&iec_ty);
-                            let field_ptr = self
-                                .builder
-                                .build_struct_gep(
-                                    struct_llvm_ty.into_struct_type(),
-                                    obj_ptr,
-                                    field_idx as u32,
-                                    &member.name,
-                                )
-                                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                            Ok(Some(field_ptr))
-                        } else {
-                            Ok(None)
-                        }
-                    } else {
-                        Ok(None)
-                    }
-                } else {
-                    Ok(None)
                 }
+
+                // STRUCT field at any depth. The object is resolved as an lvalue in
+                // its own right, so `s.i.v` GEPs through `s.i` — matching only a bare
+                // identifier here dropped every chain longer than one level, silently:
+                // `s.i.v := 7;` emitted nothing at all.
+                let obj_ty = self.lvalue_iec_type(object).ok_or_else(|| {
+                    CodegenError::UnsupportedType(format!(
+                        "cannot determine the type of `{}`, whose member is taken in `{}`",
+                        Self::describe_lvalue(object),
+                        Self::describe_lvalue(expr)
+                    ))
+                })?;
+                let IecType::Struct { ref fields, .. } = obj_ty else {
+                    return Err(CodegenError::UnsupportedType(format!(
+                        "`{}` is {obj_ty}, which has no member `{}`",
+                        Self::describe_lvalue(object),
+                        member.name
+                    )));
+                };
+                let field_idx = fields
+                    .iter()
+                    .position(|(name, _)| name.eq_ignore_ascii_case(&member.name))
+                    .ok_or_else(|| CodegenError::UndefinedVariable(member.name.clone()))?;
+                let Some(obj_ptr) = self.compile_lvalue_inner(object, function)? else {
+                    return Err(CodegenError::UnsupportedType(format!(
+                        "`{}` has no address, so `{}` cannot be reached",
+                        Self::describe_lvalue(object),
+                        Self::describe_lvalue(expr)
+                    )));
+                };
+                let struct_llvm_ty = self.iec_to_llvm_type(&obj_ty);
+                let field_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        struct_llvm_ty.into_struct_type(),
+                        obj_ptr,
+                        field_idx as u32,
+                        &member.name,
+                    )
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(Some(field_ptr))
             }
+            // Literals, calls, and direct representation (%IX0.0) have no address.
+            // This is the one arm where `None` is the honest answer, and the string
+            // builtins depend on it to accept a literal where a variable would also
+            // do. Assignment reports it — see `compile_statement`.
             _ => Ok(None),
         }
     }
@@ -4550,12 +5286,7 @@ impl<'ctx> Compiler<'ctx> {
         function: FunctionValue<'ctx>,
     ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
         match &expr.kind {
-            ExpressionKind::IntegerLiteral(v) => {
-                // Default to i16 (INT) — binary ops will widen as needed
-                Ok(Some(
-                    self.context.i16_type().const_int(*v as u64, true).into(),
-                ))
-            }
+            ExpressionKind::IntegerLiteral(v) => Ok(Some(self.int_literal(*v).into())),
             ExpressionKind::RealLiteral(v) => {
                 // Default to f32 (REAL) to match common IEC usage
                 Ok(Some(self.context.f32_type().const_float(*v).into()))
@@ -4606,9 +5337,25 @@ impl<'ctx> Compiler<'ctx> {
 
                     // Fall back to user-defined functions
                     if let Some(fn_val) = self.module.get_function(&ident.name.to_lowercase()) {
+                        let params = self
+                            .fn_signatures
+                            .get(&ident.name.to_lowercase())
+                            .cloned()
+                            .unwrap_or_default();
                         let mut compiled_args = Vec::new();
-                        for arg in args {
+                        for (i, arg) in args.iter().enumerate() {
                             if let Some(val) = self.compile_expression(&arg.value, function)? {
+                                // Coerce to the declared parameter type. Passing the value
+                                // through unconverted produces a call whose argument width
+                                // does not match the signature, which LLVM's verifier
+                                // rejects outright.
+                                let val = match params.get(i) {
+                                    Some((_, param_ty)) => {
+                                        let src = self.rvalue_iec_type(&arg.value);
+                                        self.coerce_value(val, src.as_ref(), param_ty)?
+                                    }
+                                    None => val,
+                                };
                                 compiled_args.push(val.into());
                             }
                         }
@@ -4660,28 +5407,24 @@ impl<'ctx> Compiler<'ctx> {
                 // Direct variables (%I, %Q, %M) resolved at link time
                 Ok(None)
             }
-            ExpressionKind::ArrayIndex { array, indices } => {
-                // Get the element pointer via lvalue, then load from it
-                if let Some(elem_ptr) = self.compile_lvalue_with_fn(expr, function)? {
-                    // Determine the element type from the array's IEC type
-                    if let ExpressionKind::Identifier(ident) = &array.kind {
-                        if let Some((_, iec_ty)) =
-                            self.variables.get(&ident.name.to_uppercase()).cloned()
-                        {
-                            if let IecType::Array { element_type, .. } = &iec_ty {
-                                let elem_llvm_ty = self.iec_to_llvm_type(element_type);
-                                let val = self
-                                    .builder
-                                    .build_load(elem_llvm_ty, elem_ptr, "arr_load")
-                                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                                return Ok(Some(val));
-                            }
-                        }
-                    }
-                    Ok(None)
-                } else {
-                    Ok(None)
-                }
+            ExpressionKind::ArrayIndex { .. } => {
+                // Element pointer via the lvalue path, then load. The element type
+                // comes from the same walk, so a base that is itself a chain
+                // (`o[1][2]`, `s.arr[3]`) loads instead of silently producing
+                // nothing — matching only a bare identifier here meant `n := o[1][2].a;`
+                // emitted no code at all.
+                let Some(elem_ptr) = self.compile_lvalue_with_fn(expr, function)? else {
+                    return Ok(None);
+                };
+                let Some(elem_ty) = self.lvalue_iec_type(expr) else {
+                    return Ok(None);
+                };
+                let elem_llvm_ty = self.iec_to_llvm_type(&elem_ty);
+                let val = self
+                    .builder
+                    .build_load(elem_llvm_ty, elem_ptr, "arr_load")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(Some(val))
             }
             ExpressionKind::MemberAccess { object, member } => {
                 if let ExpressionKind::Identifier(ident) = &object.kind {
@@ -4735,31 +5478,21 @@ impl<'ctx> Compiler<'ctx> {
                         return Ok(Some(val));
                     }
                 }
-                // Fall back to struct field access via lvalue
-                if let Some(field_ptr) = self.compile_lvalue_with_fn(expr, function)? {
-                    if let ExpressionKind::Identifier(ident) = &object.kind {
-                        if let Some((_, iec_ty)) =
-                            self.variables.get(&ident.name.to_uppercase()).cloned()
-                        {
-                            if let IecType::Struct { fields, .. } = &iec_ty {
-                                if let Some((_, field_ty)) = fields
-                                    .iter()
-                                    .find(|(name, _)| name.eq_ignore_ascii_case(&member.name))
-                                {
-                                    let field_llvm_ty = self.iec_to_llvm_type(field_ty);
-                                    let val = self
-                                        .builder
-                                        .build_load(field_llvm_ty, field_ptr, &member.name)
-                                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                                    return Ok(Some(val));
-                                }
-                            }
-                        }
-                    }
-                    Ok(None)
-                } else {
-                    Ok(None)
-                }
+                // STRUCT field at any depth. The field's type comes from the same
+                // walk the lvalue path uses, so `o := s.i.v;` loads instead of
+                // silently producing nothing.
+                let Some(field_ty) = self.lvalue_iec_type(expr) else {
+                    return Ok(None);
+                };
+                let Some(field_ptr) = self.compile_lvalue_with_fn(expr, function)? else {
+                    return Ok(None);
+                };
+                let field_llvm_ty = self.iec_to_llvm_type(&field_ty);
+                let val = self
+                    .builder
+                    .build_load(field_llvm_ty, field_ptr, &member.name)
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(Some(val))
             }
             _ => Ok(None),
         }

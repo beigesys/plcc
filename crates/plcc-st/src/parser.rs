@@ -129,12 +129,21 @@ pub struct Parser<'s> {
     ts: TokenStream,
     source: &'s str,
     pub errors: Vec<ParseError>,
+    /// Declarations produced by a construct that yields more than one, e.g. a
+    /// `TYPE ... END_TYPE` block holding several type declarations. The top-level
+    /// loop drains this after each `parse_declaration`.
+    pending: Vec<Declaration>,
 }
 
 impl<'s> Parser<'s> {
     pub fn new(source: &'s str) -> Self {
         let (ts, errors) = TokenStream::new(source);
-        Parser { ts, source, errors }
+        Parser {
+            ts,
+            source,
+            errors,
+            pending: Vec::new(),
+        }
     }
 
     pub fn parse(mut self) -> (CompilationUnit, Vec<ParseError>) {
@@ -142,13 +151,21 @@ impl<'s> Parser<'s> {
         let mut declarations = Vec::new();
 
         while self.ts.peek().is_some() {
-            match self.parse_declaration() {
-                Some(decl) => declarations.push(decl),
-                None => {
-                    // Error recovery: skip token
-                    if self.ts.advance().is_none() {
-                        break;
-                    }
+            let parsed = self.parse_declaration();
+            // Drain `pending` on both arms and in declaration order. A construct that
+            // yields several declarations may also fail to produce a first one — a
+            // TYPE block whose first entry is malformed, say — and draining only on
+            // success left the extras queued until the *next* successful declaration,
+            // which reordered the unit around a parse error.
+            let had_decl = parsed.is_some();
+            if let Some(decl) = parsed {
+                declarations.push(decl);
+            }
+            declarations.append(&mut self.pending);
+            if !had_decl {
+                // Error recovery: skip token
+                if self.ts.advance().is_none() {
+                    break;
                 }
             }
         }
@@ -571,8 +588,12 @@ impl<'s> Parser<'s> {
 
             if first_decl.is_none() {
                 first_decl = Some(decl);
+            } else {
+                // A TYPE block may declare many types. Everything after the first is
+                // queued for the top-level loop to append; dropping them (as this used
+                // to) made the extra types silently unresolvable downstream.
+                self.pending.push(Declaration::TypeDecl(decl));
             }
-            // TODO: return multiple declarations from a single TYPE block
         }
 
         self.ts.expect(&Token::EndType, &mut self.errors);

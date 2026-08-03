@@ -4,3 +4,4 @@ tests/external/
 !demo/fuxa/.gitkeep
 demo/fuxa/_db/
 demo/fuxa/_appdata/_upload_files/
+tests/external

@@ -64,6 +64,45 @@ END_PROGRAM
     );
 }
 
+/// End-to-end smoke test for the clock hook through `plcc sim`.
+///
+/// `MONOTONIC_NS()` compiles to a call to the external `plcc_monotonic_ns`. If the
+/// JIT cannot resolve that symbol it aborts the process before any user code runs,
+/// so reaching the PRINT at all proves the symbol was resolved and called.
+#[test]
+fn monotonic_clock_resolves_through_the_jit() {
+    let source = r#"
+PROGRAM ClockSim
+VAR
+    now : LINT;
+    prev : LINT;
+END_VAR
+    prev := now;
+    now := MONOTONIC_NS();
+    IF now >= prev THEN
+        PRINT('clock ok');
+    ELSE
+        PRINT('clock went backwards');
+    END_IF;
+END_PROGRAM
+"#;
+    let (stdout, stderr, ok) = sim(source, "monotonic_clock_resolves");
+    let combined = format!("{stdout}{stderr}");
+    assert!(
+        ok,
+        "plcc sim exited non-zero — plcc_monotonic_ns was probably \
+         unresolved\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        combined.contains("clock ok"),
+        "expected the monotonic branch to be taken\n{combined}"
+    );
+    assert!(
+        !combined.contains("clock went backwards"),
+        "the host clock decreased between scans\n{combined}"
+    );
+}
+
 #[test]
 fn print_runs_once_per_scan() {
     let source = r#"

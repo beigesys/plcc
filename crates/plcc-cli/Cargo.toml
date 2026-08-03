@@ -11,3 +11,5 @@ serde_json = "1.0.149"
 plcc-codegen = { version = "0.1.0", path = "../plcc-codegen" }
 plcc-hir = { version = "0.1.0", path = "../plcc-hir" }
 plcc-st = { version = "0.1.0", path = "../plcc-st" }
+plcc-runtime = { version = "0.1.0", path = "../plcc-runtime" }
+plcc-stdlib = { version = "0.1.0", path = "../plcc-stdlib" }

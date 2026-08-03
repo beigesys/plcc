@@ -264,7 +264,12 @@ pub fn resolve_type_name(name: &str) -> Option<IecType> {
 /// Symbol table for type checking.
 #[derive(Debug, Clone)]
 pub struct TypeRegistry {
-    pub user_types: HashMap<String, IecType>,
+    /// Keys are case-folded. Private on purpose: [`Self::register`] is the only way
+    /// in, so the fold cannot be bypassed. While this was `pub`, any caller could
+    /// insert a raw spelling straight into the map and quietly defeat
+    /// [`Self::resolve`] for that name. Read it through [`Self::resolve`] or
+    /// [`Self::is_registered`].
+    user_types: HashMap<String, IecType>,
 }
 
 impl TypeRegistry {
@@ -274,11 +279,59 @@ impl TypeRegistry {
         }
     }
 
+    /// Register a user type. The key is case-folded, because ST identifiers are
+    /// case-insensitive — see [`Self::resolve`].
     pub fn register(&mut self, name: String, ty: IecType) {
-        self.user_types.insert(name, ty);
+        self.user_types.insert(name.to_uppercase(), ty);
     }
 
+    /// Resolve a type name, ignoring case.
+    ///
+    /// IEC 61131-3 identifiers are case-insensitive (Annex A, 2.1.2), so `t : Ton;`,
+    /// `f : myfb;` and `c : complex;` must all resolve. Matching the stored spelling
+    /// exactly rejected idiomatic ST outright, and broke real corpora: OSCAT declares
+    /// `TYPE COMPLEX` and then writes `complex` in FUNCTION CABS.
+    ///
+    /// The fold happens here rather than by registering every spelling a program might
+    /// use — there is no finite set of those.
     pub fn resolve(&self, name: &str) -> Option<IecType> {
-        resolve_type_name(name).or_else(|| self.user_types.get(name).cloned())
+        resolve_type_name(name).or_else(|| self.user_types.get(&name.to_uppercase()).cloned())
+    }
+
+    /// True when `name` was registered as a user type, ignoring case. Does not
+    /// consider the elementary types [`Self::resolve`] also answers for.
+    pub fn is_registered(&self, name: &str) -> bool {
+        self.user_types.contains_key(&name.to_uppercase())
+    }
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    /// `user_types` is private so `register` is the only way in and the case fold
+    /// cannot be bypassed. These pin the behaviour that fold provides.
+    #[test]
+    fn registration_and_lookup_ignore_case() {
+        let mut reg = TypeRegistry::new();
+        reg.register("Complex".to_string(), IecType::Real);
+        for spelling in ["Complex", "COMPLEX", "complex", "cOmPlEx"] {
+            assert_eq!(
+                reg.resolve(spelling),
+                Some(IecType::Real),
+                "`{spelling}` must resolve to the one registered type"
+            );
+            assert!(reg.is_registered(spelling), "`{spelling}` is registered");
+        }
+        assert!(!reg.is_registered("Simplex"));
+        assert_eq!(reg.resolve("Simplex"), None);
+    }
+
+    /// Elementary types are not user types, whatever the caller registered.
+    #[test]
+    fn elementary_types_are_not_user_types() {
+        let reg = TypeRegistry::new();
+        assert_eq!(reg.resolve("dint"), Some(IecType::Dint));
+        assert!(!reg.is_registered("dint"));
     }
 }
