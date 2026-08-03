@@ -403,6 +403,7 @@ dependencies = [
  "plcc-hir",
  "plcc-runtime",
  "plcc-st",
+ "plcc-stdlib",
  "serde_json",
 ]
 
@@ -415,6 +416,7 @@ dependencies = [
  "plcc-hir",
  "plcc-runtime",
  "plcc-st",
+ "plcc-stdlib",
  "regex",
  "thiserror",
 ]
@@ -458,6 +460,10 @@ dependencies = [
  "serde_json",
  "thiserror",
 ]
+
+[[package]]
+name = "plcc-stdlib"
+version = "0.1.0"
 
 [[package]]
 name = "proc-macro2"
