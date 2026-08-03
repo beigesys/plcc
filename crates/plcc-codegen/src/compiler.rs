@@ -249,6 +249,28 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         match uname.as_str() {
+            // The platform clock, exposed to ST. Returns LINT/TIME nanoseconds.
+            // `MONOTONIC_NS` is the ST-facing spelling; `PLCC_MONOTONIC_NS` matches the
+            // symbol name for anyone who prefers to be explicit about the import.
+            "MONOTONIC_NS" | "PLCC_MONOTONIC_NS" => {
+                if !arg_vals.is_empty() {
+                    return Err(CodegenError::LlvmError(format!(
+                        "{uname} takes no arguments, got {}",
+                        arg_vals.len()
+                    )));
+                }
+                let clock_fn = self.get_or_declare_monotonic_ns();
+                let call = self
+                    .builder
+                    .build_call(clock_fn, &[], "monons")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                match call.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(v) => Ok(Some(v)),
+                    inkwell::values::ValueKind::Instruction(_) => Err(CodegenError::LlvmError(
+                        "plcc_monotonic_ns returned no value".into(),
+                    )),
+                }
+            }
             "SQRT" | "SIN" | "COS" | "EXP" | "LN" => {
                 if arg_vals.len() != 1 {
                     return Err(CodegenError::LlvmError(format!(
@@ -1250,6 +1272,36 @@ impl<'ctx> Compiler<'ctx> {
         let fn_type = void_ty.fn_type(&[ptr_ty.into()], false);
         self.module.add_function(
             "plcc_print",
+            fn_type,
+            Some(inkwell::module::Linkage::External),
+        )
+    }
+
+    /// Get or declare the extern `plcc_monotonic_ns() -> i64` function.
+    ///
+    /// This is the one time source the compiler needs and the language cannot
+    /// provide. The platform supplies it, exactly like `plcc_print`:
+    ///   * `plcc sim` / the JIT map it onto a host `std::time::Instant` clock;
+    ///   * bare-metal integrators must export a `plcc_monotonic_ns` symbol
+    ///     (e.g. from a cycle counter or SysTick).
+    ///
+    /// Signed i64, not u64: TIME and LTIME are already laid out as i64 nanoseconds
+    /// by `iec_to_llvm_type`, and every arithmetic and comparison path in codegen
+    /// treats those as signed. Returning u64 would mean the very first thing any
+    /// timer did with the value was a signedness reinterpretation. i64 nanoseconds
+    /// still spans ~292 years of uptime, which is not a real constraint.
+    ///
+    /// The value is nanoseconds since an arbitrary, fixed epoch. Only differences
+    /// are meaningful. It must never go backwards.
+    pub const MONOTONIC_NS_SYMBOL: &'static str = "plcc_monotonic_ns";
+
+    fn get_or_declare_monotonic_ns(&self) -> FunctionValue<'ctx> {
+        if let Some(f) = self.module.get_function(Self::MONOTONIC_NS_SYMBOL) {
+            return f;
+        }
+        let fn_type = self.context.i64_type().fn_type(&[], false);
+        self.module.add_function(
+            Self::MONOTONIC_NS_SYMBOL,
             fn_type,
             Some(inkwell::module::Linkage::External),
         )

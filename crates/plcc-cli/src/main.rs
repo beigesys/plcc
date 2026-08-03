@@ -247,6 +247,26 @@ fn main() -> Result<()> {
                 plcc_print_impl as *const () as usize,
             );
 
+            // Provide plcc_monotonic_ns for JIT (MONOTONIC_NS() and the bundled ST
+            // timer FBs call this). Same shape as plcc_print: declare it if the module
+            // did not already import it, then map the symbol onto the host clock.
+            ee.add_global_mapping(
+                &compiler
+                    .module()
+                    .get_function("plcc_monotonic_ns")
+                    .unwrap_or_else(|| {
+                        let fn_type = compiler
+                            .module()
+                            .get_context()
+                            .i64_type()
+                            .fn_type(&[], false);
+                        compiler
+                            .module()
+                            .add_function("plcc_monotonic_ns", fn_type, None)
+                    }),
+                plcc_runtime::host_clock::plcc_monotonic_ns as *const () as usize,
+            );
+
             let state = std::sync::Arc::new(std::sync::Mutex::new(vec![0u8; 4096]));
 
             // Init

@@ -401,6 +401,7 @@ dependencies = [
  "miette",
  "plcc-codegen",
  "plcc-hir",
+ "plcc-runtime",
  "plcc-st",
  "serde_json",
 ]
@@ -412,6 +413,7 @@ dependencies = [
  "inkwell",
  "miette",
  "plcc-hir",
+ "plcc-runtime",
  "plcc-st",
  "regex",
  "thiserror",
