@@ -20,6 +20,18 @@ use thiserror::Error;
 /// Name of the generated function that initializes VAR_GLOBAL FB instances.
 const GLOBALS_INIT_FN: &str = "plcc_globals_init";
 
+/// How one operand of a binary operator reads its bits.
+///
+/// `Adaptive` is a value with no static IEC type — a bare integer literal, or a call
+/// whose result type codegen cannot name. It has no signedness of its own and takes
+/// the other operand's; see [`Compiler::promote_int_operands`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Signedness {
+    Signed,
+    Unsigned,
+    Adaptive,
+}
+
 /// Parse a TIME literal string (e.g., "T#100ms", "T#1s500ms", "T#1h30m") into nanoseconds.
 fn parse_time_literal_ns(s: &str) -> i64 {
     let s = s.trim();
@@ -264,6 +276,41 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
+    /// Operands for SHL / SHR / ROL / ROR: the value stays at **its own** width and
+    /// the distance is brought to it.
+    ///
+    /// Widening the value to the distance's width instead was silently wrong twice
+    /// over. It sign-extended: `SHR(b, 1)` with `b : BYTE := 254` widened 254 to
+    /// i16 as -2, and the logical shift then answered 32767 instead of 127. And it
+    /// changed the rotation width, so `ROL(b, 1)` rotated within 16 bits, moving in
+    /// bits that were never part of the BYTE. IEC 61131-3 defines all four on the
+    /// type of IN, with N only a count.
+    fn shift_operands(
+        &self,
+        arg_vals: &[BasicValueEnum<'ctx>],
+        arg_tys: &[Option<IecType>],
+    ) -> Result<
+        (
+            inkwell::values::IntValue<'ctx>,
+            inkwell::values::IntValue<'ctx>,
+        ),
+        CodegenError,
+    > {
+        let val = arg_vals[0].into_int_value();
+        let n = arg_vals[1].into_int_value();
+        let n_sign = Self::signedness_of(arg_tys.get(1).and_then(|t| t.as_ref()));
+        let target = val.get_type();
+        let n = match n.get_type().get_bit_width().cmp(&target.get_bit_width()) {
+            std::cmp::Ordering::Equal => n,
+            std::cmp::Ordering::Less => self.widen_to(n, n_sign, target)?,
+            std::cmp::Ordering::Greater => self
+                .builder
+                .build_int_truncate(n, target, "shiftn")
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?,
+        };
+        Ok((val, n))
+    }
+
     /// Try to compile a call to a standard library function.
     /// Returns `Ok(Some(val))` if handled, `Ok(None)` if not a known stdlib function.
     fn compile_stdlib_call(
@@ -273,6 +320,13 @@ impl<'ctx> Compiler<'ctx> {
         function: FunctionValue<'ctx>,
     ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
         let uname = name.to_uppercase();
+
+        // The arguments' static IEC types, for the builtins whose lowering depends on
+        // signedness (the shift and rotate family).
+        let arg_tys: Vec<Option<IecType>> = args
+            .iter()
+            .map(|arg| self.rvalue_iec_type(&arg.value))
+            .collect();
 
         let mut arg_vals: Vec<BasicValueEnum<'ctx>> = Vec::new();
         for arg in args {
@@ -568,9 +622,7 @@ impl<'ctx> Compiler<'ctx> {
                         arg_vals.len()
                     )));
                 }
-                let val = arg_vals[0].into_int_value();
-                let n = arg_vals[1].into_int_value();
-                let (val, n) = self.match_int_widths(val, n)?;
+                let (val, n) = self.shift_operands(&arg_vals, &arg_tys)?;
                 let result = self
                     .builder
                     .build_left_shift(val, n, "shl")
@@ -584,9 +636,11 @@ impl<'ctx> Compiler<'ctx> {
                         arg_vals.len()
                     )));
                 }
-                let val = arg_vals[0].into_int_value();
-                let n = arg_vals[1].into_int_value();
-                let (val, n) = self.match_int_widths(val, n)?;
+                let (val, n) = self.shift_operands(&arg_vals, &arg_tys)?;
+                // IEC 61131-3 SHR is defined on ANY_BIT: bits vacated at the top are
+                // filled with zeros, never with a sign. There is no arithmetic-shift
+                // spelling in the standard — a signed right shift is written by
+                // dividing — so `false` (lshr) here is right for every input type.
                 let result = self
                     .builder
                     .build_right_shift(val, n, false, "shr")
@@ -601,9 +655,7 @@ impl<'ctx> Compiler<'ctx> {
                         arg_vals.len()
                     )));
                 }
-                let val = arg_vals[0].into_int_value();
-                let n = arg_vals[1].into_int_value();
-                let (val, n) = self.match_int_widths(val, n)?;
+                let (val, n) = self.shift_operands(&arg_vals, &arg_tys)?;
                 let ity: BasicTypeEnum = val.get_type().into();
                 let intr = Intrinsic::find("llvm.fshl").ok_or_else(|| {
                     CodegenError::LlvmError("intrinsic llvm.fshl not found".into())
@@ -633,9 +685,7 @@ impl<'ctx> Compiler<'ctx> {
                         arg_vals.len()
                     )));
                 }
-                let val = arg_vals[0].into_int_value();
-                let n = arg_vals[1].into_int_value();
-                let (val, n) = self.match_int_widths(val, n)?;
+                let (val, n) = self.shift_operands(&arg_vals, &arg_tys)?;
                 let ity: BasicTypeEnum = val.get_type().into();
                 let intr = Intrinsic::find("llvm.fshr").ok_or_else(|| {
                     CodegenError::LlvmError("intrinsic llvm.fshr not found".into())
@@ -3147,6 +3197,160 @@ impl<'ctx> Compiler<'ctx> {
         )
     }
 
+    /// Signedness of one operand of a binary operator.
+    fn signedness_of(ty: Option<&IecType>) -> Signedness {
+        match ty {
+            None => Signedness::Adaptive,
+            Some(t) if Self::widens_unsigned(t) => Signedness::Unsigned,
+            Some(_) => Signedness::Signed,
+        }
+    }
+
+    /// The width a binary operator runs at, and whether the operator itself is
+    /// unsigned (`udiv`/`urem`, `U..` compare predicates).
+    ///
+    /// The rules, in full:
+    ///
+    /// * Each operand is widened to the common width by **its own** signedness —
+    ///   zero-extension for ANY_BIT and ANY_UNSIGNED, sign-extension otherwise.
+    ///   This is the rule assignment, FB inputs and FOR bounds already follow.
+    /// * Both operands unsigned: the operator runs unsigned at the wider width.
+    ///   `BYTE 200 > BYTE 100` has to be `ugt`, because at i8 the signed reading of
+    ///   200 is -56.
+    /// * Both operands signed: signed, at the wider width. Unchanged behaviour.
+    /// * **Mixed** signed and unsigned: the operator runs *signed*, in a type wide
+    ///   enough to hold both operand ranges exactly. When the unsigned operand is at
+    ///   least as wide as the signed one, no signed type of the common width holds
+    ///   it, so the width is promoted to the next standard size. That is what makes
+    ///   `BYTE 250 + SINT 10` evaluate to 260 rather than 4 (i8 wrap) or -6
+    ///   (sign-extended 250). Choosing a signed common type — rather than C's
+    ///   "unsigned wins" — keeps a negative operand negative, so `INT -5 < BYTE 200`
+    ///   is true.
+    /// * Mixed at 64 bits has nowhere to be promoted to: IEC has no 128-bit integer.
+    ///   The operator runs unsigned at 64 bits, matching the ANY_BIT/ANY_UNSIGNED
+    ///   operand, and a negative signed operand there is simply outside the domain.
+    /// * An operand with no static IEC type — a bare integer literal, or a call whose
+    ///   result type codegen cannot name — is *adaptive*: it takes the other
+    ///   operand's signedness, and always widens by sign-extension so a negative
+    ///   literal keeps its two's-complement bit pattern. That is what makes
+    ///   `IF b > 100` unsigned when `b : BYTE` and signed when `b : INT`, without
+    ///   promoting the width and without changing either result type.
+    fn promote_int_operands(lw: u32, ls: Signedness, rw: u32, rs: Signedness) -> (u32, bool) {
+        let w = lw.max(rw);
+        match (ls, rs) {
+            (Signedness::Unsigned, Signedness::Unsigned)
+            | (Signedness::Unsigned, Signedness::Adaptive)
+            | (Signedness::Adaptive, Signedness::Unsigned) => (w, true),
+            (Signedness::Unsigned, Signedness::Signed) => Self::promote_mixed(lw, rw, w),
+            (Signedness::Signed, Signedness::Unsigned) => Self::promote_mixed(rw, lw, w),
+            _ => (w, false),
+        }
+    }
+
+    /// Common representation for a mixed signed/unsigned operator: a signed type
+    /// that holds both ranges, or 64-bit unsigned when no wider type exists.
+    fn promote_mixed(unsigned_w: u32, signed_w: u32, common_w: u32) -> (u32, bool) {
+        if unsigned_w < signed_w {
+            // The signed operand is already wider, so zero-extending the unsigned
+            // one lands it in range. Signed at the common width is exact.
+            return (common_w, false);
+        }
+        if unsigned_w >= 64 {
+            return (64, true);
+        }
+        let promoted = if unsigned_w <= 8 {
+            16
+        } else if unsigned_w <= 16 {
+            32
+        } else {
+            64
+        };
+        (common_w.max(promoted), false)
+    }
+
+    /// Bring two integer operands to the common representation described by
+    /// [`Self::promote_int_operands`], and report whether the operator is unsigned.
+    fn prepare_int_operands(
+        &self,
+        l: inkwell::values::IntValue<'ctx>,
+        l_ty: Option<&IecType>,
+        r: inkwell::values::IntValue<'ctx>,
+        r_ty: Option<&IecType>,
+    ) -> Result<
+        (
+            inkwell::values::IntValue<'ctx>,
+            inkwell::values::IntValue<'ctx>,
+            bool,
+        ),
+        CodegenError,
+    > {
+        let ls = Self::signedness_of(l_ty);
+        let rs = Self::signedness_of(r_ty);
+        let lw = l.get_type().get_bit_width();
+        let rw = r.get_type().get_bit_width();
+        let (w, unsigned) = Self::promote_int_operands(lw, ls, rw, rs);
+        let target = self.context.custom_width_int_type(w);
+        Ok((
+            self.widen_to(l, ls, target)?,
+            self.widen_to(r, rs, target)?,
+            unsigned,
+        ))
+    }
+
+    /// Widen one operand to `to`, zero-extending only when its own type is unsigned.
+    fn widen_to(
+        &self,
+        v: inkwell::values::IntValue<'ctx>,
+        s: Signedness,
+        to: inkwell::types::IntType<'ctx>,
+    ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+        if v.get_type().get_bit_width() >= to.get_bit_width() {
+            return Ok(v);
+        }
+        if s == Signedness::Unsigned {
+            self.builder.build_int_z_extend(v, to, "zext")
+        } else {
+            self.builder.build_int_s_extend(v, to, "sext")
+        }
+        .map_err(|e| CodegenError::LlvmError(e.to_string()))
+    }
+
+    /// The IEC type an arithmetic binary operator produces, mirroring exactly what
+    /// [`Self::promote_int_operands`] evaluates it at.
+    ///
+    /// It matters that the two agree: a mixed operator runs in a wider *signed* type,
+    /// and if the result were still reported as the unsigned operand's type then
+    /// `total : LINT := w - i;` with `w : WORD := 5` and `i : INT := 10` would
+    /// zero-extend -5 into 4294967291.
+    fn arith_result_type(l: Option<IecType>, r: Option<IecType>) -> Option<IecType> {
+        let (Some(lt), Some(rt)) = (l, r) else {
+            return None;
+        };
+        // Only integers take part in the promotion rule. REAL/LREAL, durations and
+        // anything without a static width fall through to "the wider operand wins".
+        let int_like = |t: &IecType| {
+            (t.is_any_int() || t.is_any_bit()) && t.bit_size().is_some_and(|b| b >= 8)
+        };
+        let lw = lt.bit_size().unwrap_or(0);
+        let rw = rt.bit_size().unwrap_or(0);
+        if int_like(&lt) && int_like(&rt) {
+            let ls = Self::signedness_of(Some(&lt));
+            let rs = Self::signedness_of(Some(&rt));
+            if ls != rs {
+                let (w, unsigned) = Self::promote_int_operands(lw, ls, rw, rs);
+                if !unsigned {
+                    return Some(match w {
+                        0..=8 => IecType::Sint,
+                        9..=16 => IecType::Int,
+                        17..=32 => IecType::Dint,
+                        _ => IecType::Lint,
+                    });
+                }
+            }
+        }
+        Some(if rw > lw { rt } else { lt })
+    }
+
     /// Convert `val` (of IEC type `src`, when known) to the storage type of `ty`.
     ///
     /// Widening signedness comes from the **source**, not the destination. A BYTE
@@ -4981,20 +5185,30 @@ impl<'ctx> Compiler<'ctx> {
                 | BinaryOp::LessEqual
                 | BinaryOp::Greater
                 | BinaryOp::GreaterEqual => Some(IecType::Bool),
+                // The wider operand's type governs — except when the two disagree
+                // about signedness, where the operator runs in a wider signed type
+                // and the result has to say so. A literal operand contributes nothing,
+                // so the typed side wins.
                 _ => match (self.rvalue_iec_type(left), self.rvalue_iec_type(right)) {
-                    // The wider operand's type governs; a literal operand contributes
-                    // nothing, so the typed side wins.
-                    (Some(l), Some(r)) => {
-                        Some(if r.bit_size().unwrap_or(0) > l.bit_size().unwrap_or(0) {
-                            r
-                        } else {
-                            l
-                        })
-                    }
+                    (Some(l), Some(r)) => Self::arith_result_type(Some(l), Some(r)),
                     (Some(t), None) | (None, Some(t)) => Some(t),
                     (None, None) => None,
                 },
             },
+            // SHL / SHR / ROL / ROR return the type of IN. Saying so keeps the
+            // result unsigned on the way out: `SHL(b, 1)` with `b : BYTE := 254` is
+            // 16#FC, and calling that an untyped value sign-extended it to -4 in any
+            // wider destination.
+            ExpressionKind::FunctionCall { callee, args } => {
+                let ExpressionKind::Identifier(name) = &callee.kind else {
+                    return None;
+                };
+                let uname = name.name.to_uppercase();
+                if matches!(uname.as_str(), "SHL" | "SHR" | "ROL" | "ROR") {
+                    return args.first().and_then(|a| self.rvalue_iec_type(&a.value));
+                }
+                None
+            }
             _ => None,
         }
     }
@@ -5311,7 +5525,10 @@ impl<'ctx> Compiler<'ctx> {
                 let rhs = self.compile_expression(right, function)?;
                 match (lhs, rhs) {
                     (Some(l), Some(r)) => {
-                        let result = self.compile_binary_op(*op, l, r)?;
+                        let l_ty = self.rvalue_iec_type(left);
+                        let r_ty = self.rvalue_iec_type(right);
+                        let result =
+                            self.compile_binary_op(*op, l, l_ty.as_ref(), r, r_ty.as_ref())?;
                         Ok(Some(result))
                     }
                     _ => Ok(None),
@@ -5498,11 +5715,19 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
+    /// Lower one binary operator.
+    ///
+    /// `left_ty`/`right_ty` are the operands' static IEC types where codegen can name
+    /// them. They decide how each operand widens and whether the operator is signed —
+    /// without them every ANY_BIT and ANY_UNSIGNED value above its type's signed range
+    /// compared, divided and added wrongly. See [`Self::promote_int_operands`].
     fn compile_binary_op(
         &self,
         op: BinaryOp,
         left: BasicValueEnum<'ctx>,
+        left_ty: Option<&IecType>,
         right: BasicValueEnum<'ctx>,
+        right_ty: Option<&IecType>,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         // Check if we're dealing with integers or floats
         let is_float = left.is_float_value() || right.is_float_value();
@@ -5533,6 +5758,10 @@ impl<'ctx> Compiler<'ctx> {
                 } else {
                     fv
                 }
+            } else if Self::signedness_of(left_ty) == Signedness::Unsigned {
+                self.builder
+                    .build_unsigned_int_to_float(left.into_int_value(), target_fty, "uitof")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?
             } else {
                 self.builder
                     .build_signed_int_to_float(left.into_int_value(), target_fty, "itof")
@@ -5547,6 +5776,10 @@ impl<'ctx> Compiler<'ctx> {
                 } else {
                     fv
                 }
+            } else if Self::signedness_of(right_ty) == Signedness::Unsigned {
+                self.builder
+                    .build_unsigned_int_to_float(right.into_int_value(), target_fty, "uitof")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?
             } else {
                 self.builder
                     .build_signed_int_to_float(right.into_int_value(), target_fty, "itof")
@@ -5618,7 +5851,12 @@ impl<'ctx> Compiler<'ctx> {
             };
             Ok(result.into())
         } else {
-            let (l, r) = self.match_int_widths(left.into_int_value(), right.into_int_value())?;
+            let (l, r, unsigned) = self.prepare_int_operands(
+                left.into_int_value(),
+                left_ty,
+                right.into_int_value(),
+                right_ty,
+            )?;
 
             let result = match op {
                 BinaryOp::Add => self
@@ -5633,14 +5871,20 @@ impl<'ctx> Compiler<'ctx> {
                     .builder
                     .build_int_mul(l, r, "mul")
                     .map_err(|e| CodegenError::LlvmError(e.to_string()))?,
-                BinaryOp::Div => self
-                    .builder
-                    .build_int_signed_div(l, r, "div")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?,
-                BinaryOp::Mod => self
-                    .builder
-                    .build_int_signed_rem(l, r, "mod")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?,
+                // ANY_BIT / ANY_UNSIGNED operands divide with udiv/urem. `BYTE 200 / 2`
+                // is 100; sdiv reads the 200 as -56 and answers 228.
+                BinaryOp::Div => if unsigned {
+                    self.builder.build_int_unsigned_div(l, r, "udiv")
+                } else {
+                    self.builder.build_int_signed_div(l, r, "div")
+                }
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?,
+                BinaryOp::Mod => if unsigned {
+                    self.builder.build_int_unsigned_rem(l, r, "umod")
+                } else {
+                    self.builder.build_int_signed_rem(l, r, "mod")
+                }
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?,
                 BinaryOp::And => self
                     .builder
                     .build_and(l, r, "and")
@@ -5667,31 +5911,54 @@ impl<'ctx> Compiler<'ctx> {
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?
                         .into());
                 }
+                // Ordering predicates follow the operator's signedness. On i8,
+                // `SGT 200, 100` is `-56 > 100` — false — which is how
+                // `IF b > 100` with `b : BYTE := 200` took the ELSE branch.
                 BinaryOp::Less => {
+                    let p = if unsigned {
+                        IntPredicate::ULT
+                    } else {
+                        IntPredicate::SLT
+                    };
                     return Ok(self
                         .builder
-                        .build_int_compare(IntPredicate::SLT, l, r, "lt")
+                        .build_int_compare(p, l, r, "lt")
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?
                         .into());
                 }
                 BinaryOp::LessEqual => {
+                    let p = if unsigned {
+                        IntPredicate::ULE
+                    } else {
+                        IntPredicate::SLE
+                    };
                     return Ok(self
                         .builder
-                        .build_int_compare(IntPredicate::SLE, l, r, "le")
+                        .build_int_compare(p, l, r, "le")
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?
                         .into());
                 }
                 BinaryOp::Greater => {
+                    let p = if unsigned {
+                        IntPredicate::UGT
+                    } else {
+                        IntPredicate::SGT
+                    };
                     return Ok(self
                         .builder
-                        .build_int_compare(IntPredicate::SGT, l, r, "gt")
+                        .build_int_compare(p, l, r, "gt")
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?
                         .into());
                 }
                 BinaryOp::GreaterEqual => {
+                    let p = if unsigned {
+                        IntPredicate::UGE
+                    } else {
+                        IntPredicate::SGE
+                    };
                     return Ok(self
                         .builder
-                        .build_int_compare(IntPredicate::SGE, l, r, "ge")
+                        .build_int_compare(p, l, r, "ge")
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?
                         .into());
                 }
