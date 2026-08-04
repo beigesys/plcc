@@ -479,6 +479,11 @@ impl<'ctx> Compiler<'ctx> {
                     Ok(Some(result))
                 } else {
                     let iv = arg.into_int_value();
+                    // An ANY_BIT or ANY_UNSIGNED value is already its own magnitude.
+                    // Negating it read `b : BYTE := 200` as -56 and answered 56.
+                    if Self::signedness_of(arg_tys[0].as_ref()) == Signedness::Unsigned {
+                        return Ok(Some(iv.into()));
+                    }
                     let zero = iv.get_type().const_zero();
                     let is_neg = self
                         .builder
@@ -526,13 +531,20 @@ impl<'ctx> Compiler<'ctx> {
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                     Ok(Some(result.into()))
                 } else {
-                    let ia = a.into_int_value();
-                    let ib = b.into_int_value();
-                    let (ia, ib) = self.match_int_widths(ia, ib)?;
-                    let pred = if is_max {
-                        IntPredicate::SGT
-                    } else {
-                        IntPredicate::SLT
+                    // Same rule as a relational operator: two unsigned operands
+                    // compare unsigned, or `MAX(b, 100)` with `b : BYTE := 200`
+                    // answers 100.
+                    let (ia, ib, unsigned) = self.prepare_int_operands(
+                        a.into_int_value(),
+                        arg_tys[0].as_ref(),
+                        b.into_int_value(),
+                        arg_tys[1].as_ref(),
+                    )?;
+                    let pred = match (is_max, unsigned) {
+                        (true, true) => IntPredicate::UGT,
+                        (true, false) => IntPredicate::SGT,
+                        (false, true) => IntPredicate::ULT,
+                        (false, false) => IntPredicate::SLT,
                     };
                     let cmp = self
                         .builder
@@ -580,15 +592,35 @@ impl<'ctx> Compiler<'ctx> {
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                     Ok(Some(result.into()))
                 } else {
-                    let imn = mn.into_int_value();
-                    let ival = val.into_int_value();
-                    let imx = mx.into_int_value();
-                    let (ival, imx) = self.match_int_widths(ival, imx)?;
-                    let (ival, imn) = self.match_int_widths(ival, imn)?;
-                    let (imx, imn) = self.match_int_widths(imx, imn)?;
+                    // LIMIT clamps all three operands in one shared representation, so
+                    // the width and the signedness are settled once over the triple
+                    // rather than pairwise — two pairwise widenings would leave MN and
+                    // MX at different widths from IN. Comparing an unsigned bound with
+                    // SLT clamped `LIMIT(v, 200, 200)` on BYTEs down to 100.
+                    let ([imn, ival, imx], unsigned) = self.prepare_int_triple(
+                        [
+                            mn.into_int_value(),
+                            val.into_int_value(),
+                            mx.into_int_value(),
+                        ],
+                        [
+                            arg_tys[0].as_ref(),
+                            arg_tys[1].as_ref(),
+                            arg_tys[2].as_ref(),
+                        ],
+                    )?;
                     let cmp_hi = self
                         .builder
-                        .build_int_compare(IntPredicate::SLT, ival, imx, "cmp_hi")
+                        .build_int_compare(
+                            if unsigned {
+                                IntPredicate::ULT
+                            } else {
+                                IntPredicate::SLT
+                            },
+                            ival,
+                            imx,
+                            "cmp_hi",
+                        )
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                     let clamped_hi = self
                         .builder
@@ -597,7 +629,16 @@ impl<'ctx> Compiler<'ctx> {
                         .into_int_value();
                     let cmp_lo = self
                         .builder
-                        .build_int_compare(IntPredicate::SGT, clamped_hi, imn, "cmp_lo")
+                        .build_int_compare(
+                            if unsigned {
+                                IntPredicate::UGT
+                            } else {
+                                IntPredicate::SGT
+                            },
+                            clamped_hi,
+                            imn,
+                            "cmp_lo",
+                        )
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                     let result = self
                         .builder
@@ -3323,6 +3364,43 @@ impl<'ctx> Compiler<'ctx> {
         ))
     }
 
+    /// The signedness of a group of operands taken together: signed if any member is
+    /// signed, unsigned if any is unsigned and none is signed, adaptive if none has a
+    /// static type at all.
+    fn combine_signedness(a: Signedness, b: Signedness) -> Signedness {
+        match (a, b) {
+            (Signedness::Signed, _) | (_, Signedness::Signed) => Signedness::Signed,
+            (Signedness::Unsigned, _) | (_, Signedness::Unsigned) => Signedness::Unsigned,
+            _ => Signedness::Adaptive,
+        }
+    }
+
+    /// [`Self::prepare_int_operands`] for three operands that must end up in one
+    /// shared representation — LIMIT's MN, IN and MX, which are compared against each
+    /// other and selected between, so all three have to reach the same width.
+    fn prepare_int_triple(
+        &self,
+        vals: [inkwell::values::IntValue<'ctx>; 3],
+        tys: [Option<&IecType>; 3],
+    ) -> Result<([inkwell::values::IntValue<'ctx>; 3], bool), CodegenError> {
+        let signs = tys.map(Self::signedness_of);
+        let widths = vals.map(|v| v.get_type().get_bit_width());
+        // Fold the pairwise rule across the triple: promote against the first two,
+        // then against the third with their combined signedness.
+        let (w01, _) = Self::promote_int_operands(widths[0], signs[0], widths[1], signs[1]);
+        let s01 = Self::combine_signedness(signs[0], signs[1]);
+        let (w, unsigned) = Self::promote_int_operands(w01, s01, widths[2], signs[2]);
+        let target = self.context.custom_width_int_type(w);
+        Ok((
+            [
+                self.widen_to(vals[0], signs[0], target)?,
+                self.widen_to(vals[1], signs[1], target)?,
+                self.widen_to(vals[2], signs[2], target)?,
+            ],
+            unsigned,
+        ))
+    }
+
     /// Widen one operand to `to`, zero-extending only when its own type is unsigned.
     fn widen_to(
         &self,
@@ -5254,19 +5332,31 @@ impl<'ctx> Compiler<'ctx> {
                     (None, None) => None,
                 },
             },
-            // SHL / SHR / ROL / ROR return the type of IN. Saying so keeps the
-            // result unsigned on the way out: `SHL(b, 1)` with `b : BYTE := 254` is
-            // 16#FC, and calling that an untyped value sign-extended it to -4 in any
-            // wider destination.
+            // The builtins whose result type is one of their arguments' types. Saying
+            // so keeps the result unsigned on the way out: `SHL(b, 1)` with
+            // `b : BYTE := 254` is 16#FC, and calling that an untyped value
+            // sign-extended it to -4 in any wider destination — the same for
+            // `MAX(b, 100)` = 200.
             ExpressionKind::FunctionCall { callee, args } => {
                 let ExpressionKind::Identifier(name) = &callee.kind else {
                     return None;
                 };
-                let uname = name.name.to_uppercase();
-                if matches!(uname.as_str(), "SHL" | "SHR" | "ROL" | "ROR") {
-                    return args.first().and_then(|a| self.rvalue_iec_type(&a.value));
+                let arg_ty = |i: usize| args.get(i).and_then(|a| self.rvalue_iec_type(&a.value));
+                match name.name.to_uppercase().as_str() {
+                    // Result is the type of IN; N is only a count.
+                    "SHL" | "SHR" | "ROL" | "ROR" => arg_ty(0),
+                    // ABS never changes its argument's type.
+                    "ABS" => arg_ty(0),
+                    // MIN/MAX return one of their operands, so the result type is the
+                    // one the comparison was performed in.
+                    "MIN" | "MAX" => Self::arith_result_type(arg_ty(0), arg_ty(1)),
+                    // LIMIT(MN, IN, MX) likewise, over all three.
+                    "LIMIT" => Self::arith_result_type(
+                        Self::arith_result_type(arg_ty(0), arg_ty(1)),
+                        arg_ty(2),
+                    ),
+                    _ => None,
                 }
-                None
             }
             _ => None,
         }

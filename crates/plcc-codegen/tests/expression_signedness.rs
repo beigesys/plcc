@@ -358,3 +358,53 @@ fn for_loop_predicate_and_variable_step() {
     assert_eq!(r[5], 3, "FOR j := 1 TO 3");
     assert_eq!(r[6], 5, "FOR j := 5 TO 1 BY -1");
 }
+
+// ---------------------------------------------------------------------------
+// MIN / MAX / LIMIT / ABS — the same signed-predicate mistake, in the builtins
+// ---------------------------------------------------------------------------
+
+const SEL: &str = r#"
+PROGRAM SELP
+VAR
+    r : ARRAY[0..11] OF LINT;
+    ab : BYTE  := 200;  bb : BYTE  := 100;
+    aw : WORD  := 65000; bw : WORD := 1;
+    ad : DWORD := 4000000000; bd : DWORD := 1;
+    au : USINT := 200;  bu : USINT := 100;
+    ai : UINT  := 65000; bi : UINT := 1;
+    ax : UDINT := 4000000000; bx : UDINT := 1;
+    sa : SINT := -5;    sb : SINT := 3;
+END_VAR
+    r[0] := MAX(ab, bb);
+    r[1] := MIN(ab, bb);
+    r[2] := MAX(aw, bw);
+    r[3] := MAX(ad, bd);
+    r[4] := MAX(au, bu);
+    r[5] := MAX(ai, bi);
+    r[6] := MAX(ax, bx);
+    r[7] := LIMIT(bb, ab, ab);
+    r[8] := ABS(ab);
+    (* signed keeps signed *)
+    r[9] := MAX(sa, sb);
+    r[10] := MIN(sa, sb);
+    r[11] := ABS(sa);
+END_PROGRAM
+"#;
+
+#[test]
+fn min_max_limit_abs_respect_operand_signedness() {
+    let state = jit_scan(SEL, "selp");
+    let r = read_lints(&state, 0, 12);
+    assert_eq!(r[0], 200, "MAX(BYTE 200, 100)");
+    assert_eq!(r[1], 100, "MIN(BYTE 200, 100)");
+    assert_eq!(r[2], 65000, "MAX(WORD 65000, 1)");
+    assert_eq!(r[3], 4000000000, "MAX(DWORD 4000000000, 1)");
+    assert_eq!(r[4], 200, "MAX(USINT 200, 100)");
+    assert_eq!(r[5], 65000, "MAX(UINT 65000, 1)");
+    assert_eq!(r[6], 4000000000, "MAX(UDINT 4000000000, 1)");
+    assert_eq!(r[7], 200, "LIMIT(BYTE 100, 200, 200)");
+    assert_eq!(r[8], 200, "ABS(BYTE 200) is 200, not 56");
+    assert_eq!(r[9], 3, "MAX(SINT -5, 3)");
+    assert_eq!(r[10], -5, "MIN(SINT -5, 3)");
+    assert_eq!(r[11], 5, "ABS(SINT -5)");
+}
