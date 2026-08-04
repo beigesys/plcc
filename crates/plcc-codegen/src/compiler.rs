@@ -3285,12 +3285,7 @@ impl<'ctx> Compiler<'ctx> {
                             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                     }
                 } else if let Some(init_expr) = &decl.initializer {
-                    if let Some(val) = self.compile_expression(init_expr, init_fn)? {
-                        let val = self.coerce_init_value(val, &iec_ty)?;
-                        self.builder
-                            .build_store(ptr, val)
-                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                    }
+                    self.emit_decl_initializer(ptr, &iec_ty, init_expr, init_fn)?;
                 }
                 field_idx += 1;
             }
@@ -3305,17 +3300,198 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
+    /// Number of elements an array type occupies, across all its dimensions.
+    fn array_capacity(ranges: &[(i64, i64)]) -> usize {
+        ranges
+            .iter()
+            .map(|(lo, hi)| (hi - lo + 1).max(0) as usize)
+            .product()
+    }
+
+    /// Expand an aggregate into one initializer expression per array slot, in
+    /// row-major order. IEC 61131-3's repetition syntax `n(v)` contributes `n` copies
+    /// of `v`.
+    ///
+    /// Fewer entries than slots is legal — the remainder keeps its zero value. More
+    /// entries than slots is not, and is reported rather than written past the end.
+    fn flatten_array_aggregate<'e>(
+        elements: &'e [ArrayInitElement],
+        capacity: usize,
+    ) -> Result<Vec<&'e Expression>, CodegenError> {
+        let mut flat: Vec<&'e Expression> = Vec::new();
+        for elem in elements {
+            let count = match &elem.repeat {
+                None => 1usize,
+                Some(r) => {
+                    let n = TypeChecker::const_int_expr(r).ok_or_else(|| {
+                        CodegenError::UnsupportedType(
+                            "array initializer repetition count must be a constant".into(),
+                        )
+                    })?;
+                    usize::try_from(n).map_err(|_| {
+                        CodegenError::UnsupportedType(format!(
+                            "array initializer repetition count {n} is not a valid element count"
+                        ))
+                    })?
+                }
+            };
+            for _ in 0..count {
+                flat.push(&elem.value);
+            }
+        }
+        if flat.len() > capacity {
+            return Err(CodegenError::UnsupportedType(format!(
+                "array initializer has {} values but the array holds {capacity}",
+                flat.len()
+            )));
+        }
+        Ok(flat)
+    }
+
+    /// Store an array aggregate initializer into the array at `ptr`.
+    ///
+    /// Multi-dimensional arrays are laid out as one flat LLVM array, so a flat
+    /// aggregate fills them in row-major order. A nested aggregate against a nested
+    /// array element recurses.
+    fn emit_array_aggregate_store(
+        &mut self,
+        ptr: PointerValue<'ctx>,
+        iec_ty: &IecType,
+        elements: &[ArrayInitElement],
+        function: FunctionValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let IecType::Array {
+            ranges,
+            element_type,
+        } = iec_ty
+        else {
+            return Err(CodegenError::UnsupportedType(format!(
+                "an array aggregate initializer cannot initialize {iec_ty}"
+            )));
+        };
+        let capacity = Self::array_capacity(ranges);
+        let flat = Self::flatten_array_aggregate(elements, capacity)?;
+        let arr_llvm_ty = self.iec_to_llvm_type(iec_ty);
+        let element_type = (**element_type).clone();
+        let zero = self.context.i32_type().const_zero();
+
+        for (i, init_expr) in flat.into_iter().enumerate() {
+            let idx = self.context.i32_type().const_int(i as u64, false);
+            let elem_ptr = unsafe {
+                self.builder
+                    .build_in_bounds_gep(arr_llvm_ty, ptr, &[zero, idx], "init_elem")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+            };
+            if let ExpressionKind::ArrayInitializer(inner) = &init_expr.kind {
+                self.emit_array_aggregate_store(elem_ptr, &element_type, inner, function)?;
+                continue;
+            }
+            let Some(val) = self.compile_expression(init_expr, function)? else {
+                continue;
+            };
+            let val = self.coerce_init_value(val, &element_type)?;
+            self.builder
+                .build_store(elem_ptr, val)
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// Apply a declaration's initializer to an already-allocated slot, choosing
+    /// between the scalar store and the array-aggregate walk.
+    fn emit_decl_initializer(
+        &mut self,
+        ptr: PointerValue<'ctx>,
+        iec_ty: &IecType,
+        init: &Expression,
+        function: FunctionValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        if let ExpressionKind::ArrayInitializer(elements) = &init.kind {
+            return self.emit_array_aggregate_store(ptr, iec_ty, elements, function);
+        }
+        if let Some(val) = self.compile_expression(init, function)? {
+            let val = self.coerce_init_value(val, iec_ty)?;
+            self.builder
+                .build_store(ptr, val)
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+        }
+        Ok(())
+    }
+
     /// Evaluate a constant expression for use as a global initializer.
     fn eval_const_initializer(
         &self,
         expr: &Expression,
-        _ty: &IecType,
+        ty: &IecType,
     ) -> Option<BasicValueEnum<'ctx>> {
         match &expr.kind {
             ExpressionKind::IntegerLiteral(v) => Some(self.int_literal(*v).into()),
             ExpressionKind::RealLiteral(v) => Some(self.context.f32_type().const_float(*v).into()),
             ExpressionKind::BoolLiteral(v) => {
                 Some(self.context.i8_type().const_int(*v as u64, false).into())
+            }
+            // A VAR_GLOBAL array's aggregate becomes the global's constant contents;
+            // there is no init function to store it from.
+            ExpressionKind::ArrayInitializer(elements) => {
+                let IecType::Array {
+                    ranges,
+                    element_type,
+                } = ty
+                else {
+                    return None;
+                };
+                let capacity = Self::array_capacity(ranges);
+                let flat = Self::flatten_array_aggregate(elements, capacity).ok()?;
+                let elem_llvm_ty = self.iec_to_llvm_type(element_type);
+                let mut values: Vec<BasicValueEnum<'ctx>> = Vec::with_capacity(capacity);
+                for init_expr in flat {
+                    let val = self.eval_const_initializer(init_expr, element_type)?;
+                    values.push(self.const_coerce(val, element_type)?);
+                }
+                while values.len() < capacity {
+                    values.push(elem_llvm_ty.const_zero());
+                }
+                Self::const_array_of(elem_llvm_ty, &values).map(Into::into)
+            }
+            _ => None,
+        }
+    }
+
+    /// Narrow/widen a constant to the storage type of an array element, without a
+    /// builder — global initializers are built before any function exists.
+    fn const_coerce(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        ty: &IecType,
+    ) -> Option<BasicValueEnum<'ctx>> {
+        match self.iec_to_llvm_type(ty) {
+            BasicTypeEnum::IntType(target) => {
+                let v = val.into_int_value();
+                let raw = v.get_sign_extended_constant()?;
+                Some(target.const_int(raw as u64, true).into())
+            }
+            BasicTypeEnum::FloatType(target) => {
+                let (raw, _) = val.into_float_value().get_constant()?;
+                Some(target.const_float(raw).into())
+            }
+            _ => None,
+        }
+    }
+
+    /// `const_array` is defined per concrete LLVM type, so the element type has to be
+    /// matched out before the array can be built.
+    fn const_array_of(
+        elem_ty: BasicTypeEnum<'ctx>,
+        values: &[BasicValueEnum<'ctx>],
+    ) -> Option<inkwell::values::ArrayValue<'ctx>> {
+        match elem_ty {
+            BasicTypeEnum::IntType(t) => {
+                let vs: Vec<_> = values.iter().map(|v| v.into_int_value()).collect();
+                Some(t.const_array(&vs))
+            }
+            BasicTypeEnum::FloatType(t) => {
+                let vs: Vec<_> = values.iter().map(|v| v.into_float_value()).collect();
+                Some(t.const_array(&vs))
             }
             _ => None,
         }
@@ -3686,11 +3862,7 @@ impl<'ctx> Compiler<'ctx> {
 
                     // Initialize if there's an initializer
                     if let Some(init) = &decl.initializer {
-                        if let Some(val) = self.compile_expression(init, function)? {
-                            self.builder
-                                .build_store(alloca, val)
-                                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                        }
+                        self.emit_decl_initializer(alloca, &iec_ty, init, function)?;
                     }
 
                     self.variables
@@ -4094,11 +4266,7 @@ impl<'ctx> Compiler<'ctx> {
                         .build_alloca(llvm_ty, &decl.name.name)
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                     if let Some(init) = &decl.initializer {
-                        if let Some(val) = self.compile_expression(init, function)? {
-                            self.builder
-                                .build_store(alloca, val)
-                                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                        }
+                        self.emit_decl_initializer(alloca, &iec_ty, init, function)?;
                     }
                     self.variables
                         .insert(decl.name.name.to_uppercase(), (alloca, iec_ty));
@@ -4269,6 +4437,12 @@ impl<'ctx> Compiler<'ctx> {
                             };
                             self.compile_expression(&call_expr, function)?;
                         }
+                    } else if self
+                        .compile_indirect_method_call(object, &member.name, args, function)?
+                        .is_some()
+                    {
+                        // A method on an instance reached through a chain:
+                        // `a[1].Bump(5)`, `s.parts[2].Reset()`.
                     } else {
                         let call_expr = Expression {
                             kind: ExpressionKind::FunctionCall {
@@ -4279,6 +4453,12 @@ impl<'ctx> Compiler<'ctx> {
                         };
                         self.compile_expression(&call_expr, function)?;
                     }
+                } else if self.compile_indirect_fb_call(callee, args, function)? {
+                    // An FB instance reached through a chain rather than by name:
+                    // `a[1](s := 4)`, `s.arr[2](...)`. `fb_instances` is keyed by
+                    // instance name, so this used to fall through to
+                    // `compile_expression`, which has no arm for a call on an
+                    // ArrayIndex — the call emitted nothing at all, no diagnostic.
                 } else {
                     let call_expr = Expression {
                         kind: ExpressionKind::FunctionCall {
@@ -4342,18 +4522,83 @@ impl<'ctx> Compiler<'ctx> {
             )
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
 
+        self.emit_fb_call(
+            fb_ptr,
+            info.struct_type,
+            &info.fields,
+            &info.fb_type_name,
+            &info.scan_fn_name,
+            args,
+            function,
+            instance_name,
+        )
+    }
+
+    /// Compile a call on an FB instance that is *not* reached by a bare name —
+    /// `a[1](s := 4)`, `s.parts[2](...)`. Returns `false` when the callee is not an
+    /// FB instance, so the caller can fall through to its other dispatch paths.
+    ///
+    /// `fb_instances` is keyed by instance name and GEPs off the parent state struct
+    /// by field index, so it can only describe a directly named instance. Anything
+    /// else used to reach `compile_expression`, which has no arm for a call on an
+    /// `ArrayIndex` — `a[1](s := 4);` emitted no code and no diagnostic.
+    fn compile_indirect_fb_call(
+        &mut self,
+        callee: &Expression,
+        args: &[CallArg],
+        function: FunctionValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let Some(IecType::FbInstance(fb_type_name)) = self.lvalue_iec_type(callee) else {
+            return Ok(false);
+        };
+        let Some(layout) = self.compiled_fbs.get(&fb_type_name.to_uppercase()).cloned() else {
+            return Ok(false);
+        };
+        let Some(fb_ptr) = self.compile_lvalue_with_fn(callee, function)? else {
+            return Err(CodegenError::UnsupportedType(format!(
+                "`{}` is an instance of `{fb_type_name}` but has no address, so it cannot be called",
+                Self::describe_lvalue(callee)
+            )));
+        };
+        let label = Self::describe_lvalue(callee);
+        self.emit_fb_call(
+            fb_ptr,
+            layout.struct_type,
+            &layout.fields,
+            &fb_type_name,
+            &layout.scan_fn_name,
+            args,
+            function,
+            &label,
+        )?;
+        Ok(true)
+    }
+
+    /// Store the named inputs into an FB instance's state and call its scan function.
+    /// Shared by the named-instance and chained-instance call paths.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_fb_call(
+        &mut self,
+        fb_ptr: PointerValue<'ctx>,
+        struct_type: StructType<'ctx>,
+        fields: &[(String, IecType)],
+        fb_type_name: &str,
+        scan_fn_name: &str,
+        args: &[CallArg],
+        function: FunctionValue<'ctx>,
+        label: &str,
+    ) -> Result<(), CodegenError> {
         // Write named arguments (inputs) to the FB struct fields
         for arg in args {
             if let Some(arg_name) = &arg.name {
                 // Find the field index in the FB's struct
-                let field_idx = info
-                    .fields
+                let field_idx = fields
                     .iter()
                     .position(|(name, _)| name.eq_ignore_ascii_case(&arg_name.name))
                     .ok_or_else(|| {
                         CodegenError::UndefinedVariable(format!(
                             "FB field '{}' not found in '{}'",
-                            arg_name.name, info.fb_type_name
+                            arg_name.name, fb_type_name
                         ))
                     })?;
 
@@ -4361,18 +4606,13 @@ impl<'ctx> Compiler<'ctx> {
                 if let Some(val) = self.compile_expression(&arg.value, function)? {
                     let field_ptr = self
                         .builder
-                        .build_struct_gep(
-                            info.struct_type,
-                            fb_ptr,
-                            field_idx as u32,
-                            &arg_name.name,
-                        )
+                        .build_struct_gep(struct_type, fb_ptr, field_idx as u32, &arg_name.name)
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                     // Widen/narrow to the declared input type. Integer literals
                     // default to INT (i16), so `ctr(PV := 100000)` on a DINT input
                     // used to store a truncated 16-bit value into a 32-bit field.
                     let src = self.rvalue_iec_type(&arg.value);
-                    let val = self.coerce_value(val, src.as_ref(), &info.fields[field_idx].1)?;
+                    let val = self.coerce_value(val, src.as_ref(), &fields[field_idx].1)?;
                     self.builder
                         .build_store(field_ptr, val)
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
@@ -4381,21 +4621,11 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         // Call the FB's scan function
-        let scan_fn = self
-            .module
-            .get_function(&info.scan_fn_name)
-            .ok_or_else(|| {
-                CodegenError::LlvmError(format!(
-                    "FB scan function '{}' not found",
-                    info.scan_fn_name
-                ))
-            })?;
+        let scan_fn = self.module.get_function(scan_fn_name).ok_or_else(|| {
+            CodegenError::LlvmError(format!("FB scan function '{scan_fn_name}' not found"))
+        })?;
         self.builder
-            .build_call(
-                scan_fn,
-                &[fb_ptr.into()],
-                &format!("{}_call", instance_name),
-            )
+            .build_call(scan_fn, &[fb_ptr.into()], &format!("{label}_call"))
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
 
         Ok(())
@@ -4446,6 +4676,68 @@ impl<'ctx> Compiler<'ctx> {
             )
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
 
+        self.emit_method_call(
+            fb_ptr,
+            &method_info,
+            method_name,
+            args,
+            function,
+            instance_name,
+        )
+    }
+
+    /// Compile a method call on an FB instance that is *not* reached by a bare name —
+    /// `a[1].Bump(5)`, `s.parts[2].Reset()`. `Ok(None)` in the outer option means the
+    /// callee is not an FB instance and the caller should keep dispatching.
+    ///
+    /// Without this the callee — a `MemberAccess` over an `ArrayIndex` — fell through
+    /// to `compile_expression`, which treats it as a plain function call on an
+    /// unknown name and emits nothing: the method never ran, with no diagnostic.
+    #[allow(clippy::type_complexity)]
+    fn compile_indirect_method_call(
+        &mut self,
+        object: &Expression,
+        method_name: &str,
+        args: &[CallArg],
+        function: FunctionValue<'ctx>,
+    ) -> Result<Option<Option<BasicValueEnum<'ctx>>>, CodegenError> {
+        let Some(IecType::FbInstance(fb_type_name)) = self.lvalue_iec_type(object) else {
+            return Ok(None);
+        };
+        let Some(layout) = self.compiled_fbs.get(&fb_type_name.to_uppercase()).cloned() else {
+            return Ok(None);
+        };
+        let method_info = layout
+            .methods
+            .get(&method_name.to_uppercase())
+            .cloned()
+            .ok_or_else(|| {
+                CodegenError::UndefinedVariable(format!(
+                    "method '{method_name}' not found on FB type '{fb_type_name}'"
+                ))
+            })?;
+        let Some(fb_ptr) = self.compile_lvalue_with_fn(object, function)? else {
+            return Err(CodegenError::UnsupportedType(format!(
+                "`{}` is an instance of `{fb_type_name}` but has no address, so `{method_name}` cannot be called on it",
+                Self::describe_lvalue(object)
+            )));
+        };
+        let label = Self::describe_lvalue(object);
+        self.emit_method_call(fb_ptr, &method_info, method_name, args, function, &label)
+            .map(Some)
+    }
+
+    /// Coerce the arguments and emit the call, given an already-computed instance
+    /// pointer. Shared by the named-instance and chained-instance method paths.
+    fn emit_method_call(
+        &mut self,
+        fb_ptr: PointerValue<'ctx>,
+        method_info: &MethodInfo,
+        method_name: &str,
+        args: &[CallArg],
+        function: FunctionValue<'ctx>,
+        label: &str,
+    ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
         // Build argument list: instance pointer + method params
         let mut call_args: Vec<BasicValueEnum<'ctx>> = vec![fb_ptr.into()];
 
@@ -4507,7 +4799,7 @@ impl<'ctx> Compiler<'ctx> {
             .build_call(
                 method_fn,
                 &call_args_meta,
-                &format!("{}_{}_call", instance_name, method_name),
+                &format!("{label}_{method_name}_call"),
             )
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
 
@@ -4948,6 +5240,16 @@ impl<'ctx> Compiler<'ctx> {
                         .iter()
                         .find(|(name, _)| name.eq_ignore_ascii_case(&member.name))
                         .map(|(_, t)| t.clone()),
+                    // An FB instance reached through a chain rather than by name —
+                    // `a[1].o`, `s.arr[2].o`. `fb_instances` is keyed by instance
+                    // name, so only the compiled layout can answer here.
+                    Some(IecType::FbInstance(fb_type_name)) => self
+                        .compiled_fbs
+                        .get(&fb_type_name.to_uppercase())?
+                        .fields
+                        .iter()
+                        .find(|(name, _)| name.eq_ignore_ascii_case(&member.name))
+                        .map(|(_, t)| t.clone()),
                     _ => None,
                 }
             }
@@ -5038,6 +5340,7 @@ impl<'ctx> Compiler<'ctx> {
             ExpressionKind::BinaryOp { .. } | ExpressionKind::UnaryOp { .. } => {
                 "an arithmetic expression".into()
             }
+            ExpressionKind::ArrayInitializer(_) => "an array initializer".into(),
         }
     }
 
@@ -5242,6 +5545,49 @@ impl<'ctx> Compiler<'ctx> {
                         Self::describe_lvalue(expr)
                     ))
                 })?;
+                // An FB instance reached through a chain — `a[1].o`, `s.arr[2].o`.
+                // The instance has an address like any other aggregate; only its
+                // field list lives on the compiled layout rather than on `obj_ty`.
+                if let IecType::FbInstance(ref fb_type_name) = obj_ty {
+                    let layout = self
+                        .compiled_fbs
+                        .get(&fb_type_name.to_uppercase())
+                        .cloned()
+                        .ok_or_else(|| {
+                            CodegenError::UnsupportedType(format!(
+                                "`{}` is an instance of `{fb_type_name}`, which has no compiled layout",
+                                Self::describe_lvalue(object)
+                            ))
+                        })?;
+                    let field_idx = layout
+                        .fields
+                        .iter()
+                        .position(|(name, _)| name.eq_ignore_ascii_case(&member.name))
+                        .ok_or_else(|| {
+                            CodegenError::UndefinedVariable(format!(
+                                "{}.{}",
+                                Self::describe_lvalue(object),
+                                member.name
+                            ))
+                        })?;
+                    let Some(obj_ptr) = self.compile_lvalue_inner(object, function)? else {
+                        return Err(CodegenError::UnsupportedType(format!(
+                            "`{}` has no address, so `{}` cannot be reached",
+                            Self::describe_lvalue(object),
+                            Self::describe_lvalue(expr)
+                        )));
+                    };
+                    let field_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            layout.struct_type,
+                            obj_ptr,
+                            field_idx as u32,
+                            &member.name,
+                        )
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    return Ok(Some(field_ptr));
+                }
                 let IecType::Struct { ref fields, .. } = obj_ty else {
                     return Err(CodegenError::UnsupportedType(format!(
                         "`{}` is {obj_ty}, which has no member `{}`",
@@ -5381,6 +5727,12 @@ impl<'ctx> Compiler<'ctx> {
                                 function,
                             );
                         }
+                    }
+                    // An instance reached through a chain: `n := a[1].Bump(5);`
+                    if let Some(result) =
+                        self.compile_indirect_method_call(object, &member.name, args, function)?
+                    {
+                        return Ok(result);
                     }
                     Ok(None)
                 } else {

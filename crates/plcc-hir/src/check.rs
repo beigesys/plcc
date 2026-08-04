@@ -455,6 +455,15 @@ impl TypeChecker {
                 }
             }
             ExpressionKind::Parenthesized(inner) => self.check_expression(inner, scope),
+            // An aggregate only ever appears as a declaration's initial value, where
+            // the declared type governs; it has no type of its own. Its entries are
+            // still checked so a bad expression inside one is still reported.
+            ExpressionKind::ArrayInitializer(elements) => {
+                for elem in elements {
+                    self.check_expression(&elem.value, scope);
+                }
+                IecType::Void
+            }
         }
     }
 
@@ -531,6 +540,40 @@ impl TypeChecker {
         }
     }
 
+    /// Fold a compile-time integer expression, for the places the grammar allows an
+    /// expression but the type system needs a number: array bounds, subrange bounds,
+    /// string lengths.
+    ///
+    /// Matching only a bare `IntegerLiteral` here was a memory-safety bug, not just a
+    /// missing feature: `ARRAY[-2..2]`'s lower bound is a `UnaryOp`, so it silently
+    /// became `0`. The array was then sized `2 - 0 + 1 = 3` instead of 5 *and* its
+    /// indices were normalised against `0` instead of `-2`, so `a[-2] := x` stored
+    /// two elements in front of the object.
+    pub fn const_int_expr(expr: &Expression) -> Option<i64> {
+        match &expr.kind {
+            ExpressionKind::IntegerLiteral(v) => i64::try_from(*v).ok(),
+            ExpressionKind::Parenthesized(inner) => Self::const_int_expr(inner),
+            ExpressionKind::TypedLiteral { value, .. } => Self::const_int_expr(value),
+            ExpressionKind::UnaryOp { op, operand } => match op {
+                UnaryOp::Neg => Self::const_int_expr(operand)?.checked_neg(),
+                UnaryOp::Not => None,
+            },
+            ExpressionKind::BinaryOp { op, left, right } => {
+                let l = Self::const_int_expr(left)?;
+                let r = Self::const_int_expr(right)?;
+                match op {
+                    BinaryOp::Add => l.checked_add(r),
+                    BinaryOp::Sub => l.checked_sub(r),
+                    BinaryOp::Mul => l.checked_mul(r),
+                    BinaryOp::Div => l.checked_div(r),
+                    BinaryOp::Mod => l.checked_rem(r),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     pub fn resolve_type_spec(&mut self, spec: &TypeSpec) -> IecType {
         match &spec.kind {
             TypeSpecKind::Named(ident) => self
@@ -554,17 +597,12 @@ impl TypeChecker {
             TypeSpecKind::Array { ranges, base } => {
                 let mut resolved_ranges = Vec::new();
                 for r in ranges {
-                    let low = if let ExpressionKind::IntegerLiteral(v) = &r.low.kind {
-                        *v as i64
-                    } else {
-                        0
-                    };
-                    let high = if let ExpressionKind::IntegerLiteral(v) = &r.high.kind {
-                        *v as i64
-                    } else {
-                        0
-                    };
-                    resolved_ranges.push((low, high));
+                    let low = Self::const_int_expr(&r.low).unwrap_or(0);
+                    // An unfoldable upper bound must not collapse the dimension to a
+                    // single element — that under-allocates. Fall back to the lower
+                    // bound's own value so the extent is at least 1.
+                    let high = Self::const_int_expr(&r.high).unwrap_or(low);
+                    resolved_ranges.push((low, high.max(low)));
                 }
                 IecType::Array {
                     ranges: resolved_ranges,
@@ -574,16 +612,8 @@ impl TypeChecker {
             TypeSpecKind::Pointer(base) => IecType::Pointer(Box::new(self.resolve_type_spec(base))),
             TypeSpecKind::Subrange { base, low, high } => {
                 let base_ty = self.types.resolve(&base.name).unwrap_or(IecType::Int);
-                let lo = if let ExpressionKind::IntegerLiteral(v) = &low.kind {
-                    *v as i64
-                } else {
-                    0
-                };
-                let hi = if let ExpressionKind::IntegerLiteral(v) = &high.kind {
-                    *v as i64
-                } else {
-                    0
-                };
+                let lo = Self::const_int_expr(low).unwrap_or(0);
+                let hi = Self::const_int_expr(high).unwrap_or(0);
                 IecType::Subrange {
                     base_type: Box::new(base_ty),
                     low: lo,
