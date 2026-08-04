@@ -450,3 +450,63 @@ END_PROGRAM
     );
     assert_eq!(n, 5600);
 }
+
+/// A VAR_GLOBAL array's aggregate becomes the global's constant contents — there is
+/// no `_init` function to store it from.
+#[test]
+fn global_array_aggregate_initializer() {
+    let n = run_n(
+        r#"
+VAR_GLOBAL
+    g : ARRAY[0..3] OF DINT := [2(4), 5, 6];
+END_VAR
+
+PROGRAM P
+VAR
+    n : DINT;
+END_VAR
+    n := g[0] * 1000 + g[1] * 100 + g[2] * 10 + g[3];
+END_PROGRAM
+"#,
+    );
+    assert_eq!(n, 4456);
+}
+
+// ---------------------------------------------------------------------------
+// Same dispatch family as A2: a METHOD invoked on an instance in an array element.
+// The callee is a `MemberAccess` whose object is an `ArrayIndex`, not a named
+// instance.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn method_call_on_array_element_instance() {
+    let n = run_n(
+        r#"
+FUNCTION_BLOCK ACC
+VAR_OUTPUT
+    o : DINT;
+END_VAR
+METHOD Bump : DINT
+VAR_INPUT
+    amount : DINT;
+END_VAR
+    o := o + amount;
+    Bump := o;
+END_METHOD
+END_FUNCTION_BLOCK
+
+PROGRAM P
+VAR
+    n : DINT;
+    a : ARRAY[0..2] OF ACC;
+END_VAR
+    a[0].Bump(900);
+    a[1].Bump(5);
+    a[1].Bump(6);
+    a[2].Bump(900);
+    n := a[1].o;
+END_PROGRAM
+"#,
+    );
+    assert_eq!(n, 11, "a[1].Bump ran twice on a[1] alone");
+}

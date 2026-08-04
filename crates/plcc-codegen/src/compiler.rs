@@ -4437,6 +4437,12 @@ impl<'ctx> Compiler<'ctx> {
                             };
                             self.compile_expression(&call_expr, function)?;
                         }
+                    } else if self
+                        .compile_indirect_method_call(object, &member.name, args, function)?
+                        .is_some()
+                    {
+                        // A method on an instance reached through a chain:
+                        // `a[1].Bump(5)`, `s.parts[2].Reset()`.
                     } else {
                         let call_expr = Expression {
                             kind: ExpressionKind::FunctionCall {
@@ -4670,6 +4676,68 @@ impl<'ctx> Compiler<'ctx> {
             )
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
 
+        self.emit_method_call(
+            fb_ptr,
+            &method_info,
+            method_name,
+            args,
+            function,
+            instance_name,
+        )
+    }
+
+    /// Compile a method call on an FB instance that is *not* reached by a bare name —
+    /// `a[1].Bump(5)`, `s.parts[2].Reset()`. `Ok(None)` in the outer option means the
+    /// callee is not an FB instance and the caller should keep dispatching.
+    ///
+    /// Without this the callee — a `MemberAccess` over an `ArrayIndex` — fell through
+    /// to `compile_expression`, which treats it as a plain function call on an
+    /// unknown name and emits nothing: the method never ran, with no diagnostic.
+    #[allow(clippy::type_complexity)]
+    fn compile_indirect_method_call(
+        &mut self,
+        object: &Expression,
+        method_name: &str,
+        args: &[CallArg],
+        function: FunctionValue<'ctx>,
+    ) -> Result<Option<Option<BasicValueEnum<'ctx>>>, CodegenError> {
+        let Some(IecType::FbInstance(fb_type_name)) = self.lvalue_iec_type(object) else {
+            return Ok(None);
+        };
+        let Some(layout) = self.compiled_fbs.get(&fb_type_name.to_uppercase()).cloned() else {
+            return Ok(None);
+        };
+        let method_info = layout
+            .methods
+            .get(&method_name.to_uppercase())
+            .cloned()
+            .ok_or_else(|| {
+                CodegenError::UndefinedVariable(format!(
+                    "method '{method_name}' not found on FB type '{fb_type_name}'"
+                ))
+            })?;
+        let Some(fb_ptr) = self.compile_lvalue_with_fn(object, function)? else {
+            return Err(CodegenError::UnsupportedType(format!(
+                "`{}` is an instance of `{fb_type_name}` but has no address, so `{method_name}` cannot be called on it",
+                Self::describe_lvalue(object)
+            )));
+        };
+        let label = Self::describe_lvalue(object);
+        self.emit_method_call(fb_ptr, &method_info, method_name, args, function, &label)
+            .map(Some)
+    }
+
+    /// Coerce the arguments and emit the call, given an already-computed instance
+    /// pointer. Shared by the named-instance and chained-instance method paths.
+    fn emit_method_call(
+        &mut self,
+        fb_ptr: PointerValue<'ctx>,
+        method_info: &MethodInfo,
+        method_name: &str,
+        args: &[CallArg],
+        function: FunctionValue<'ctx>,
+        label: &str,
+    ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
         // Build argument list: instance pointer + method params
         let mut call_args: Vec<BasicValueEnum<'ctx>> = vec![fb_ptr.into()];
 
@@ -4731,7 +4799,7 @@ impl<'ctx> Compiler<'ctx> {
             .build_call(
                 method_fn,
                 &call_args_meta,
-                &format!("{}_{}_call", instance_name, method_name),
+                &format!("{label}_{method_name}_call"),
             )
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
 
@@ -5659,6 +5727,12 @@ impl<'ctx> Compiler<'ctx> {
                                 function,
                             );
                         }
+                    }
+                    // An instance reached through a chain: `n := a[1].Bump(5);`
+                    if let Some(result) =
+                        self.compile_indirect_method_call(object, &member.name, args, function)?
+                    {
+                        return Ok(result);
                     }
                     Ok(None)
                 } else {
