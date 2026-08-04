@@ -197,6 +197,19 @@ struct FbLayout<'ctx> {
     methods: HashMap<String, MethodInfo>,
 }
 
+/// Something that has to be initialized at a fixed position inside a value.
+///
+/// The position is a chain of constant GEP indices from the start of the value, so
+/// one flat list covers a STRUCT field, a field of a nested STRUCT, and an element of
+/// an array of STRUCTs alike.
+#[derive(Clone, Debug)]
+enum FieldInit {
+    /// Store a declared default: `TYPE S : STRUCT a : DINT := 5; ...`.
+    Store(Expression, IecType),
+    /// Call a nested FB instance's `<fb>_init`, for an FB held in a STRUCT field.
+    InitFb(String),
+}
+
 pub struct Compiler<'ctx> {
     context: &'ctx Context,
     module: Module<'ctx>,
@@ -216,6 +229,14 @@ pub struct Compiler<'ctx> {
     global_var: Option<(GlobalValue<'ctx>, StructType<'ctx>, Vec<(String, IecType)>)>,
     /// Compiled FB layouts, keyed by uppercase FB type name.
     compiled_fbs: HashMap<String, FbLayout<'ctx>>,
+    /// The `TypeSpec` of every user `TYPE` declaration, keyed by uppercase name.
+    ///
+    /// [`IecType`] carries no initializers — `IecType::Struct` is just an ordered
+    /// `(name, type)` list — so a STRUCT field's declared default is not recoverable
+    /// from the resolved type. It has to be read back off the AST, which is what this
+    /// is for. Duplicate `TYPE` names are rejected before this is populated, so the
+    /// mapping is unambiguous.
+    type_specs: HashMap<String, TypeSpec>,
     /// Declared VAR_INPUT parameters of every user FUNCTION, keyed by lowercased name.
     ///
     /// Recorded before any body is compiled so a call site can coerce its arguments to
@@ -244,6 +265,7 @@ impl<'ctx> Compiler<'ctx> {
             loop_continue_bb: None,
             global_var: None,
             compiled_fbs: HashMap::new(),
+            type_specs: HashMap::new(),
             fn_signatures: HashMap::new(),
             current_struct_type: None,
             current_state_ptr: None,
@@ -2801,7 +2823,7 @@ impl<'ctx> Compiler<'ctx> {
         }
         // Now that every `<fb>_init` has a body, emit the global initializer that
         // initializes VAR_GLOBAL FB instances. Programs' `_init` will call it.
-        self.emit_globals_init()?;
+        self.emit_globals_init(unit)?;
 
         // Then compile programs (which may instantiate FBs)
         for decl in &unit.declarations {
@@ -2848,6 +2870,13 @@ impl<'ctx> Compiler<'ctx> {
                     second: td.name.name.clone(),
                 });
             }
+        }
+
+        // Keep the declarations themselves: STRUCT field defaults live on the AST and
+        // are erased by type resolution. See `type_specs`.
+        for td in &pending {
+            self.type_specs
+                .insert(td.name.name.to_uppercase(), td.type_spec.clone());
         }
 
         while !pending.is_empty() {
@@ -3139,17 +3168,34 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     /// Emit `plcc_globals_init()`, which initializes VAR_GLOBAL FB instances by
-    /// calling their `<fb>_init`. Scalar globals are already handled by the constant
-    /// aggregate initializer on the global itself; a constant aggregate cannot call a
-    /// function, so FB instances need this runtime pass.
-    fn emit_globals_init(&mut self) -> Result<(), CodegenError> {
+    /// calling their `<fb>_init` and applies declared STRUCT field defaults. Scalar
+    /// globals are already handled by the constant aggregate initializer on the global
+    /// itself; a constant aggregate cannot call a function or reach a nested default,
+    /// so both need this runtime pass.
+    fn emit_globals_init(&mut self, unit: &CompilationUnit) -> Result<(), CodegenError> {
         let Some((global_val, global_struct, names)) = self.global_var.clone() else {
             return Ok(());
         };
-        if !names
+        // The declared TypeSpecs, in the same order the global struct was built.
+        let specs: Vec<TypeSpec> = unit
+            .declarations
             .iter()
-            .any(|(_, t)| matches!(t, IecType::FbInstance(_)))
-        {
+            .filter_map(|d| match d {
+                Declaration::GlobalVarDecl(block) => Some(block),
+                _ => None,
+            })
+            .flat_map(|block| block.declarations.iter().map(|d| d.type_spec.clone()))
+            .collect();
+
+        let any_fb = names
+            .iter()
+            .any(|(_, t)| matches!(t, IecType::FbInstance(_)));
+        let any_defaults = specs.iter().any(|spec| {
+            let mut out = Vec::new();
+            self.collect_field_inits(spec, &mut Vec::new(), &mut Vec::new(), &mut out);
+            !out.is_empty()
+        });
+        if !any_fb && !any_defaults {
             return Ok(());
         }
 
@@ -3160,24 +3206,24 @@ impl<'ctx> Compiler<'ctx> {
 
         let global_ptr = global_val.as_pointer_value();
         for (i, (name, ty)) in names.iter().enumerate() {
-            let IecType::FbInstance(fb_name) = ty else {
-                continue;
-            };
-            let init_name = self.fb_init_fn_name(fb_name);
-            let Some(init_fn) = self
-                .module
-                .get_function(&init_name)
-                .filter(|f| f.count_basic_blocks() > 0)
-            else {
-                continue;
-            };
             let ptr = self
                 .builder
                 .build_struct_gep(global_struct, global_ptr, i as u32, name)
                 .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-            self.builder
-                .build_call(init_fn, &[ptr.into()], "")
-                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+            if let IecType::FbInstance(fb_name) = ty {
+                let init_name = self.fb_init_fn_name(fb_name);
+                if let Some(init_fn) = self
+                    .module
+                    .get_function(&init_name)
+                    .filter(|f| f.count_basic_blocks() > 0)
+                {
+                    self.builder
+                        .build_call(init_fn, &[ptr.into()], "")
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                }
+            } else if let Some(spec) = specs.get(i).cloned() {
+                self.emit_field_inits(ptr, &spec, func)?;
+            }
         }
 
         self.builder
@@ -3496,6 +3542,140 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
+    /// Everything that has to be initialized inside a value of `spec`'s type.
+    ///
+    /// A STRUCT field's declared default (`TYPE S : STRUCT a : DINT := 5; END_STRUCT`)
+    /// belongs to the *type*, so it applies at every place a value of that type comes
+    /// into being — a PROGRAM var, an FB member, a nested STRUCT, an element of an
+    /// array of STRUCTs, a VAR_GLOBAL. Nothing applied them at all: `x : S; n := x.a;`
+    /// yielded 0.
+    ///
+    /// Positions are constant GEP index chains from the start of the value, so one
+    /// flat list handles every depth uniformly.
+    fn collect_field_inits(
+        &mut self,
+        spec: &TypeSpec,
+        path: &mut Vec<u32>,
+        visiting: &mut Vec<String>,
+        out: &mut Vec<(Vec<u32>, FieldInit)>,
+    ) {
+        match &spec.kind {
+            TypeSpecKind::Named(ident) => {
+                let key = ident.name.to_uppercase();
+                // An FB instance nested inside a STRUCT needs its own `_init` run;
+                // a top-level FB-typed variable is already handled by the caller,
+                // hence the empty-path check.
+                if !path.is_empty() {
+                    if let IecType::FbInstance(fb) = self.resolve_type_spec(spec) {
+                        out.push((path.clone(), FieldInit::InitFb(fb)));
+                        return;
+                    }
+                }
+                // A TYPE may name another TYPE. Cycles through a named type are
+                // rejected by `register_type_declarations`, but guard anyway so a
+                // malformed unit cannot make this recurse forever.
+                if visiting.contains(&key) {
+                    return;
+                }
+                let Some(inner) = self.type_specs.get(&key).cloned() else {
+                    return;
+                };
+                visiting.push(key);
+                self.collect_field_inits(&inner, path, visiting, out);
+                visiting.pop();
+            }
+            TypeSpecKind::Struct(fields) | TypeSpecKind::Union(fields) => {
+                for (i, field) in fields.iter().enumerate() {
+                    path.push(i as u32);
+                    match &field.initializer {
+                        Some(init) => {
+                            let ty = self.resolve_type_spec(&field.type_spec);
+                            out.push((path.clone(), FieldInit::Store(init.clone(), ty)));
+                        }
+                        None => self.collect_field_inits(&field.type_spec, path, visiting, out),
+                    }
+                    path.pop();
+                }
+            }
+            TypeSpecKind::Array { base, .. } => {
+                // Probe the element type once. An array whose element has nothing to
+                // initialize contributes nothing, so the common case costs one walk
+                // instead of one per element.
+                let mut probe = Vec::new();
+                self.collect_field_inits(base, &mut Vec::new(), visiting, &mut probe);
+                if probe.is_empty() {
+                    return;
+                }
+                let IecType::Array { ranges, .. } = self.resolve_type_spec(spec) else {
+                    return;
+                };
+                let count: i64 = ranges.iter().map(|(lo, hi)| hi - lo + 1).product();
+                for e in 0..count.max(0) {
+                    path.push(e as u32);
+                    for (sub, action) in &probe {
+                        let mut full = path.clone();
+                        full.extend_from_slice(sub);
+                        out.push((full, action.clone()));
+                    }
+                    path.pop();
+                }
+            }
+            // A POINTER is one word whatever it points at; nothing inside it belongs
+            // to this value. Everything else is a scalar with no interior structure.
+            _ => {}
+        }
+    }
+
+    /// Apply every declared default inside the value at `base_ptr`.
+    ///
+    /// A no-op for a type with none, which is the overwhelmingly common case.
+    fn emit_field_inits(
+        &mut self,
+        base_ptr: PointerValue<'ctx>,
+        spec: &TypeSpec,
+        function: FunctionValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let mut inits = Vec::new();
+        self.collect_field_inits(spec, &mut Vec::new(), &mut Vec::new(), &mut inits);
+        if inits.is_empty() {
+            return Ok(());
+        }
+        let base_ty = {
+            let ty = self.resolve_type_spec(spec);
+            self.iec_to_llvm_type(&ty)
+        };
+        let i32_ty = self.context.i32_type();
+        for (path, action) in inits {
+            let mut indices = vec![i32_ty.const_zero()];
+            indices.extend(path.iter().map(|i| i32_ty.const_int(*i as u64, false)));
+            let ptr = unsafe {
+                self.builder
+                    .build_in_bounds_gep(base_ty, base_ptr, &indices, "field_default")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+            };
+            match action {
+                FieldInit::Store(expr, ty) => {
+                    if let Some(val) = self.compile_expression(&expr, function)? {
+                        let src = self.rvalue_iec_type(&expr);
+                        let val = self.coerce_value(val, src.as_ref(), &ty)?;
+                        self.builder
+                            .build_store(ptr, val)
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    }
+                }
+                FieldInit::InitFb(fb_name) => {
+                    let init_name = self.fb_init_fn_name(&fb_name);
+                    if let Some(init_fn) = self.module.get_function(&init_name) {
+                        self.builder
+                            .build_call(init_fn, &[ptr.into()], "")
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Emit the body of `<pou>_init(state_ptr)`.
     ///
     /// Walks `var_blocks` in the *same* order used to build the state struct, storing
@@ -3563,8 +3743,16 @@ impl<'ctx> Compiler<'ctx> {
                             .build_call(inner_init, &[ptr.into()], "")
                             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                     }
-                } else if let Some(init_expr) = &decl.initializer {
-                    self.emit_decl_initializer(ptr, &iec_ty, init_expr, init_fn)?;
+                } else {
+                    // Declared STRUCT field defaults come first, so an explicit
+                    // initializer on the variable still wins.
+                    self.emit_field_inits(ptr, &decl.type_spec, init_fn)?;
+                    if let Some(init_expr) = &decl.initializer {
+                        // Goes through emit_decl_initializer, not a bare store, so
+                        // ARRAY aggregate initializers (`[10, 20, 30]`, `[3(0)]`)
+                        // still work.
+                        self.emit_decl_initializer(ptr, &iec_ty, init_expr, init_fn)?;
+                    }
                 }
                 field_idx += 1;
             }
@@ -4110,7 +4298,9 @@ impl<'ctx> Compiler<'ctx> {
                         .build_alloca(llvm_ty, &decl.name.name)
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
 
-                    // Initialize if there's an initializer
+                    // Declared STRUCT field defaults, then the variable's own
+                    // initializer, so an explicit initializer wins.
+                    self.emit_field_inits(alloca, &decl.type_spec, function)?;
                     if let Some(init) = &decl.initializer {
                         self.emit_decl_initializer(alloca, &iec_ty, init, function)?;
                     }
@@ -4580,6 +4770,7 @@ impl<'ctx> Compiler<'ctx> {
                         .builder
                         .build_alloca(llvm_ty, &decl.name.name)
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    self.emit_field_inits(alloca, &decl.type_spec, function)?;
                     if let Some(init) = &decl.initializer {
                         self.emit_decl_initializer(alloca, &iec_ty, init, function)?;
                     }

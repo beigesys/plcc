@@ -564,6 +564,39 @@ END_PROGRAM
     assert_eq!(dint(&state, 0), 42);
 }
 
+/// An FB held in a STRUCT field must get its own `<fb>_init` run, or its declared
+/// initial values never reach it — the same omission as a plain field default, one
+/// level in.
+#[test]
+fn fb_in_struct_field_gets_its_declared_initial_values() {
+    let src = r#"
+FUNCTION_BLOCK FB1
+VAR_OUTPUT
+    o : DINT;
+END_VAR
+VAR
+    seed : DINT := 77;
+END_VAR
+    o := seed;
+END_FUNCTION_BLOCK
+
+TYPE Holder : STRUCT
+    f : FB1;
+END_STRUCT; END_TYPE
+
+PROGRAM p
+VAR
+    n : DINT;
+    x : Holder;
+END_VAR
+    x.f();
+    n := x.f.o;
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(dint(&state, 0), 77);
+}
+
 // ---------------------------------------------------------------------------
 // C4: CONTINUE skips the rest of the loop body
 // ---------------------------------------------------------------------------
