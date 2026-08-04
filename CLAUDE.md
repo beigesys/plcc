@@ -204,6 +204,43 @@ fn codegen_arithmetic() {
 - Source spans on every AST/HIR node. Non-negotiable.
 - Consider arena allocation (`bumpalo` or typed-arena) for AST nodes.
 
+## Memory discipline — read this before running anything
+
+**Always run `cargo` and any plcc binary under a memory cap.** Test binaries in this
+repo have reached 90+ GiB resident and OOM-killed the whole WSL VM:
+
+```
+hircheck          92.8 GiB     (probe binary)
+plcc_st-f0d3eb6   38.6 GiB     (cargo test binary for plcc-st)
+plcc_base_review  89.7 GiB     (probe binary)
+```
+
+Use `bin/cap`, which puts the command in its own cgroup so a runaway is killed alone
+instead of taking the machine with it:
+
+```bash
+bin/cap cargo test --workspace          # 8 GiB default
+CAP=16G bin/cap cargo build --release
+```
+
+If `bin/` is missing (it is gitignored), the wrapper is one line:
+
+```bash
+systemd-run --user --scope --quiet -p MemoryMax=8G -p MemorySwapMax=0 -- "$@"
+```
+
+Two specific things that blow up, and must be capped:
+
+- **Compiling the whole OSCAT corpus as a single unit.** 559 files in one LLVM module
+  is genuinely enormous. Compile files individually unless the merged number is the
+  point, and cap it either way.
+- **Parallel agents each running cargo.** Every worktree carries its own `target/`
+  (multi-GB) and its own compile. Keep concurrent cargo jobs low, and remove worktrees
+  when done (`git worktree remove`) — they do not get cleaned up automatically.
+
+`plcc_st` reaching 38.6 GiB is a *parser* test binary and almost certainly indicates a
+real unbounded-growth bug in plcc, not just test weight. Investigate under a cap.
+
 ## Phase Plan
 
 ### Phase 1: Parse
