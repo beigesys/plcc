@@ -3708,11 +3708,14 @@ impl<'ctx> Compiler<'ctx> {
     /// Bring two integers to a common width, extending each by its own type's
     /// signedness.
     ///
-    /// [`Self::match_int_widths`] sign-extends unconditionally, which is wrong for
-    /// every ANY_BIT and ANY_UNSIGNED value: a BYTE holding `16#FF` is 255, and
-    /// sign-extending it to i32 makes it -1. That is how
-    /// `FOR i := 1 TO raw BY 100` with `raw : BYTE := 16#FF` ran zero iterations
-    /// instead of three, silently and with no diagnostic.
+    /// Sign-extending unconditionally is wrong for every ANY_BIT and ANY_UNSIGNED
+    /// value: a BYTE holding `16#FF` is 255, and sign-extending it to i32 makes it
+    /// -1. That is how `FOR i := 1 TO raw BY 100` with `raw : BYTE := 16#FF` ran
+    /// zero iterations instead of three, silently and with no diagnostic.
+    ///
+    /// This only matches widths. An operator that also has to *choose a signedness*
+    /// — every comparison, division and MOD — goes through
+    /// [`Self::prepare_int_operands`] instead.
     fn match_int_widths_typed(
         &self,
         a: inkwell::values::IntValue<'ctx>,
@@ -3734,36 +3737,6 @@ impl<'ctx> Compiler<'ctx> {
             Ok((self.extend_int(a, a_ty, b.get_type())?, b))
         } else {
             Ok((a, self.extend_int(b, b_ty, a.get_type())?))
-        }
-    }
-
-    fn match_int_widths(
-        &self,
-        a: inkwell::values::IntValue<'ctx>,
-        b: inkwell::values::IntValue<'ctx>,
-    ) -> Result<
-        (
-            inkwell::values::IntValue<'ctx>,
-            inkwell::values::IntValue<'ctx>,
-        ),
-        CodegenError,
-    > {
-        let aw = a.get_type().get_bit_width();
-        let bw = b.get_type().get_bit_width();
-        if aw == bw {
-            Ok((a, b))
-        } else if aw < bw {
-            let ext = self
-                .builder
-                .build_int_s_extend(a, b.get_type(), "sext")
-                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-            Ok((ext, b))
-        } else {
-            let ext = self
-                .builder
-                .build_int_s_extend(b, a.get_type(), "sext")
-                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-            Ok((a, ext))
         }
     }
 
