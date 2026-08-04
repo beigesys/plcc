@@ -347,6 +347,23 @@ pub enum ExpressionKind {
     },
     Dereference(Box<Expression>),
     Parenthesized(Box<Expression>),
+    /// An array aggregate initializer: `[10, 20, 30]`, `[3(0), 2(7)]`, or the
+    /// bracket-less `10, 20, 30` that IEC 61131-3 also allows after `:=`.
+    ///
+    /// Only ever appears as a variable/field initializer — it has no address and no
+    /// scalar value, so it is not a general expression.
+    ArrayInitializer(Vec<ArrayInitElement>),
+}
+
+/// One entry of an array aggregate initializer.
+///
+/// `repeat` carries IEC 61131-3's repetition syntax: `3(0)` is three copies of `0`.
+/// `None` means a single value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArrayInitElement {
+    pub repeat: Option<Box<Expression>>,
+    pub value: Box<Expression>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

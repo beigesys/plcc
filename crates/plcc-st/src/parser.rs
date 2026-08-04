@@ -572,7 +572,7 @@ impl<'s> Parser<'s> {
             self.ts.expect(&Token::Colon, &mut self.errors);
             let type_spec = self.parse_type_spec();
             let initializer = if self.ts.eat(&Token::Assign).is_some() {
-                Some(self.parse_expression())
+                Some(self.parse_initializer())
             } else {
                 None
             };
@@ -710,16 +710,7 @@ impl<'s> Parser<'s> {
         };
 
         let initializer = if self.ts.eat(&Token::Assign).is_some() {
-            let first = self.parse_expression();
-            // Consume array initializer list: := val1, val2, val3, ...;
-            while self.ts.eat(&Token::Comma).is_some() {
-                // Skip additional initializer values
-                if self.ts.at(&Token::Semicolon) || self.ts.peek().is_none() {
-                    break;
-                }
-                self.parse_expression();
-            }
-            Some(first)
+            Some(self.parse_initializer())
         } else {
             None
         };
@@ -818,15 +809,7 @@ impl<'s> Parser<'s> {
             self.ts.expect(&Token::Colon, &mut self.errors);
             let type_spec = self.parse_type_spec();
             let initializer = if self.ts.eat(&Token::Assign).is_some() {
-                let first = self.parse_expression();
-                // Consume array initializer list: := val1, val2, val3, ...;
-                while self.ts.eat(&Token::Comma).is_some() {
-                    if self.ts.at(&Token::Semicolon) || self.ts.peek().is_none() {
-                        break;
-                    }
-                    self.parse_expression();
-                }
-                Some(first)
+                Some(self.parse_initializer())
             } else {
                 None
             };
@@ -1375,6 +1358,94 @@ impl<'s> Parser<'s> {
 
     fn parse_expression(&mut self) -> Expression {
         self.parse_or_expression()
+    }
+
+    /// Parse whatever follows `:=` in a variable or field declaration.
+    ///
+    /// IEC 61131-3 writes an array's initial value as an aggregate — bracketed
+    /// (`[10, 20, 30]`) or, historically, bare (`10, 20, 30`) — with `n(v)`
+    /// repeating a value. The bracketed form used to be a parse error outright, and
+    /// the bare form parsed only its first value and threw the rest away, so
+    /// `a : ARRAY[0..2] OF DINT := [10, 20, 30];` could not compile at all and
+    /// `:= 10, 20, 30` silently initialized only `a[0]`.
+    ///
+    /// A single un-repeated value keeps its plain scalar expression, so nothing about
+    /// ordinary `x : INT := 5;` changes shape.
+    fn parse_initializer(&mut self) -> Expression {
+        if self.ts.at(&Token::LBracket) {
+            let start = self.ts.advance().unwrap().1; // consume '['
+            let mut elements = Vec::new();
+            while !self.ts.at(&Token::RBracket) && self.ts.peek().is_some() {
+                elements.push(self.parse_array_init_element());
+                if self.ts.eat(&Token::Comma).is_none() {
+                    break;
+                }
+            }
+            let end = self
+                .ts
+                .expect(&Token::RBracket, &mut self.errors)
+                .unwrap_or(self.ts.peek_span());
+            return Expression {
+                kind: ExpressionKind::ArrayInitializer(elements),
+                span: start.merge(end),
+            };
+        }
+
+        let first = self.parse_array_init_element();
+        // Bare comma-separated aggregate: `:= 10, 20, 30`.
+        if !self.ts.at(&Token::Comma) && first.repeat.is_none() {
+            return *first.value;
+        }
+        let start = first.span;
+        let mut end = first.span;
+        let mut elements = vec![first];
+        while self.ts.eat(&Token::Comma).is_some() {
+            if self.ts.at(&Token::Semicolon) || self.ts.peek().is_none() {
+                break;
+            }
+            let elem = self.parse_array_init_element();
+            end = elem.span;
+            elements.push(elem);
+        }
+        Expression {
+            kind: ExpressionKind::ArrayInitializer(elements),
+            span: start.merge(end),
+        }
+    }
+
+    /// One aggregate entry: `value`, or `count(value)` for IEC's repetition syntax.
+    ///
+    /// `count(value)` is told apart from a function call by requiring an integer
+    /// literal count — `3(0)` repeats, `F(0)` calls.
+    fn parse_array_init_element(&mut self) -> ArrayInitElement {
+        if let (Some(Token::IntegerLiteral(_)), Some((Token::LParen, _))) =
+            (self.ts.peek(), self.ts.tokens.get(self.ts.pos + 1))
+        {
+            let (Token::IntegerLiteral(n), start) = self.ts.advance().unwrap() else {
+                unreachable!()
+            };
+            self.ts.advance(); // consume '('
+            let value = self.parse_expression();
+            let end = self
+                .ts
+                .expect(&Token::RParen, &mut self.errors)
+                .unwrap_or(self.ts.peek_span());
+            return ArrayInitElement {
+                repeat: Some(Box::new(Expression {
+                    kind: ExpressionKind::IntegerLiteral(n),
+                    span: start,
+                })),
+                value: Box::new(value),
+                span: start.merge(end),
+            };
+        }
+        let value = self.parse_expression();
+        let span = value.span;
+        ArrayInitElement {
+            repeat: None,
+            value: Box::new(value),
+            span,
+        }
     }
 
     fn parse_or_expression(&mut self) -> Expression {

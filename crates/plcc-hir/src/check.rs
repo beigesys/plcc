@@ -455,6 +455,15 @@ impl TypeChecker {
                 }
             }
             ExpressionKind::Parenthesized(inner) => self.check_expression(inner, scope),
+            // An aggregate only ever appears as a declaration's initial value, where
+            // the declared type governs; it has no type of its own. Its entries are
+            // still checked so a bad expression inside one is still reported.
+            ExpressionKind::ArrayInitializer(elements) => {
+                for elem in elements {
+                    self.check_expression(&elem.value, scope);
+                }
+                IecType::Void
+            }
         }
     }
 

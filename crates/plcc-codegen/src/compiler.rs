@@ -3285,12 +3285,7 @@ impl<'ctx> Compiler<'ctx> {
                             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                     }
                 } else if let Some(init_expr) = &decl.initializer {
-                    if let Some(val) = self.compile_expression(init_expr, init_fn)? {
-                        let val = self.coerce_init_value(val, &iec_ty)?;
-                        self.builder
-                            .build_store(ptr, val)
-                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                    }
+                    self.emit_decl_initializer(ptr, &iec_ty, init_expr, init_fn)?;
                 }
                 field_idx += 1;
             }
@@ -3305,17 +3300,198 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
+    /// Number of elements an array type occupies, across all its dimensions.
+    fn array_capacity(ranges: &[(i64, i64)]) -> usize {
+        ranges
+            .iter()
+            .map(|(lo, hi)| (hi - lo + 1).max(0) as usize)
+            .product()
+    }
+
+    /// Expand an aggregate into one initializer expression per array slot, in
+    /// row-major order. IEC 61131-3's repetition syntax `n(v)` contributes `n` copies
+    /// of `v`.
+    ///
+    /// Fewer entries than slots is legal — the remainder keeps its zero value. More
+    /// entries than slots is not, and is reported rather than written past the end.
+    fn flatten_array_aggregate<'e>(
+        elements: &'e [ArrayInitElement],
+        capacity: usize,
+    ) -> Result<Vec<&'e Expression>, CodegenError> {
+        let mut flat: Vec<&'e Expression> = Vec::new();
+        for elem in elements {
+            let count = match &elem.repeat {
+                None => 1usize,
+                Some(r) => {
+                    let n = TypeChecker::const_int_expr(r).ok_or_else(|| {
+                        CodegenError::UnsupportedType(
+                            "array initializer repetition count must be a constant".into(),
+                        )
+                    })?;
+                    usize::try_from(n).map_err(|_| {
+                        CodegenError::UnsupportedType(format!(
+                            "array initializer repetition count {n} is not a valid element count"
+                        ))
+                    })?
+                }
+            };
+            for _ in 0..count {
+                flat.push(&elem.value);
+            }
+        }
+        if flat.len() > capacity {
+            return Err(CodegenError::UnsupportedType(format!(
+                "array initializer has {} values but the array holds {capacity}",
+                flat.len()
+            )));
+        }
+        Ok(flat)
+    }
+
+    /// Store an array aggregate initializer into the array at `ptr`.
+    ///
+    /// Multi-dimensional arrays are laid out as one flat LLVM array, so a flat
+    /// aggregate fills them in row-major order. A nested aggregate against a nested
+    /// array element recurses.
+    fn emit_array_aggregate_store(
+        &mut self,
+        ptr: PointerValue<'ctx>,
+        iec_ty: &IecType,
+        elements: &[ArrayInitElement],
+        function: FunctionValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let IecType::Array {
+            ranges,
+            element_type,
+        } = iec_ty
+        else {
+            return Err(CodegenError::UnsupportedType(format!(
+                "an array aggregate initializer cannot initialize {iec_ty}"
+            )));
+        };
+        let capacity = Self::array_capacity(ranges);
+        let flat = Self::flatten_array_aggregate(elements, capacity)?;
+        let arr_llvm_ty = self.iec_to_llvm_type(iec_ty);
+        let element_type = (**element_type).clone();
+        let zero = self.context.i32_type().const_zero();
+
+        for (i, init_expr) in flat.into_iter().enumerate() {
+            let idx = self.context.i32_type().const_int(i as u64, false);
+            let elem_ptr = unsafe {
+                self.builder
+                    .build_in_bounds_gep(arr_llvm_ty, ptr, &[zero, idx], "init_elem")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+            };
+            if let ExpressionKind::ArrayInitializer(inner) = &init_expr.kind {
+                self.emit_array_aggregate_store(elem_ptr, &element_type, inner, function)?;
+                continue;
+            }
+            let Some(val) = self.compile_expression(init_expr, function)? else {
+                continue;
+            };
+            let val = self.coerce_init_value(val, &element_type)?;
+            self.builder
+                .build_store(elem_ptr, val)
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// Apply a declaration's initializer to an already-allocated slot, choosing
+    /// between the scalar store and the array-aggregate walk.
+    fn emit_decl_initializer(
+        &mut self,
+        ptr: PointerValue<'ctx>,
+        iec_ty: &IecType,
+        init: &Expression,
+        function: FunctionValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        if let ExpressionKind::ArrayInitializer(elements) = &init.kind {
+            return self.emit_array_aggregate_store(ptr, iec_ty, elements, function);
+        }
+        if let Some(val) = self.compile_expression(init, function)? {
+            let val = self.coerce_init_value(val, iec_ty)?;
+            self.builder
+                .build_store(ptr, val)
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+        }
+        Ok(())
+    }
+
     /// Evaluate a constant expression for use as a global initializer.
     fn eval_const_initializer(
         &self,
         expr: &Expression,
-        _ty: &IecType,
+        ty: &IecType,
     ) -> Option<BasicValueEnum<'ctx>> {
         match &expr.kind {
             ExpressionKind::IntegerLiteral(v) => Some(self.int_literal(*v).into()),
             ExpressionKind::RealLiteral(v) => Some(self.context.f32_type().const_float(*v).into()),
             ExpressionKind::BoolLiteral(v) => {
                 Some(self.context.i8_type().const_int(*v as u64, false).into())
+            }
+            // A VAR_GLOBAL array's aggregate becomes the global's constant contents;
+            // there is no init function to store it from.
+            ExpressionKind::ArrayInitializer(elements) => {
+                let IecType::Array {
+                    ranges,
+                    element_type,
+                } = ty
+                else {
+                    return None;
+                };
+                let capacity = Self::array_capacity(ranges);
+                let flat = Self::flatten_array_aggregate(elements, capacity).ok()?;
+                let elem_llvm_ty = self.iec_to_llvm_type(element_type);
+                let mut values: Vec<BasicValueEnum<'ctx>> = Vec::with_capacity(capacity);
+                for init_expr in flat {
+                    let val = self.eval_const_initializer(init_expr, element_type)?;
+                    values.push(self.const_coerce(val, element_type)?);
+                }
+                while values.len() < capacity {
+                    values.push(elem_llvm_ty.const_zero());
+                }
+                Self::const_array_of(elem_llvm_ty, &values).map(Into::into)
+            }
+            _ => None,
+        }
+    }
+
+    /// Narrow/widen a constant to the storage type of an array element, without a
+    /// builder — global initializers are built before any function exists.
+    fn const_coerce(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        ty: &IecType,
+    ) -> Option<BasicValueEnum<'ctx>> {
+        match self.iec_to_llvm_type(ty) {
+            BasicTypeEnum::IntType(target) => {
+                let v = val.into_int_value();
+                let raw = v.get_sign_extended_constant()?;
+                Some(target.const_int(raw as u64, true).into())
+            }
+            BasicTypeEnum::FloatType(target) => {
+                let (raw, _) = val.into_float_value().get_constant()?;
+                Some(target.const_float(raw).into())
+            }
+            _ => None,
+        }
+    }
+
+    /// `const_array` is defined per concrete LLVM type, so the element type has to be
+    /// matched out before the array can be built.
+    fn const_array_of(
+        elem_ty: BasicTypeEnum<'ctx>,
+        values: &[BasicValueEnum<'ctx>],
+    ) -> Option<inkwell::values::ArrayValue<'ctx>> {
+        match elem_ty {
+            BasicTypeEnum::IntType(t) => {
+                let vs: Vec<_> = values.iter().map(|v| v.into_int_value()).collect();
+                Some(t.const_array(&vs))
+            }
+            BasicTypeEnum::FloatType(t) => {
+                let vs: Vec<_> = values.iter().map(|v| v.into_float_value()).collect();
+                Some(t.const_array(&vs))
             }
             _ => None,
         }
@@ -3686,11 +3862,7 @@ impl<'ctx> Compiler<'ctx> {
 
                     // Initialize if there's an initializer
                     if let Some(init) = &decl.initializer {
-                        if let Some(val) = self.compile_expression(init, function)? {
-                            self.builder
-                                .build_store(alloca, val)
-                                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                        }
+                        self.emit_decl_initializer(alloca, &iec_ty, init, function)?;
                     }
 
                     self.variables
@@ -4094,11 +4266,7 @@ impl<'ctx> Compiler<'ctx> {
                         .build_alloca(llvm_ty, &decl.name.name)
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                     if let Some(init) = &decl.initializer {
-                        if let Some(val) = self.compile_expression(init, function)? {
-                            self.builder
-                                .build_store(alloca, val)
-                                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                        }
+                        self.emit_decl_initializer(alloca, &iec_ty, init, function)?;
                     }
                     self.variables
                         .insert(decl.name.name.to_uppercase(), (alloca, iec_ty));
@@ -5104,6 +5272,7 @@ impl<'ctx> Compiler<'ctx> {
             ExpressionKind::BinaryOp { .. } | ExpressionKind::UnaryOp { .. } => {
                 "an arithmetic expression".into()
             }
+            ExpressionKind::ArrayInitializer(_) => "an array initializer".into(),
         }
     }
 

@@ -93,7 +93,8 @@ Complete IEC 61131-3:2013 (3rd edition) Structured Text:
 | VAR, VAR_INPUT, VAR_OUTPUT, VAR_IN_OUT, VAR_TEMP, VAR_GLOBAL | Full |
 | VAR CONSTANT, VAR RETAIN | Full |
 | All elementary types (BOOL through LREAL, STRING, WSTRING, TIME, DATE) | Full |
-| ARRAY (1D, multi-dimensional, non-zero lower bounds) | Full |
+| ARRAY (1D, multi-dimensional, negative and non-zero lower bounds) | Full |
+| ARRAY aggregate initializers (`[10, 20, 30]`, `[3(0)]`) | Full |
 | STRUCT, ENUM, UNION, subranges, alias types | Full |
 | IF/ELSIF/ELSE, CASE, FOR/TO/BY, WHILE, REPEAT/UNTIL | Full |
 | EXIT, CONTINUE, RETURN | Full |
