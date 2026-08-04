@@ -222,6 +222,111 @@ END_PROGRAM
     assert_eq!(dint(&state, 0), 15);
 }
 
+/// Two VAR_IN_OUT parameters bound to the *same* variable. A caller-side
+/// copy-in/copy-out would write both copies back and the second would undo the first;
+/// a real reference cannot.
+#[test]
+fn fb_var_in_out_aliases_one_variable_through_two_params() {
+    let src = r#"
+FUNCTION_BLOCK ALIAS2
+VAR_IN_OUT
+    a : DINT;
+    b : DINT;
+END_VAR
+    a := a + 1;
+    b := b + 10;
+END_FUNCTION_BLOCK
+
+PROGRAM p
+VAR
+    v : DINT := 0;
+    f : ALIAS2;
+END_VAR
+    f(a := v, b := v);
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(dint(&state, 0), 11, "both writes land on the one variable");
+}
+
+#[test]
+fn fb_var_in_out_on_array_element_argument() {
+    let src = r#"
+FUNCTION_BLOCK BUMP
+VAR_IN_OUT
+    t : DINT;
+END_VAR
+    t := t + 5;
+END_FUNCTION_BLOCK
+
+PROGRAM p
+VAR
+    n : DINT;
+    m : DINT;
+    a : ARRAY[1..3] OF DINT;
+    f : BUMP;
+END_VAR
+    a[2] := 10;
+    a[3] := 100;
+    f(t := a[2]);
+    n := a[2];
+    m := a[3];
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(dint(&state, 0), 15, "the indexed element was bumped");
+    assert_eq!(dint(&state, 1), 100, "its neighbour was not");
+}
+
+/// Reading an FB's VAR_IN_OUT from outside must follow the reference, not read the
+/// pointer word the state struct stores.
+#[test]
+fn fb_var_in_out_read_from_outside_follows_the_reference() {
+    let src = r#"
+FUNCTION_BLOCK BUMP
+VAR_IN_OUT
+    t : DINT;
+END_VAR
+    t := t + 5;
+END_FUNCTION_BLOCK
+
+PROGRAM p
+VAR
+    n : DINT;
+    v : DINT := 10;
+    f : BUMP;
+END_VAR
+    f(t := v);
+    n := f.t;
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(dint(&state, 0), 15);
+}
+
+/// A VAR_IN_OUT argument has to have an address. Passing a literal used to bind a
+/// temporary whose writes went nowhere.
+#[test]
+fn fb_var_in_out_literal_argument_is_rejected() {
+    let src = r#"
+FUNCTION_BLOCK BUMP
+VAR_IN_OUT
+    t : DINT;
+END_VAR
+    t := t + 5;
+END_FUNCTION_BLOCK
+
+PROGRAM p
+VAR
+    f : BUMP;
+END_VAR
+    f(t := 10);
+END_PROGRAM
+"#;
+    let err = compile_err(src).expect("a literal VAR_IN_OUT argument must be rejected");
+    assert!(err.contains("VAR_IN_OUT"), "diagnostic: {err}");
+}
+
 #[test]
 fn function_var_in_out_writes_back() {
     let src = r#"

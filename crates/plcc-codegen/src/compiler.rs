@@ -172,15 +172,51 @@ pub enum CodegenError {
     InvalidModule(String),
 }
 
+/// A declared formal parameter of a FUNCTION or METHOD.
+#[derive(Clone, Debug)]
+struct Param {
+    name: String,
+    /// The declared type — what the parameter *is* inside the callee.
+    ty: IecType,
+    /// VAR_IN_OUT. IEC 61131-3 defines these as pass-by-reference, so the LLVM
+    /// parameter is a pointer to the caller's variable rather than a copy of it.
+    is_in_out: bool,
+}
+
 /// Information about a compiled method on an FB/Class.
 #[derive(Clone, Debug)]
 struct MethodInfo {
     /// The LLVM function name for this method (e.g. "counter_add").
     fn_name: String,
-    /// Parameter names and types (excludes the implicit instance pointer).
-    params: Vec<(String, IecType)>,
+    /// Declared parameters in order (excludes the implicit instance pointer).
+    params: Vec<Param>,
     /// Return type (Void if the method doesn't return a value).
     return_type: IecType,
+}
+
+/// One field of a POU's state struct.
+#[derive(Clone, Debug)]
+struct PouField {
+    name: String,
+    /// The declared type — what the variable *is* inside the POU.
+    declared: IecType,
+    /// How the state struct stores it. Same as `declared`, except a VAR_IN_OUT is
+    /// stored as `Pointer(declared)`: the struct holds the caller's address, because
+    /// IEC 61131-3 defines VAR_IN_OUT as pass-by-reference.
+    stored: IecType,
+    is_in_out: bool,
+}
+
+impl PouField {
+    /// A field that is stored exactly as declared.
+    fn plain(name: String, ty: IecType) -> Self {
+        Self {
+            name,
+            declared: ty.clone(),
+            stored: ty,
+            is_in_out: false,
+        }
+    }
 }
 
 /// Layout information for a compiled function block.
@@ -191,8 +227,9 @@ struct FbLayout<'ctx> {
     /// Name of the generated `<pou>_init` function that applies declared initial
     /// values to an instance (and recursively initializes nested FB instances).
     init_fn_name: String,
-    /// Ordered field names and their IEC types (inputs, outputs, locals — all in declaration order).
-    fields: Vec<(String, IecType)>,
+    /// Ordered state-struct fields (inputs, outputs, in-outs, locals — all in
+    /// declaration order).
+    fields: Vec<PouField>,
     /// Compiled methods, keyed by uppercase method name.
     methods: HashMap<String, MethodInfo>,
 }
@@ -237,13 +274,14 @@ pub struct Compiler<'ctx> {
     /// is for. Duplicate `TYPE` names are rejected before this is populated, so the
     /// mapping is unambiguous.
     type_specs: HashMap<String, TypeSpec>,
-    /// Declared VAR_INPUT parameters of every user FUNCTION, keyed by lowercased name.
+    /// Declared parameters of every user FUNCTION, keyed by lowercased name.
     ///
-    /// Recorded before any body is compiled so a call site can coerce its arguments to
-    /// the declared parameter types. Without this an `INT` literal passed to a `DINT`
-    /// parameter reached `build_call` unconverted and LLVM's verifier rejected the
-    /// module — `F(5)` against `FUNCTION F : DINT VAR_INPUT x : DINT`.
-    fn_signatures: HashMap<String, Vec<(String, IecType)>>,
+    /// Recorded before any body is compiled so a call site can bind its arguments by
+    /// name and coerce them to the declared parameter types. Without this an `INT`
+    /// literal passed to a `DINT` parameter reached `build_call` unconverted and
+    /// LLVM's verifier rejected the module — `F(5)` against
+    /// `FUNCTION F : DINT VAR_INPUT x : DINT`.
+    fn_signatures: HashMap<String, Vec<Param>>,
     /// The parent struct type for the current POU being compiled (needed for GEP on FB instances).
     current_struct_type: Option<StructType<'ctx>>,
     /// The state pointer for the current POU being compiled.
@@ -3078,10 +3116,10 @@ impl<'ctx> Compiler<'ctx> {
     /// 'inner_scan' not found", and so did passing two .st files in the wrong order
     /// on the command line. Layout runs over every POU before any body is compiled,
     /// so declaring here makes every callee resolvable from every caller.
-    fn record_pou_layout(&mut self, name: &str, fields: Vec<(String, IecType)>) {
+    fn record_pou_layout(&mut self, name: &str, fields: Vec<PouField>) {
         let field_types: Vec<BasicTypeEnum<'ctx>> = fields
             .iter()
-            .map(|(_, t)| self.iec_to_llvm_type(t))
+            .map(|f| self.iec_to_llvm_type(&f.stored))
             .collect();
         let struct_type = self.context.struct_type(&field_types, false);
         let scan_fn_name = Self::scan_fn_name_for(name);
@@ -3100,16 +3138,83 @@ impl<'ctx> Compiler<'ctx> {
         );
     }
 
-    /// Resolve the ordered (name, type) field list of a POU's variable blocks.
-    fn resolve_pou_fields(&mut self, var_blocks: &[VarBlock]) -> Vec<(String, IecType)> {
+    /// Resolve the ordered state-struct field list of a POU's variable blocks.
+    ///
+    /// A VAR_IN_OUT is stored as a pointer, not as a copy. IEC 61131-3 §6.6.1.5
+    /// defines VAR_IN_OUT as pass-by-reference: the callee reads and writes the
+    /// caller's variable. Giving the state struct a by-value slot meant the callee
+    /// mutated a copy and the caller never saw it — `f(t := v)` on
+    /// `FUNCTION_BLOCK BUMP VAR_IN_OUT t : DINT; END_VAR t := t + 5;` left v at 10.
+    ///
+    /// A caller-side copy-in/copy-out would fix that one case and break two others:
+    /// two parameters bound to the same variable (the second copy-back would undo the
+    /// first), and an FB that reads its VAR_IN_OUT across scans (it must see writes
+    /// the caller made between calls). The pointer has neither problem.
+    fn resolve_pou_fields(&mut self, var_blocks: &[VarBlock]) -> Vec<PouField> {
         let mut fields = Vec::new();
         for block in var_blocks {
             for decl in &block.declarations {
-                let ty = self.resolve_type_spec(&decl.type_spec);
-                fields.push((decl.name.name.clone(), ty));
+                let declared = self.resolve_type_spec(&decl.type_spec);
+                let is_in_out = block.kind == VarBlockKind::VarInOut;
+                let stored = if is_in_out {
+                    IecType::Pointer(Box::new(declared.clone()))
+                } else {
+                    declared.clone()
+                };
+                fields.push(PouField {
+                    name: decl.name.name.clone(),
+                    declared,
+                    stored,
+                    is_in_out,
+                });
             }
         }
         fields
+    }
+
+    /// The formal parameters of a FUNCTION or METHOD, in calling-convention order.
+    ///
+    /// VAR_INPUT first, then VAR_IN_OUT — an arbitrary but fixed choice, since caller
+    /// and callee are both generated here. VAR_IN_OUT parameters are passed as
+    /// pointers to the caller's variable (IEC 61131-3 §6.6.1.5, pass-by-reference).
+    /// They used to be neither parameters nor references: a VAR_IN_OUT declaration
+    /// fell into the "local variable" branch and became an alloca, so `BUMPF(t := v)`
+    /// passed an argument to a function that declared none and LLVM's verifier
+    /// rejected the module outright.
+    fn resolve_params(&mut self, var_blocks: &[VarBlock]) -> Vec<Param> {
+        let mut params = Vec::new();
+        for (kind, is_in_out) in [
+            (VarBlockKind::VarInput, false),
+            (VarBlockKind::VarInOut, true),
+        ] {
+            for block in var_blocks.iter().filter(|b| b.kind == kind) {
+                for decl in &block.declarations {
+                    let ty = self.resolve_type_spec(&decl.type_spec);
+                    params.push(Param {
+                        name: decl.name.name.clone(),
+                        ty,
+                        is_in_out,
+                    });
+                }
+            }
+        }
+        params
+    }
+
+    /// LLVM types for `params`: the declared type by value, or an opaque pointer for a
+    /// VAR_IN_OUT.
+    fn param_llvm_types(&self, params: &[Param]) -> Vec<BasicMetadataTypeEnum<'ctx>> {
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        params
+            .iter()
+            .map(|p| {
+                if p.is_in_out {
+                    ptr_ty.into()
+                } else {
+                    self.iec_to_llvm_type(&p.ty).into()
+                }
+            })
+            .collect()
     }
 
     /// Compute the LLVM struct layout of every FUNCTION_BLOCK and CLASS in the unit,
@@ -3132,7 +3237,7 @@ impl<'ctx> Compiler<'ctx> {
             let mut progress = false;
             for (name, blocks) in std::mem::take(&mut pending) {
                 let fields = self.resolve_pou_fields(blocks);
-                if fields.iter().all(|(_, t)| self.fb_layout_ready(t)) {
+                if fields.iter().all(|f| self.fb_layout_ready(&f.stored)) {
                     self.record_pou_layout(&name, fields);
                     progress = true;
                 } else {
@@ -3732,6 +3837,21 @@ impl<'ctx> Compiler<'ctx> {
                     .builder
                     .build_struct_gep(struct_type, state_ptr, field_idx, &decl.name.name)
                     .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+
+                // A VAR_IN_OUT slot holds the caller's address, and no caller has run
+                // yet. Null it so an instance that is initialized but never called
+                // holds a defined pointer rather than whatever was in the buffer, and
+                // do not bind it as a variable — loading it here would dereference a
+                // pointer that does not exist yet.
+                if block.kind == VarBlockKind::VarInOut {
+                    let null = self.context.ptr_type(AddressSpace::default()).const_null();
+                    self.builder
+                        .build_store(ptr, null)
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    field_idx += 1;
+                    continue;
+                }
+
                 self.variables
                     .insert(decl.name.name.to_uppercase(), (ptr, iec_ty.clone()));
 
@@ -4167,24 +4287,85 @@ impl<'ctx> Compiler<'ctx> {
         self.type_checker.resolve_type_spec(spec)
     }
 
+    /// Point `variables` at every field of a POU state struct.
+    ///
+    /// A VAR_IN_OUT field holds the *caller's address*, so its variable is the pointer
+    /// stored there, loaded once on entry — not the slot itself. Binding the slot would
+    /// make the body read and write the pointer word as if it were the value.
+    fn bind_state_fields(
+        &mut self,
+        struct_type: StructType<'ctx>,
+        state_ptr: PointerValue<'ctx>,
+        fields: &[PouField],
+    ) -> Result<(), CodegenError> {
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        for (i, field) in fields.iter().enumerate() {
+            let slot = self
+                .builder
+                .build_struct_gep(struct_type, state_ptr, i as u32, &field.name)
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+            let ptr = if field.is_in_out {
+                self.builder
+                    .build_load(ptr_ty, slot, &field.name)
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                    .into_pointer_value()
+            } else {
+                slot
+            };
+            self.variables
+                .insert(field.name.to_uppercase(), (ptr, field.declared.clone()));
+        }
+        Ok(())
+    }
+
+    /// Point `variables` at every formal parameter of a FUNCTION or METHOD.
+    ///
+    /// A by-value parameter gets an alloca holding a copy, so the body can assign to
+    /// it. A VAR_IN_OUT parameter *is* an address — the caller's — so the incoming
+    /// pointer becomes the variable directly. Copying it into an alloca would give the
+    /// body a local it could write to with no effect on the caller.
+    ///
+    /// `first` is the index of the first formal parameter: 0 for a FUNCTION, 1 for a
+    /// METHOD, which takes the instance pointer first.
+    fn bind_params(
+        &mut self,
+        function: FunctionValue<'ctx>,
+        first: u32,
+        params: &[Param],
+    ) -> Result<(), CodegenError> {
+        for (i, param) in params.iter().enumerate() {
+            let incoming = function
+                .get_nth_param(first + i as u32)
+                .ok_or_else(|| CodegenError::LlvmError(format!("missing param {}", param.name)))?;
+            let ptr = if param.is_in_out {
+                incoming.into_pointer_value()
+            } else {
+                let llvm_ty = self.iec_to_llvm_type(&param.ty);
+                let alloca = self
+                    .builder
+                    .build_alloca(llvm_ty, &param.name)
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                self.builder
+                    .build_store(alloca, incoming)
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                alloca
+            };
+            self.variables
+                .insert(param.name.to_uppercase(), (ptr, param.ty.clone()));
+        }
+        Ok(())
+    }
+
     fn compile_program(&mut self, prog: &ProgramDecl) -> Result<(), CodegenError> {
         // Create a scan() function for this program
         let fn_name = format!("{}_scan", prog.name.name.to_lowercase());
 
         // Build the struct type for program state
-        let mut field_types: Vec<BasicTypeEnum<'ctx>> = Vec::new();
-        let mut field_names: Vec<String> = Vec::new();
-        let mut field_iec_types: Vec<IecType> = Vec::new();
-
-        for block in &prog.var_blocks {
-            for decl in &block.declarations {
-                let iec_ty = self.resolve_type_spec(&decl.type_spec);
-                let llvm_ty = self.iec_to_llvm_type(&iec_ty);
-                field_types.push(llvm_ty);
-                field_names.push(decl.name.name.clone());
-                field_iec_types.push(iec_ty);
-            }
-        }
+        let fields = self.resolve_pou_fields(&prog.var_blocks);
+        let field_types: Vec<BasicTypeEnum<'ctx>> = fields
+            .iter()
+            .map(|f| self.iec_to_llvm_type(&f.stored))
+            .collect();
 
         let struct_type = self.context.struct_type(&field_types, false);
         let state_ptr_type = self.context.ptr_type(AddressSpace::default());
@@ -4206,14 +4387,7 @@ impl<'ctx> Compiler<'ctx> {
         self.current_struct_type = Some(struct_type);
         self.current_state_ptr = Some(state_ptr);
 
-        for (i, (name, iec_ty)) in field_names.iter().zip(field_iec_types.iter()).enumerate() {
-            let ptr = self
-                .builder
-                .build_struct_gep(struct_type, state_ptr, i as u32, name)
-                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-            self.variables
-                .insert(name.to_uppercase(), (ptr, iec_ty.clone()));
-        }
+        self.bind_state_fields(struct_type, state_ptr, &fields)?;
 
         // Add global variables
         self.add_globals_to_variables()?;
@@ -4241,22 +4415,9 @@ impl<'ctx> Compiler<'ctx> {
             .map(|t| self.resolve_type_spec(t))
             .unwrap_or(IecType::Void);
 
-        // Collect input params
-        let mut param_types: Vec<BasicMetadataTypeEnum<'ctx>> = Vec::new();
-        let mut param_names: Vec<String> = Vec::new();
-        let mut param_iec_types: Vec<IecType> = Vec::new();
-
-        for block in &func.var_blocks {
-            if block.kind == VarBlockKind::VarInput {
-                for decl in &block.declarations {
-                    let iec_ty = self.resolve_type_spec(&decl.type_spec);
-                    let llvm_ty = self.iec_to_llvm_type(&iec_ty);
-                    param_types.push(llvm_ty.into());
-                    param_names.push(decl.name.name.clone());
-                    param_iec_types.push(iec_ty);
-                }
-            }
-        }
+        // Collect params: VAR_INPUT by value, then VAR_IN_OUT by reference.
+        let params = self.resolve_params(&func.var_blocks);
+        let param_types = self.param_llvm_types(&params);
 
         let fn_type = if ret_iec_ty == IecType::Void {
             self.context.void_type().fn_type(&param_types, false)
@@ -4273,23 +4434,12 @@ impl<'ctx> Compiler<'ctx> {
 
         self.variables.clear();
 
-        // Allocate input params
-        for (i, (name, iec_ty)) in param_names.iter().zip(param_iec_types.iter()).enumerate() {
-            let llvm_ty = self.iec_to_llvm_type(iec_ty);
-            let alloca = self
-                .builder
-                .build_alloca(llvm_ty, name)
-                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-            self.builder
-                .build_store(alloca, function.get_nth_param(i as u32).unwrap())
-                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-            self.variables
-                .insert(name.to_uppercase(), (alloca, iec_ty.clone()));
-        }
+        self.bind_params(function, 0, &params)?;
 
-        // Allocate local vars
+        // Allocate local vars. VAR_IN_OUT is a parameter, not a local — giving it an
+        // alloca made the callee write to a copy that no caller could see.
         for block in &func.var_blocks {
-            if block.kind != VarBlockKind::VarInput {
+            if !matches!(block.kind, VarBlockKind::VarInput | VarBlockKind::VarInOut) {
                 for decl in &block.declarations {
                     let iec_ty = self.resolve_type_spec(&decl.type_spec);
                     let llvm_ty = self.iec_to_llvm_type(&iec_ty);
@@ -4362,19 +4512,11 @@ impl<'ctx> Compiler<'ctx> {
         // `record_pou_layout` already declared.
         let fn_name = Self::scan_fn_name_for(&fb.name.name);
 
-        let mut field_types: Vec<BasicTypeEnum<'ctx>> = Vec::new();
-        let mut field_names: Vec<String> = Vec::new();
-        let mut field_iec_types: Vec<IecType> = Vec::new();
-
-        for block in &fb.var_blocks {
-            for decl in &block.declarations {
-                let iec_ty = self.resolve_type_spec(&decl.type_spec);
-                let llvm_ty = self.iec_to_llvm_type(&iec_ty);
-                field_types.push(llvm_ty);
-                field_names.push(decl.name.name.clone());
-                field_iec_types.push(iec_ty);
-            }
-        }
+        let fields = self.resolve_pou_fields(&fb.var_blocks);
+        let field_types: Vec<BasicTypeEnum<'ctx>> = fields
+            .iter()
+            .map(|f| self.iec_to_llvm_type(&f.stored))
+            .collect();
 
         let struct_type = self.context.struct_type(&field_types, false);
         // Reuse the prototype declared during layout; only create one if this FB was
@@ -4387,23 +4529,10 @@ impl<'ctx> Compiler<'ctx> {
             )));
         }
 
-        // Record this FB's layout for use by parent POUs that instantiate it
-        let fb_fields: Vec<(String, IecType)> = field_names
-            .iter()
-            .zip(field_iec_types.iter())
-            .map(|(n, t)| (n.clone(), t.clone()))
-            .collect();
-
         // Compile methods first (before the scan body) so they're available
         let mut method_infos: HashMap<String, MethodInfo> = HashMap::new();
         for method in &fb.methods {
-            let method_info = self.compile_method(
-                &fb.name.name,
-                method,
-                struct_type,
-                &field_names,
-                &field_iec_types,
-            )?;
+            let method_info = self.compile_method(&fb.name.name, method, struct_type, &fields)?;
             method_infos.insert(method.name.name.to_uppercase(), method_info);
         }
 
@@ -4413,7 +4542,7 @@ impl<'ctx> Compiler<'ctx> {
                 struct_type,
                 scan_fn_name: fn_name.clone(),
                 init_fn_name: Self::init_fn_name_for(&fb.name.name),
-                fields: fb_fields,
+                fields: fields.clone(),
                 methods: method_infos,
             },
         );
@@ -4427,14 +4556,7 @@ impl<'ctx> Compiler<'ctx> {
         // An FB's own state struct is the parent struct for anything it instantiates.
         self.current_struct_type = Some(struct_type);
         self.current_state_ptr = Some(state_ptr);
-        for (i, (name, iec_ty)) in field_names.iter().zip(field_iec_types.iter()).enumerate() {
-            let ptr = self
-                .builder
-                .build_struct_gep(struct_type, state_ptr, i as u32, name)
-                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-            self.variables
-                .insert(name.to_uppercase(), (ptr, iec_ty.clone()));
-        }
+        self.bind_state_fields(struct_type, state_ptr, &fields)?;
 
         // Add global variables
         self.add_globals_to_variables()?;
@@ -4456,19 +4578,11 @@ impl<'ctx> Compiler<'ctx> {
     fn compile_class(&mut self, cls: &ClassDecl) -> Result<(), CodegenError> {
         let fn_name = Self::scan_fn_name_for(&cls.name.name);
 
-        let mut field_types: Vec<BasicTypeEnum<'ctx>> = Vec::new();
-        let mut field_names: Vec<String> = Vec::new();
-        let mut field_iec_types: Vec<IecType> = Vec::new();
-
-        for block in &cls.var_blocks {
-            for decl in &block.declarations {
-                let iec_ty = self.resolve_type_spec(&decl.type_spec);
-                let llvm_ty = self.iec_to_llvm_type(&iec_ty);
-                field_types.push(llvm_ty);
-                field_names.push(decl.name.name.clone());
-                field_iec_types.push(iec_ty);
-            }
-        }
+        let fields = self.resolve_pou_fields(&cls.var_blocks);
+        let field_types: Vec<BasicTypeEnum<'ctx>> = fields
+            .iter()
+            .map(|f| self.iec_to_llvm_type(&f.stored))
+            .collect();
 
         let struct_type = self.context.struct_type(&field_types, false);
 
@@ -4487,22 +4601,10 @@ impl<'ctx> Compiler<'ctx> {
             .build_return(None)
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
 
-        let fb_fields: Vec<(String, IecType)> = field_names
-            .iter()
-            .zip(field_iec_types.iter())
-            .map(|(n, t)| (n.clone(), t.clone()))
-            .collect();
-
         // Compile methods
         let mut method_infos: HashMap<String, MethodInfo> = HashMap::new();
         for method in &cls.methods {
-            let method_info = self.compile_method(
-                &cls.name.name,
-                method,
-                struct_type,
-                &field_names,
-                &field_iec_types,
-            )?;
+            let method_info = self.compile_method(&cls.name.name, method, struct_type, &fields)?;
             method_infos.insert(method.name.name.to_uppercase(), method_info);
         }
 
@@ -4512,7 +4614,7 @@ impl<'ctx> Compiler<'ctx> {
                 struct_type,
                 scan_fn_name: fn_name,
                 init_fn_name: Self::init_fn_name_for(&cls.name.name),
-                fields: fb_fields,
+                fields,
                 methods: method_infos,
             },
         );
@@ -4550,19 +4652,9 @@ impl<'ctx> Compiler<'ctx> {
 
         // First param is always the instance pointer
         let state_ptr_type = self.context.ptr_type(AddressSpace::default());
+        let params = self.resolve_params(&method.var_blocks);
         let mut param_types: Vec<BasicMetadataTypeEnum<'ctx>> = vec![state_ptr_type.into()];
-        let mut params: Vec<(String, IecType)> = Vec::new();
-
-        for block in &method.var_blocks {
-            if block.kind == VarBlockKind::VarInput {
-                for decl in &block.declarations {
-                    let iec_ty = self.resolve_type_spec(&decl.type_spec);
-                    let llvm_ty = self.iec_to_llvm_type(&iec_ty);
-                    param_types.push(llvm_ty.into());
-                    params.push((decl.name.name.clone(), iec_ty));
-                }
-            }
-        }
+        param_types.extend(self.param_llvm_types(&params));
 
         let fn_type = if ret_iec_ty == IecType::Void {
             self.context.void_type().fn_type(&param_types, false)
@@ -4588,25 +4680,18 @@ impl<'ctx> Compiler<'ctx> {
 
     /// Record every FB/CLASS method signature (and declare its prototype) before any
     /// body is compiled, so method calls resolve regardless of declaration order.
-    /// Record the declared VAR_INPUT parameters of every user FUNCTION.
+    /// Record the declared parameters of every user FUNCTION.
     ///
-    /// Runs before any body is compiled, so `compile_expression`'s call path can widen
-    /// or narrow each argument to the parameter's declared type regardless of the order
-    /// the functions appear in.
+    /// Runs before any body is compiled, so `compile_expression`'s call path can bind
+    /// arguments by name, widen or narrow each to the parameter's declared type, and
+    /// take the address of a VAR_IN_OUT argument — regardless of the order the
+    /// functions appear in.
     fn layout_function_signatures(&mut self, unit: &CompilationUnit) {
         for decl in &unit.declarations {
             let Declaration::Function(func) = decl else {
                 continue;
             };
-            let mut params: Vec<(String, IecType)> = Vec::new();
-            for block in &func.var_blocks {
-                if block.kind == VarBlockKind::VarInput {
-                    for d in &block.declarations {
-                        let ty = self.resolve_type_spec(&d.type_spec);
-                        params.push((d.name.name.clone(), ty));
-                    }
-                }
-            }
+            let params = self.resolve_params(&func.var_blocks);
             self.fn_signatures
                 .insert(func.name.name.to_lowercase(), params);
         }
@@ -4625,7 +4710,7 @@ impl<'ctx> Compiler<'ctx> {
     /// so it is rejected rather than guessed at.
     fn bind_args<'a>(
         callee: &str,
-        params: &[(String, IecType)],
+        params: &[Param],
         args: &'a [CallArg],
     ) -> Result<Vec<&'a Expression>, CodegenError> {
         let err = |problem: String| CodegenError::ArgumentBinding {
@@ -4650,7 +4735,7 @@ impl<'ctx> Compiler<'ctx> {
             let Some(name) = &arg.name else { continue };
             if !params
                 .iter()
-                .any(|(p, _)| p.eq_ignore_ascii_case(&name.name))
+                .any(|p| p.name.eq_ignore_ascii_case(&name.name))
             {
                 return Err(err(format!("there is no parameter named `{}`", name.name)));
             }
@@ -4668,15 +4753,15 @@ impl<'ctx> Compiler<'ctx> {
         // …and every declared parameter is given.
         params
             .iter()
-            .map(|(p, _)| {
+            .map(|p| {
                 args.iter()
                     .find(|a| {
                         a.name
                             .as_ref()
-                            .is_some_and(|n| n.name.eq_ignore_ascii_case(p))
+                            .is_some_and(|n| n.name.eq_ignore_ascii_case(&p.name))
                     })
                     .map(|a| &a.value)
-                    .ok_or_else(|| err(format!("no value for parameter `{p}`")))
+                    .ok_or_else(|| err(format!("no value for parameter `{}`", p.name)))
             })
             .collect()
     }
@@ -4706,8 +4791,7 @@ impl<'ctx> Compiler<'ctx> {
         fb_name: &str,
         method: &MethodDecl,
         fb_struct_type: StructType<'ctx>,
-        fb_field_names: &[String],
-        fb_field_iec_types: &[IecType],
+        fb_fields: &[PouField],
     ) -> Result<MethodInfo, CodegenError> {
         let (info, function) = self.declare_method(fb_name, method);
         if function.count_basic_blocks() > 0 {
@@ -4715,8 +4799,7 @@ impl<'ctx> Compiler<'ctx> {
             return Ok(info);
         }
         let ret_iec_ty = info.return_type.clone();
-        let param_names: Vec<String> = info.params.iter().map(|(n, _)| n.clone()).collect();
-        let param_iec_types: Vec<IecType> = info.params.iter().map(|(_, t)| t.clone()).collect();
+        let params = info.params.clone();
 
         let entry = self.context.append_basic_block(function, "entry");
         self.builder.position_at_end(entry);
@@ -4732,37 +4815,15 @@ impl<'ctx> Compiler<'ctx> {
         self.current_struct_type = Some(fb_struct_type);
         self.current_state_ptr = Some(instance_ptr);
 
-        for (i, (name, iec_ty)) in fb_field_names
-            .iter()
-            .zip(fb_field_iec_types.iter())
-            .enumerate()
-        {
-            let ptr = self
-                .builder
-                .build_struct_gep(fb_struct_type, instance_ptr, i as u32, name)
-                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-            self.variables
-                .insert(name.to_uppercase(), (ptr, iec_ty.clone()));
-        }
+        self.bind_state_fields(fb_struct_type, instance_ptr, fb_fields)?;
 
-        // Allocate method input params as local allocas
-        for (i, (name, iec_ty)) in param_names.iter().zip(param_iec_types.iter()).enumerate() {
-            let llvm_ty = self.iec_to_llvm_type(iec_ty);
-            let alloca = self
-                .builder
-                .build_alloca(llvm_ty, name)
-                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-            // Param 0 is instance_ptr, so method params start at index 1
-            self.builder
-                .build_store(alloca, function.get_nth_param((i + 1) as u32).unwrap())
-                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-            self.variables
-                .insert(name.to_uppercase(), (alloca, iec_ty.clone()));
-        }
+        // Method params. Param 0 is instance_ptr, so formals start at index 1.
+        self.bind_params(function, 1, &params)?;
 
-        // Allocate local vars (VAR, VAR_TEMP, etc. — not VAR_INPUT)
+        // Allocate local vars (VAR, VAR_TEMP, etc. — not VAR_INPUT or VAR_IN_OUT,
+        // which are parameters).
         for block in &method.var_blocks {
-            if block.kind != VarBlockKind::VarInput {
+            if !matches!(block.kind, VarBlockKind::VarInput | VarBlockKind::VarInOut) {
                 for decl in &block.declarations {
                     let iec_ty = self.resolve_type_spec(&decl.type_spec);
                     let llvm_ty = self.iec_to_llvm_type(&iec_ty);
@@ -4982,6 +5043,30 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
+    /// The address to pass for a VAR_IN_OUT argument.
+    ///
+    /// A VAR_IN_OUT is bound by reference, so the argument has to be something with an
+    /// address. A literal or an expression is not, and quietly passing a temporary
+    /// would make the callee's writes vanish — which is the whole class of bug this
+    /// fixes, so it is a diagnostic instead.
+    fn compile_argument_reference(
+        &mut self,
+        arg: &Expression,
+        callee: &str,
+        param_name: &str,
+        function: FunctionValue<'ctx>,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        self.compile_lvalue_with_fn(arg, function)?
+            .ok_or_else(|| CodegenError::ArgumentBinding {
+                callee: callee.to_string(),
+                problem: format!(
+                    "`{param_name}` is VAR_IN_OUT, so its argument must be a variable, \
+                     not `{}`",
+                    Self::describe_lvalue(arg)
+                ),
+            })
+    }
+
     /// Address of the FB/CLASS instance `expr` denotes, with its compiled layout.
     ///
     /// The address comes from the ordinary lvalue path, so every addressable form
@@ -5077,7 +5162,7 @@ impl<'ctx> Compiler<'ctx> {
         &mut self,
         fb_ptr: PointerValue<'ctx>,
         struct_type: StructType<'ctx>,
-        fields: &[(String, IecType)],
+        fields: &[PouField],
         fb_type_name: &str,
         scan_fn_name: &str,
         args: &[CallArg],
@@ -5090,25 +5175,42 @@ impl<'ctx> Compiler<'ctx> {
                 // Find the field index in the FB's struct
                 let field_idx = fields
                     .iter()
-                    .position(|(name, _)| name.eq_ignore_ascii_case(&arg_name.name))
+                    .position(|f| f.name.eq_ignore_ascii_case(&arg_name.name))
                     .ok_or_else(|| {
                         CodegenError::UndefinedVariable(format!(
                             "FB field '{}' not found in '{}'",
                             arg_name.name, fb_type_name
                         ))
                     })?;
+                let field = fields[field_idx].clone();
+                let field_ptr = self
+                    .builder
+                    .build_struct_gep(struct_type, fb_ptr, field_idx as u32, &arg_name.name)
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+
+                if field.is_in_out {
+                    // Bind the reference: the slot holds the *address* of the caller's
+                    // variable, so the FB reads and writes it directly. Passing a copy
+                    // is why `f(t := v)` never wrote anything back to v.
+                    let target = self.compile_argument_reference(
+                        &arg.value,
+                        fb_type_name,
+                        &arg_name.name,
+                        function,
+                    )?;
+                    self.builder
+                        .build_store(field_ptr, target)
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    continue;
+                }
 
                 // Compile the argument value
                 if let Some(val) = self.compile_expression(&arg.value, function)? {
-                    let field_ptr = self
-                        .builder
-                        .build_struct_gep(struct_type, fb_ptr, field_idx as u32, &arg_name.name)
-                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                     // Widen/narrow to the declared input type. Integer literals
                     // default to INT (i16), so `ctr(PV := 100000)` on a DINT input
                     // used to store a truncated 16-bit value into a 32-bit field.
                     let src = self.rvalue_iec_type(&arg.value);
-                    let val = self.coerce_value(val, src.as_ref(), &fields[field_idx].1)?;
+                    let val = self.coerce_value(val, src.as_ref(), &field.declared)?;
                     self.builder
                         .build_store(field_ptr, val)
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
@@ -5163,11 +5265,24 @@ impl<'ctx> Compiler<'ctx> {
             args,
         )?;
         for (i, arg) in ordered.iter().enumerate() {
+            let param = method_info.params.get(i);
+            if param.is_some_and(|p| p.is_in_out) {
+                call_args.push(
+                    self.compile_argument_reference(
+                        arg,
+                        &format!("{instance_name}.{method_name}"),
+                        &param.expect("checked").name,
+                        function,
+                    )?
+                    .into(),
+                );
+                continue;
+            }
             if let Some(val) = self.compile_expression(arg, function)? {
-                let val = match method_info.params.get(i) {
-                    Some((_, param_ty)) => {
+                let val = match param {
+                    Some(p) => {
                         let src = self.rvalue_iec_type(arg);
-                        self.coerce_value(val, src.as_ref(), param_ty)?
+                        self.coerce_value(val, src.as_ref(), &p.ty)?
                     }
                     None => val,
                 };
@@ -5665,11 +5780,13 @@ impl<'ctx> Compiler<'ctx> {
             ExpressionKind::MemberAccess { object, member } => {
                 // STRUCT field or FB-instance field, at any depth: `s.i.v` and
                 // `x.f.o` both ask the type of the object first.
+                // The *declared* type: a VAR_IN_OUT field is stored as a pointer, but
+                // `f.t` denotes the DINT it refers to, not the pointer word.
                 let fields = self.member_fields_of(object)?;
                 fields
                     .iter()
-                    .find(|(name, _)| name.eq_ignore_ascii_case(&member.name))
-                    .map(|(_, t)| t.clone())
+                    .find(|f| f.name.eq_ignore_ascii_case(&member.name))
+                    .map(|f| f.declared.clone())
             }
             _ => None,
         }
@@ -5683,9 +5800,14 @@ impl<'ctx> Compiler<'ctx> {
     /// lets an FB instance live in a STRUCT field, an array element or a VAR_GLOBAL:
     /// matching only a bare `Identifier` against a per-POU instance map meant
     /// `n := x.f.o;` silently produced nothing.
-    fn member_fields_of(&self, object: &Expression) -> Option<Vec<(String, IecType)>> {
+    fn member_fields_of(&self, object: &Expression) -> Option<Vec<PouField>> {
         match self.lvalue_iec_type(object)? {
-            IecType::Struct { fields, .. } => Some(fields),
+            IecType::Struct { fields, .. } => Some(
+                fields
+                    .into_iter()
+                    .map(|(n, t)| PouField::plain(n, t))
+                    .collect(),
+            ),
             IecType::FbInstance(name) => self
                 .compiled_fbs
                 .get(&name.to_uppercase())
@@ -5983,7 +6105,7 @@ impl<'ctx> Compiler<'ctx> {
                 };
                 let field_idx = fields
                     .iter()
-                    .position(|(name, _)| name.eq_ignore_ascii_case(&member.name))
+                    .position(|f| f.name.eq_ignore_ascii_case(&member.name))
                     .ok_or_else(|| CodegenError::UndefinedVariable(member.name.clone()))?;
                 let Some(obj_ptr) = self.compile_lvalue_inner(object, function)? else {
                     return Err(CodegenError::UnsupportedType(format!(
@@ -6002,6 +6124,16 @@ impl<'ctx> Compiler<'ctx> {
                         &member.name,
                     )
                     .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                if fields[field_idx].is_in_out {
+                    // The slot holds the caller's address. `f.t` from outside the FB
+                    // must reach the referenced variable, not the pointer word.
+                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
+                    let target = self
+                        .builder
+                        .build_load(ptr_ty, field_ptr, &member.name)
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    return Ok(Some(target.into_pointer_value()));
+                }
                 Ok(Some(field_ptr))
             }
             // Literals, calls, and direct representation (%IX0.0) have no address.
@@ -6085,15 +6217,27 @@ impl<'ctx> Compiler<'ctx> {
                         };
                         let mut compiled_args = Vec::new();
                         for (i, arg) in ordered.iter().enumerate() {
+                            let param = params.get(i);
+                            // A VAR_IN_OUT parameter takes the caller's address.
+                            if param.is_some_and(|p| p.is_in_out) {
+                                let ptr = self.compile_argument_reference(
+                                    arg,
+                                    &ident.name,
+                                    &param.expect("checked").name,
+                                    function,
+                                )?;
+                                compiled_args.push(ptr.into());
+                                continue;
+                            }
                             if let Some(val) = self.compile_expression(arg, function)? {
                                 // Coerce to the declared parameter type. Passing the value
                                 // through unconverted produces a call whose argument width
                                 // does not match the signature, which LLVM's verifier
                                 // rejects outright.
-                                let val = match params.get(i) {
-                                    Some((_, param_ty)) => {
+                                let val = match param {
+                                    Some(p) => {
                                         let src = self.rvalue_iec_type(arg);
-                                        self.coerce_value(val, src.as_ref(), param_ty)?
+                                        self.coerce_value(val, src.as_ref(), &p.ty)?
                                     }
                                     None => val,
                                 };
