@@ -1,0 +1,34 @@
+{
+  // Pin rust-analyzer to THIS workspace only.
+  //
+  // Without this it discovers every Cargo.toml under the tree and tries to build
+  // them all on startup. That includes tests/external/rusty — RuSTy, an 18-crate
+  // LLVM-based compiler fetched purely as a parse corpus — and any git worktrees
+  // left under .claude/worktrees, each of which is a complete second copy of this
+  // workspace. That is ~26 Cargo projects, several pulling LLVM, all kicked off
+  // automatically on every window open, with no memory limit. It has taken the
+  // WSL VM down and then restarted itself on each relaunch.
+  "rust-analyzer.linkedProjects": ["Cargo.toml"],
+
+  "rust-analyzer.files.excludeDirs": [
+    "tests/external",
+    ".claude",
+    "bin",
+    "demo/fuxa"
+  ],
+
+  // Keep the file watcher off multi-GB build output and fetched corpora.
+  "files.watcherExclude": {
+    "**/target/**": true,
+    "**/tests/external/**": true,
+    "**/.claude/worktrees/**": true
+  },
+  "search.exclude": {
+    "**/target": true,
+    "**/tests/external": true,
+    "**/.claude/worktrees": true
+  },
+  "files.exclude": {
+    "**/.claude/worktrees": true
+  }
+}
