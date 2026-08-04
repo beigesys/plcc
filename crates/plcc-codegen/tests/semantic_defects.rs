@@ -784,3 +784,69 @@ END_PROGRAM
     let state = run(src);
     assert_eq!(dint(&state, 0), 14);
 }
+
+/// Resolving the callee from its *type* rather than from a map of bare identifier
+/// names also reaches an FB instance in an array element.
+#[test]
+fn fb_instance_in_array_element_is_called() {
+    let src = r#"
+FUNCTION_BLOCK CTR
+VAR_INPUT
+    k : DINT;
+END_VAR
+VAR_OUTPUT
+    o : DINT;
+END_VAR
+VAR
+    acc : DINT := 0;
+END_VAR
+    acc := acc + k;
+    o := acc;
+END_FUNCTION_BLOCK
+
+PROGRAM p
+VAR
+    n : DINT;
+    m : DINT;
+    a : ARRAY[1..3] OF CTR;
+END_VAR
+    a[1](k := 1);
+    a[3](k := 10);
+    n := a[1].o;
+    m := a[3].o;
+END_PROGRAM
+"#;
+    let state = run_scans(src, 2);
+    assert_eq!(dint(&state, 0), 2);
+    assert_eq!(dint(&state, 1), 20);
+}
+
+/// …and a VAR_GLOBAL FB instance, which was never in the per-POU instance map at all.
+#[test]
+fn global_fb_instance_is_called() {
+    let src = r#"
+FUNCTION_BLOCK FB1
+VAR_INPUT
+    s : DINT;
+END_VAR
+VAR_OUTPUT
+    o : DINT;
+END_VAR
+    o := s * 3;
+END_FUNCTION_BLOCK
+
+VAR_GLOBAL
+    g : FB1;
+END_VAR
+
+PROGRAM p
+VAR
+    n : DINT;
+END_VAR
+    g(s := 7);
+    n := g.o;
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(dint(&state, 0), 21);
+}

@@ -347,7 +347,10 @@ VAR
     out : INT;
 END_VAR
     ad(a := 21);
-    out := ad.Twice(a := 21);
+    // `Twice` declares no VAR_INPUT — it reads the FB's own `a`. Writing
+    // `ad.Twice(a := 21)` used to bind nothing and be silently ignored; naming a
+    // parameter the callee does not declare is now a diagnostic.
+    out := ad.Twice();
 END_PROGRAM
 "#;
     let (unit, errors) = plcc_st::parse(source);

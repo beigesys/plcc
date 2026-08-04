@@ -197,19 +197,6 @@ struct FbLayout<'ctx> {
     methods: HashMap<String, MethodInfo>,
 }
 
-/// Runtime info for an FB instance embedded in a parent POU's state struct.
-#[derive(Clone, Debug)]
-struct FbInstanceInfo<'ctx> {
-    /// Index of this FB instance's sub-struct within the parent struct.
-    field_index: u32,
-    fb_type_name: String,
-    scan_fn_name: String,
-    fields: Vec<(String, IecType)>,
-    struct_type: StructType<'ctx>,
-    /// Compiled methods on this FB type.
-    methods: HashMap<String, MethodInfo>,
-}
-
 pub struct Compiler<'ctx> {
     context: &'ctx Context,
     module: Module<'ctx>,
@@ -229,8 +216,6 @@ pub struct Compiler<'ctx> {
     global_var: Option<(GlobalValue<'ctx>, StructType<'ctx>, Vec<(String, IecType)>)>,
     /// Compiled FB layouts, keyed by uppercase FB type name.
     compiled_fbs: HashMap<String, FbLayout<'ctx>>,
-    /// FB instances in the current POU being compiled, keyed by uppercase instance name.
-    fb_instances: HashMap<String, FbInstanceInfo<'ctx>>,
     /// Declared VAR_INPUT parameters of every user FUNCTION, keyed by lowercased name.
     ///
     /// Recorded before any body is compiled so a call site can coerce its arguments to
@@ -259,7 +244,6 @@ impl<'ctx> Compiler<'ctx> {
             loop_continue_bb: None,
             global_var: None,
             compiled_fbs: HashMap::new(),
-            fb_instances: HashMap::new(),
             fn_signatures: HashMap::new(),
             current_struct_type: None,
             current_state_ptr: None,
@@ -3014,34 +2998,6 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
-    /// Register every FB-instance field of a POU's state struct in `fb_instances`.
-    ///
-    /// Without this, a statement like `i(A := X);` inside the owning POU is not
-    /// recognized as an FB call and compiles to nothing at all — no scan call, no
-    /// diagnostic. Only `compile_program` used to do it, so nesting an FB inside
-    /// another FB (or using one from a METHOD) silently dropped the call.
-    fn register_fb_instance_fields(&mut self, field_names: &[String], field_types: &[IecType]) {
-        for (i, (name, iec_ty)) in field_names.iter().zip(field_types.iter()).enumerate() {
-            let IecType::FbInstance(fb_type_name) = iec_ty else {
-                continue;
-            };
-            let Some(layout) = self.compiled_fbs.get(&fb_type_name.to_uppercase()).cloned() else {
-                continue;
-            };
-            self.fb_instances.insert(
-                name.to_uppercase(),
-                FbInstanceInfo {
-                    field_index: i as u32,
-                    fb_type_name: fb_type_name.clone(),
-                    scan_fn_name: layout.scan_fn_name.clone(),
-                    fields: layout.fields.clone(),
-                    struct_type: layout.struct_type,
-                    methods: layout.methods.clone(),
-                },
-            );
-        }
-    }
-
     /// Name of the generated init function for a POU.
     fn init_fn_name_for(name: &str) -> String {
         format!("{}_init", name.to_lowercase())
@@ -4059,7 +4015,6 @@ impl<'ctx> Compiler<'ctx> {
 
         // Set up variables as GEP into the state struct, and detect FB instances
         self.variables.clear();
-        self.fb_instances.clear();
         self.current_struct_type = Some(struct_type);
         self.current_state_ptr = Some(state_ptr);
 
@@ -4071,7 +4026,6 @@ impl<'ctx> Compiler<'ctx> {
             self.variables
                 .insert(name.to_uppercase(), (ptr, iec_ty.clone()));
         }
-        self.register_fb_instance_fields(&field_names, &field_iec_types);
 
         // Add global variables
         self.add_globals_to_variables()?;
@@ -4280,7 +4234,6 @@ impl<'ctx> Compiler<'ctx> {
         let state_ptr = function.get_nth_param(0).unwrap().into_pointer_value();
 
         self.variables.clear();
-        self.fb_instances.clear();
         // An FB's own state struct is the parent struct for anything it instantiates.
         self.current_struct_type = Some(struct_type);
         self.current_state_ptr = Some(state_ptr);
@@ -4292,7 +4245,6 @@ impl<'ctx> Compiler<'ctx> {
             self.variables
                 .insert(name.to_uppercase(), (ptr, iec_ty.clone()));
         }
-        self.register_fb_instance_fields(&field_names, &field_iec_types);
 
         // Add global variables
         self.add_globals_to_variables()?;
@@ -4581,7 +4533,6 @@ impl<'ctx> Compiler<'ctx> {
 
         // Save and clear current variables
         let saved_vars = std::mem::take(&mut self.variables);
-        let saved_fb_instances = std::mem::take(&mut self.fb_instances);
         let saved_struct_type = self.current_struct_type.take();
         let saved_state_ptr = self.current_state_ptr.take();
 
@@ -4603,7 +4554,6 @@ impl<'ctx> Compiler<'ctx> {
             self.variables
                 .insert(name.to_uppercase(), (ptr, iec_ty.clone()));
         }
-        self.register_fb_instance_fields(fb_field_names, fb_field_iec_types);
 
         // Allocate method input params as local allocas
         for (i, (name, iec_ty)) in param_names.iter().zip(param_iec_types.iter()).enumerate() {
@@ -4688,7 +4638,6 @@ impl<'ctx> Compiler<'ctx> {
 
         // Restore saved state
         self.variables = saved_vars;
-        self.fb_instances = saved_fb_instances;
         self.current_struct_type = saved_struct_type;
         self.current_state_ptr = saved_state_ptr;
 
@@ -4767,64 +4716,7 @@ impl<'ctx> Compiler<'ctx> {
                 self.compile_case(selector, branches, else_body, function)?;
             }
             StatementKind::FunctionCall { callee, args } => {
-                // Check if this is an FB instance call
-                if let ExpressionKind::Identifier(ident) = &callee.kind {
-                    if self.fb_instances.contains_key(&ident.name.to_uppercase()) {
-                        self.compile_fb_call(&ident.name, args, function)?;
-                    } else if ident.name.to_uppercase() == "PRINT" {
-                        // PRINT('string literal') or PRINT(string_var)
-                        // Emits a call to extern void plcc_print(i8*)
-                        self.compile_print_call(args, function)?;
-                    } else {
-                        // Regular function call
-                        let call_expr = Expression {
-                            kind: ExpressionKind::FunctionCall {
-                                callee: Box::new(callee.clone()),
-                                args: args.clone(),
-                            },
-                            span: stmt.span,
-                        };
-                        self.compile_expression(&call_expr, function)?;
-                    }
-                } else if let ExpressionKind::MemberAccess { object, member } = &callee.kind {
-                    // Method call: obj.Method(args)
-                    if let ExpressionKind::Identifier(ident) = &object.kind {
-                        if self.fb_instances.contains_key(&ident.name.to_uppercase()) {
-                            self.compile_method_call(&ident.name, &member.name, args, function)?;
-                        } else {
-                            // Not an FB instance — fall through to expression compilation
-                            let call_expr = Expression {
-                                kind: ExpressionKind::FunctionCall {
-                                    callee: Box::new(callee.clone()),
-                                    args: args.clone(),
-                                },
-                                span: stmt.span,
-                            };
-                            self.compile_expression(&call_expr, function)?;
-                        }
-                    } else if self
-                        .compile_indirect_method_call(object, &member.name, args, function)?
-                        .is_some()
-                    {
-                        // A method on an instance reached through a chain:
-                        // `a[1].Bump(5)`, `s.parts[2].Reset()`.
-                    } else {
-                        let call_expr = Expression {
-                            kind: ExpressionKind::FunctionCall {
-                                callee: Box::new(callee.clone()),
-                                args: args.clone(),
-                            },
-                            span: stmt.span,
-                        };
-                        self.compile_expression(&call_expr, function)?;
-                    }
-                } else if self.compile_indirect_fb_call(callee, args, function)? {
-                    // An FB instance reached through a chain rather than by name:
-                    // `a[1](s := 4)`, `s.arr[2](...)`. `fb_instances` is keyed by
-                    // instance name, so this used to fall through to
-                    // `compile_expression`, which has no arm for a call on an
-                    // ArrayIndex — the call emitted nothing at all, no diagnostic.
-                } else {
+                let as_expression = |this: &mut Self| -> Result<(), CodegenError> {
                     let call_expr = Expression {
                         kind: ExpressionKind::FunctionCall {
                             callee: Box::new(callee.clone()),
@@ -4832,7 +4724,36 @@ impl<'ctx> Compiler<'ctx> {
                         },
                         span: stmt.span,
                     };
-                    self.compile_expression(&call_expr, function)?;
+                    this.compile_expression(&call_expr, function)?;
+                    Ok(())
+                };
+
+                // An FB instance call. The callee is anything addressable whose *type*
+                // is an FB instance: a plain variable, a STRUCT field (`x.f(...)`), an
+                // array element, a VAR_GLOBAL. Testing a per-POU map of bare identifier
+                // names instead dropped every other form on the floor — `x.f(s := 7);`
+                // compiled to nothing at all.
+                if self.fb_layout_of(callee).is_some() {
+                    self.compile_fb_call(callee, args, function)?;
+                } else if let ExpressionKind::Identifier(ident) = &callee.kind {
+                    if ident.name.eq_ignore_ascii_case("PRINT") {
+                        // PRINT('string literal') or PRINT(string_var)
+                        // Emits a call to extern void plcc_print(i8*)
+                        self.compile_print_call(args, function)?;
+                    } else {
+                        as_expression(self)?;
+                    }
+                } else if let ExpressionKind::MemberAccess { object, member } = &callee.kind {
+                    // Method call: obj.Method(args). `obj` is the FB instance here —
+                    // `obj.Method` itself is not one, which is what distinguishes this
+                    // from the FB-call case above.
+                    if self.fb_layout_of(object).is_some() {
+                        self.compile_method_call(object, &member.name, args, function)?;
+                    } else {
+                        as_expression(self)?;
+                    }
+                } else {
+                    as_expression(self)?;
                 }
             }
             StatementKind::Repeat { body, until } => {
@@ -4870,47 +4791,51 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
+    /// Address of the FB/CLASS instance `expr` denotes, with its compiled layout.
+    ///
+    /// The address comes from the ordinary lvalue path, so every addressable form
+    /// works the same way: a variable, `x.f`, `arr[2]`, a VAR_GLOBAL.
+    fn fb_instance_at(
+        &mut self,
+        expr: &Expression,
+        function: FunctionValue<'ctx>,
+    ) -> Result<(PointerValue<'ctx>, FbLayout<'ctx>), CodegenError> {
+        let layout = self.fb_layout_of(expr).ok_or_else(|| {
+            CodegenError::UndefinedVariable(format!(
+                "`{}` is not a function block instance",
+                Self::describe_lvalue(expr)
+            ))
+        })?;
+        let ptr = self
+            .compile_lvalue_inner(expr, Some(function))?
+            .ok_or_else(|| {
+                CodegenError::UnsupportedType(format!(
+                    "`{}` has no address, so the function block instance cannot be called",
+                    Self::describe_lvalue(expr)
+                ))
+            })?;
+        Ok((ptr, layout))
+    }
+
     /// Compile an FB instance call: write inputs, call scan, leave outputs in place.
     fn compile_fb_call(
         &mut self,
-        instance_name: &str,
+        instance: &Expression,
         args: &[CallArg],
         function: FunctionValue<'ctx>,
     ) -> Result<(), CodegenError> {
-        let info = self
-            .fb_instances
-            .get(&instance_name.to_uppercase())
-            .ok_or_else(|| {
-                CodegenError::UndefinedVariable(format!("FB instance '{instance_name}' not found"))
-            })?
-            .clone();
-
-        // Get pointer to the embedded FB struct within the parent state
-        let parent_struct_type = self.current_struct_type.ok_or_else(|| {
-            CodegenError::LlvmError("no parent struct type for FB instance".into())
-        })?;
-        let parent_state_ptr = self.current_state_ptr.ok_or_else(|| {
-            CodegenError::LlvmError("no parent state pointer for FB instance".into())
-        })?;
-        let fb_ptr = self
-            .builder
-            .build_struct_gep(
-                parent_struct_type,
-                parent_state_ptr,
-                info.field_index,
-                &format!("{}_ptr", instance_name),
-            )
-            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+        let instance_name = Self::describe_lvalue(instance);
+        let (fb_ptr, layout) = self.fb_instance_at(instance, function)?;
 
         self.emit_fb_call(
             fb_ptr,
-            info.struct_type,
-            &info.fields,
-            &info.fb_type_name,
-            &info.scan_fn_name,
+            layout.struct_type,
+            &layout.fields,
+            &instance_name,
+            &layout.scan_fn_name,
             args,
             function,
-            instance_name,
+            &instance_name,
         )
     }
 
@@ -5002,10 +4927,10 @@ impl<'ctx> Compiler<'ctx> {
 
         // Call the FB's scan function
         let scan_fn = self.module.get_function(scan_fn_name).ok_or_else(|| {
-            CodegenError::LlvmError(format!("FB scan function '{scan_fn_name}' not found"))
+            CodegenError::LlvmError(format!("FB scan function '{}' not found", scan_fn_name))
         })?;
         self.builder
-            .build_call(scan_fn, &[fb_ptr.into()], &format!("{label}_call"))
+            .build_call(scan_fn, &[fb_ptr.into()], "fb_call")
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
 
         Ok(())
@@ -5015,150 +4940,47 @@ impl<'ctx> Compiler<'ctx> {
     /// Returns the method's return value (if any).
     fn compile_method_call(
         &mut self,
-        instance_name: &str,
+        instance: &Expression,
         method_name: &str,
         args: &[CallArg],
         function: FunctionValue<'ctx>,
     ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
-        let info = self
-            .fb_instances
-            .get(&instance_name.to_uppercase())
-            .ok_or_else(|| {
-                CodegenError::UndefinedVariable(format!("FB instance '{instance_name}' not found"))
-            })?
-            .clone();
+        let instance_name = Self::describe_lvalue(instance);
+        let (fb_ptr, layout) = self.fb_instance_at(instance, function)?;
 
-        let method_info = info
-            .methods
-            .get(&method_name.to_uppercase())
-            .ok_or_else(|| {
-                CodegenError::UndefinedVariable(format!(
-                    "method '{method_name}' not found on FB type '{}'",
-                    info.fb_type_name
-                ))
-            })?
-            .clone();
-
-        // Get pointer to the embedded FB struct within the parent state
-        let parent_struct_type = self.current_struct_type.ok_or_else(|| {
-            CodegenError::LlvmError("no parent struct type for FB instance".into())
-        })?;
-        let parent_state_ptr = self.current_state_ptr.ok_or_else(|| {
-            CodegenError::LlvmError("no parent state pointer for FB instance".into())
-        })?;
-        let fb_ptr = self
-            .builder
-            .build_struct_gep(
-                parent_struct_type,
-                parent_state_ptr,
-                info.field_index,
-                &format!("{}_method_ptr", instance_name),
-            )
-            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-
-        self.emit_method_call(
-            fb_ptr,
-            &method_info,
-            method_name,
-            args,
-            function,
-            instance_name,
-        )
-    }
-
-    /// Compile a method call on an FB instance that is *not* reached by a bare name —
-    /// `a[1].Bump(5)`, `s.parts[2].Reset()`. `Ok(None)` in the outer option means the
-    /// callee is not an FB instance and the caller should keep dispatching.
-    ///
-    /// Without this the callee — a `MemberAccess` over an `ArrayIndex` — fell through
-    /// to `compile_expression`, which treats it as a plain function call on an
-    /// unknown name and emits nothing: the method never ran, with no diagnostic.
-    #[allow(clippy::type_complexity)]
-    fn compile_indirect_method_call(
-        &mut self,
-        object: &Expression,
-        method_name: &str,
-        args: &[CallArg],
-        function: FunctionValue<'ctx>,
-    ) -> Result<Option<Option<BasicValueEnum<'ctx>>>, CodegenError> {
-        let Some(IecType::FbInstance(fb_type_name)) = self.lvalue_iec_type(object) else {
-            return Ok(None);
-        };
-        let Some(layout) = self.compiled_fbs.get(&fb_type_name.to_uppercase()).cloned() else {
-            return Ok(None);
-        };
         let method_info = layout
             .methods
             .get(&method_name.to_uppercase())
-            .cloned()
             .ok_or_else(|| {
                 CodegenError::UndefinedVariable(format!(
-                    "method '{method_name}' not found on FB type '{fb_type_name}'"
+                    "method '{method_name}' not found on `{instance_name}`"
                 ))
-            })?;
-        let Some(fb_ptr) = self.compile_lvalue_with_fn(object, function)? else {
-            return Err(CodegenError::UnsupportedType(format!(
-                "`{}` is an instance of `{fb_type_name}` but has no address, so `{method_name}` cannot be called on it",
-                Self::describe_lvalue(object)
-            )));
-        };
-        let label = Self::describe_lvalue(object);
-        self.emit_method_call(fb_ptr, &method_info, method_name, args, function, &label)
-            .map(Some)
-    }
+            })?
+            .clone();
 
-    /// Coerce the arguments and emit the call, given an already-computed instance
-    /// pointer. Shared by the named-instance and chained-instance method paths.
-    fn emit_method_call(
-        &mut self,
-        fb_ptr: PointerValue<'ctx>,
-        method_info: &MethodInfo,
-        method_name: &str,
-        args: &[CallArg],
-        function: FunctionValue<'ctx>,
-        label: &str,
-    ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
         // Build argument list: instance pointer + method params
         let mut call_args: Vec<BasicValueEnum<'ctx>> = vec![fb_ptr.into()];
 
-        // Method params can be positional or named. Either way the value has to be
-        // widened/narrowed to the declared parameter type: an integer literal is an
-        // INT (i16), so `acc.Bump(amount := 7)` on a `amount : DINT` parameter would
-        // otherwise pass an i16 to an i32 parameter and produce an invalid module.
-        if !args.is_empty() && args[0].name.is_some() {
-            // Named arguments — match by name to method param order
-            for (param_name, param_ty) in &method_info.params {
-                let arg = args
-                    .iter()
-                    .find(|a| {
-                        a.name
-                            .as_ref()
-                            .map(|n| n.name.eq_ignore_ascii_case(param_name))
-                            .unwrap_or(false)
-                    })
-                    .ok_or_else(|| {
-                        CodegenError::LlvmError(format!(
-                            "missing argument '{param_name}' for method '{method_name}'"
-                        ))
-                    })?;
-                if let Some(val) = self.compile_expression(&arg.value, function)? {
-                    let src = self.rvalue_iec_type(&arg.value);
-                    call_args.push(self.coerce_value(val, src.as_ref(), param_ty)?);
-                }
-            }
-        } else {
-            // Positional arguments
-            for (i, arg) in args.iter().enumerate() {
-                if let Some(val) = self.compile_expression(&arg.value, function)? {
-                    let val = match method_info.params.get(i) {
-                        Some((_, param_ty)) => {
-                            let src = self.rvalue_iec_type(&arg.value);
-                            self.coerce_value(val, src.as_ref(), param_ty)?
-                        }
-                        None => val,
-                    };
-                    call_args.push(val);
-                }
+        // Method params can be positional or named; named ones bind by name. Either
+        // way the value has to be widened/narrowed to the declared parameter type: an
+        // integer literal is an INT (i16), so `acc.Bump(amount := 7)` on an
+        // `amount : DINT` parameter would otherwise pass an i16 to an i32 parameter
+        // and produce an invalid module.
+        let ordered = Self::bind_args(
+            &format!("{instance_name}.{method_name}"),
+            &method_info.params,
+            args,
+        )?;
+        for (i, arg) in ordered.iter().enumerate() {
+            if let Some(val) = self.compile_expression(arg, function)? {
+                let val = match method_info.params.get(i) {
+                    Some((_, param_ty)) => {
+                        let src = self.rvalue_iec_type(arg);
+                        self.coerce_value(val, src.as_ref(), param_ty)?
+                    }
+                    None => val,
+                };
+                call_args.push(val);
             }
         }
 
@@ -5176,11 +4998,7 @@ impl<'ctx> Compiler<'ctx> {
             call_args.iter().map(|v| (*v).into()).collect();
         let call = self
             .builder
-            .build_call(
-                method_fn,
-                &call_args_meta,
-                &format!("{label}_{method_name}_call"),
-            )
+            .build_call(method_fn, &call_args_meta, "method_call")
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
 
         match call.try_as_basic_value() {
@@ -5654,36 +5472,44 @@ impl<'ctx> Compiler<'ctx> {
                 _ => None,
             },
             ExpressionKind::MemberAccess { object, member } => {
-                // FB instance field (t.ET, ctr.CV, ...). Only a directly named
-                // instance can be one; FB instances are not nested inside STRUCTs.
-                if let ExpressionKind::Identifier(ident) = &object.kind {
-                    if let Some(info) = self.fb_instances.get(&ident.name.to_uppercase()) {
-                        return info
-                            .fields
-                            .iter()
-                            .find(|(name, _)| name.eq_ignore_ascii_case(&member.name))
-                            .map(|(_, t)| t.clone());
-                    }
-                }
-                // STRUCT field, at any depth: `s.i.v` asks the type of `s.i` first.
-                match self.lvalue_iec_type(object) {
-                    Some(IecType::Struct { fields, .. }) => fields
-                        .iter()
-                        .find(|(name, _)| name.eq_ignore_ascii_case(&member.name))
-                        .map(|(_, t)| t.clone()),
-                    // An FB instance reached through a chain rather than by name —
-                    // `a[1].o`, `s.arr[2].o`. `fb_instances` is keyed by instance
-                    // name, so only the compiled layout can answer here.
-                    Some(IecType::FbInstance(fb_type_name)) => self
-                        .compiled_fbs
-                        .get(&fb_type_name.to_uppercase())?
-                        .fields
-                        .iter()
-                        .find(|(name, _)| name.eq_ignore_ascii_case(&member.name))
-                        .map(|(_, t)| t.clone()),
-                    _ => None,
-                }
+                // STRUCT field or FB-instance field, at any depth: `s.i.v` and
+                // `x.f.o` both ask the type of the object first.
+                let fields = self.member_fields_of(object)?;
+                fields
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case(&member.name))
+                    .map(|(_, t)| t.clone())
             }
+            _ => None,
+        }
+    }
+
+    /// Ordered members of whatever `object` denotes, if it has any.
+    ///
+    /// A STRUCT and an FB/CLASS instance are laid out the same way — an ordered field
+    /// list — and `.member` reaches into either identically, so both answer here.
+    /// Resolving this from the object's *type* rather than from its spelling is what
+    /// lets an FB instance live in a STRUCT field, an array element or a VAR_GLOBAL:
+    /// matching only a bare `Identifier` against a per-POU instance map meant
+    /// `n := x.f.o;` silently produced nothing.
+    fn member_fields_of(&self, object: &Expression) -> Option<Vec<(String, IecType)>> {
+        match self.lvalue_iec_type(object)? {
+            IecType::Struct { fields, .. } => Some(fields),
+            IecType::FbInstance(name) => self
+                .compiled_fbs
+                .get(&name.to_uppercase())
+                .map(|l| l.fields.clone()),
+            _ => None,
+        }
+    }
+
+    /// The compiled layout of the FB/CLASS instance `expr` denotes, if it is one.
+    ///
+    /// Pure — it inspects types only, so it is safe to use as the "is this an FB
+    /// call?" test before any code is emitted.
+    fn fb_layout_of(&self, expr: &Expression) -> Option<FbLayout<'ctx>> {
+        match self.lvalue_iec_type(expr)? {
+            IecType::FbInstance(name) => self.compiled_fbs.get(&name.to_uppercase()).cloned(),
             _ => None,
         }
     }
@@ -5945,50 +5771,9 @@ impl<'ctx> Compiler<'ctx> {
                 }
             }
             ExpressionKind::MemberAccess { object, member } => {
-                if let ExpressionKind::Identifier(ident) = &object.kind {
-                    // Check if this is an FB instance field access
-                    if let Some(info) = self.fb_instances.get(&ident.name.to_uppercase()).cloned() {
-                        let parent_struct_type = self.current_struct_type.ok_or_else(|| {
-                            CodegenError::LlvmError("no parent struct type".into())
-                        })?;
-                        let parent_state_ptr = self.current_state_ptr.ok_or_else(|| {
-                            CodegenError::LlvmError("no parent state pointer".into())
-                        })?;
-                        let fb_ptr = self
-                            .builder
-                            .build_struct_gep(
-                                parent_struct_type,
-                                parent_state_ptr,
-                                info.field_index,
-                                &format!("{}_fb_lv", ident.name),
-                            )
-                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-
-                        let field_idx = info
-                            .fields
-                            .iter()
-                            .position(|(name, _)| name.eq_ignore_ascii_case(&member.name))
-                            .ok_or_else(|| {
-                                CodegenError::UndefinedVariable(format!(
-                                    "{}.{}",
-                                    ident.name, member.name
-                                ))
-                            })?;
-                        let field_ptr = self
-                            .builder
-                            .build_struct_gep(
-                                info.struct_type,
-                                fb_ptr,
-                                field_idx as u32,
-                                &member.name,
-                            )
-                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                        return Ok(Some(field_ptr));
-                    }
-                }
-
-                // STRUCT field at any depth. The object is resolved as an lvalue in
-                // its own right, so `s.i.v` GEPs through `s.i` — matching only a bare
+                // STRUCT field or FB-instance field, at any depth. The object is
+                // resolved as an lvalue in its own right, so `s.i.v` GEPs through
+                // `s.i` and `x.f.o` GEPs through `x.f` — matching only a bare
                 // identifier here dropped every chain longer than one level, silently:
                 // `s.i.v := 7;` emitted nothing at all.
                 let obj_ty = self.lvalue_iec_type(object).ok_or_else(|| {
@@ -5998,50 +5783,7 @@ impl<'ctx> Compiler<'ctx> {
                         Self::describe_lvalue(expr)
                     ))
                 })?;
-                // An FB instance reached through a chain — `a[1].o`, `s.arr[2].o`.
-                // The instance has an address like any other aggregate; only its
-                // field list lives on the compiled layout rather than on `obj_ty`.
-                if let IecType::FbInstance(ref fb_type_name) = obj_ty {
-                    let layout = self
-                        .compiled_fbs
-                        .get(&fb_type_name.to_uppercase())
-                        .cloned()
-                        .ok_or_else(|| {
-                            CodegenError::UnsupportedType(format!(
-                                "`{}` is an instance of `{fb_type_name}`, which has no compiled layout",
-                                Self::describe_lvalue(object)
-                            ))
-                        })?;
-                    let field_idx = layout
-                        .fields
-                        .iter()
-                        .position(|(name, _)| name.eq_ignore_ascii_case(&member.name))
-                        .ok_or_else(|| {
-                            CodegenError::UndefinedVariable(format!(
-                                "{}.{}",
-                                Self::describe_lvalue(object),
-                                member.name
-                            ))
-                        })?;
-                    let Some(obj_ptr) = self.compile_lvalue_inner(object, function)? else {
-                        return Err(CodegenError::UnsupportedType(format!(
-                            "`{}` has no address, so `{}` cannot be reached",
-                            Self::describe_lvalue(object),
-                            Self::describe_lvalue(expr)
-                        )));
-                    };
-                    let field_ptr = self
-                        .builder
-                        .build_struct_gep(
-                            layout.struct_type,
-                            obj_ptr,
-                            field_idx as u32,
-                            &member.name,
-                        )
-                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                    return Ok(Some(field_ptr));
-                }
-                let IecType::Struct { ref fields, .. } = obj_ty else {
+                let Some(fields) = self.member_fields_of(object) else {
                     return Err(CodegenError::UnsupportedType(format!(
                         "`{}` is {obj_ty}, which has no member `{}`",
                         Self::describe_lvalue(object),
@@ -6179,23 +5921,14 @@ impl<'ctx> Compiler<'ctx> {
                         Ok(None)
                     }
                 } else if let ExpressionKind::MemberAccess { object, member } = &callee.kind {
-                    // Method call: obj.Method(args)
-                    if let ExpressionKind::Identifier(ident) = &object.kind {
-                        if self.fb_instances.contains_key(&ident.name.to_uppercase()) {
-                            return self.compile_method_call(
-                                &ident.name,
-                                &member.name,
-                                args,
-                                function,
-                            );
-                        }
+                    // Method call: obj.Method(args), where `obj` is any addressable
+                    // FB/CLASS instance — including one held in a STRUCT field.
+                    if self.fb_layout_of(object).is_some() {
+                        return self.compile_method_call(object, &member.name, args, function);
                     }
-                    // An instance reached through a chain: `n := a[1].Bump(5);`
-                    if let Some(result) =
-                        self.compile_indirect_method_call(object, &member.name, args, function)?
-                    {
-                        return Ok(result);
-                    }
+                    // `fb_layout_of` above resolves the instance by type from any
+                    // addressable expression — `a[1].Bump(5)`, `s.parts[2].Reset()` —
+                    // so there is no separate indirect path to fall through to.
                     Ok(None)
                 } else {
                     Ok(None)
@@ -6240,61 +5973,10 @@ impl<'ctx> Compiler<'ctx> {
                     .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                 Ok(Some(val))
             }
-            ExpressionKind::MemberAccess { object, member } => {
-                if let ExpressionKind::Identifier(ident) = &object.kind {
-                    // Check if this is an FB instance field access
-                    if let Some(info) = self.fb_instances.get(&ident.name.to_uppercase()).cloned() {
-                        let parent_struct_type = self.current_struct_type.ok_or_else(|| {
-                            CodegenError::LlvmError("no parent struct type".into())
-                        })?;
-                        let parent_state_ptr = self.current_state_ptr.ok_or_else(|| {
-                            CodegenError::LlvmError("no parent state pointer".into())
-                        })?;
-                        let fb_ptr = self
-                            .builder
-                            .build_struct_gep(
-                                parent_struct_type,
-                                parent_state_ptr,
-                                info.field_index,
-                                &format!("{}_fb", ident.name),
-                            )
-                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-
-                        let field_idx = info
-                            .fields
-                            .iter()
-                            .position(|(name, _)| name.eq_ignore_ascii_case(&member.name))
-                            .ok_or_else(|| {
-                                CodegenError::UndefinedVariable(format!(
-                                    "{}.{}",
-                                    ident.name, member.name
-                                ))
-                            })?;
-                        let field_ty = &info.fields[field_idx].1;
-                        let field_llvm_ty = self.iec_to_llvm_type(field_ty);
-                        let field_ptr = self
-                            .builder
-                            .build_struct_gep(
-                                info.struct_type,
-                                fb_ptr,
-                                field_idx as u32,
-                                &member.name,
-                            )
-                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                        let val = self
-                            .builder
-                            .build_load(
-                                field_llvm_ty,
-                                field_ptr,
-                                &format!("{}.{}", ident.name, member.name),
-                            )
-                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                        return Ok(Some(val));
-                    }
-                }
-                // STRUCT field at any depth. The field's type comes from the same
-                // walk the lvalue path uses, so `o := s.i.v;` loads instead of
-                // silently producing nothing.
+            ExpressionKind::MemberAccess { member, .. } => {
+                // STRUCT or FB-instance field at any depth. The field's type comes from
+                // the same walk the lvalue path uses, so `o := s.i.v;` and
+                // `n := x.f.o;` load instead of silently producing nothing.
                 let Some(field_ty) = self.lvalue_iec_type(expr) else {
                     return Ok(None);
                 };
