@@ -215,19 +215,21 @@ plcc_st-f0d3eb6   38.6 GiB     (cargo test binary for plcc-st)
 plcc_base_review  89.7 GiB     (probe binary)
 ```
 
-Use `bin/cap`, which puts the command in its own cgroup so a runaway is killed alone
-instead of taking the machine with it:
+Use `bin/cap`, a two-line `ulimit -v` wrapper, so a runaway hits MemoryError and dies
+alone instead of taking the machine with it:
 
 ```bash
 bin/cap cargo test --workspace          # 8 GiB default
-CAP=16G bin/cap cargo build --release
+CAP_GB=16 bin/cap cargo build --release
 ```
 
-If `bin/` is missing (it is gitignored), the wrapper is one line:
+If `bin/` is missing (it is gitignored), it is just:
 
 ```bash
-systemd-run --user --scope --quiet -p MemoryMax=8G -p MemorySwapMax=0 -- "$@"
+ulimit -v $(( 8 * 1024 * 1024 )) && exec "$@"
 ```
+
+Do NOT use systemd-run, cgroups, or anything that touches system state for this.
 
 Two specific things that blow up, and must be capped:
 
