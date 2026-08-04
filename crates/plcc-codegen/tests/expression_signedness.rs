@@ -278,3 +278,83 @@ fn shifts_and_rotates_are_logical_on_any_bit() {
     assert_eq!(r[10], 0xC000, "ROR(WORD 16#8001, 1)");
     assert_eq!(r[11], 0x08, "SHR(BYTE 16#81, 4)");
 }
+// ---------------------------------------------------------------------------
+// FOR predicate signedness, and a step held in a variable
+// ---------------------------------------------------------------------------
+
+const FORP: &str = r#"
+PROGRAM FORP
+VAR
+    r : ARRAY[0..6] OF LINT;
+    n  : LINT;
+    i  : BYTE;
+    lim : BYTE := 200;
+    k  : USINT;
+    ulim : USINT := 200;
+    j : INT;
+    down : INT := -1;
+    down50 : INT := -50;
+    up2 : INT := 2;
+END_VAR
+    (* the control variable crosses its type's signed range: SLE reads 200 as
+       -56, so 100 <= 200 came out false and the loop never ran *)
+    n := 0;
+    FOR i := 100 TO lim DO
+        n := n + 1;
+    END_FOR;
+    r[0] := n;
+
+    n := 0;
+    FOR k := 100 TO ulim DO
+        n := n + 1;
+    END_FOR;
+    r[1] := n;
+
+    (* a negative step held in a variable: nothing syntactic says it is negative *)
+    n := 0;
+    FOR j := 5 TO 1 BY down DO
+        n := n + 1;
+    END_FOR;
+    r[2] := n;
+
+    (* a positive step held in a variable still ascends *)
+    n := 0;
+    FOR j := 1 TO 10 BY up2 DO
+        n := n + 1;
+    END_FOR;
+    r[3] := n;
+
+    (* both at once: unsigned control variable, negative variable step *)
+    n := 0;
+    FOR i := 200 TO 100 BY down50 DO
+        n := n + 1;
+    END_FOR;
+    r[4] := n;
+
+    (* the plain cases must not regress *)
+    n := 0;
+    FOR j := 1 TO 3 DO
+        n := n + 1;
+    END_FOR;
+    r[5] := n;
+
+    n := 0;
+    FOR j := 5 TO 1 BY -1 DO
+        n := n + 1;
+    END_FOR;
+    r[6] := n;
+END_PROGRAM
+"#;
+
+#[test]
+fn for_loop_predicate_and_variable_step() {
+    let state = jit_scan(FORP, "forp");
+    let r = read_lints(&state, 0, 7);
+    assert_eq!(r[0], 101, "FOR i:BYTE := 100 TO 200");
+    assert_eq!(r[1], 101, "FOR k:USINT := 100 TO 200");
+    assert_eq!(r[2], 5, "FOR j := 5 TO 1 BY down, down:INT := -1");
+    assert_eq!(r[3], 5, "FOR j := 1 TO 10 BY up2, up2:INT := 2");
+    assert_eq!(r[4], 3, "FOR i:BYTE := 200 TO 100 BY down50");
+    assert_eq!(r[5], 3, "FOR j := 1 TO 3");
+    assert_eq!(r[6], 5, "FOR j := 5 TO 1 BY -1");
+}

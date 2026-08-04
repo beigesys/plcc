@@ -32,6 +32,16 @@ enum Signedness {
     Adaptive,
 }
 
+/// Which way a FOR loop's control variable walks.
+///
+/// `Runtime` carries an i1 that is true when the step is negative — the only honest
+/// answer for `BY st` where `st` is a variable.
+enum StepDir<'ctx> {
+    Up,
+    Down,
+    Runtime(inkwell::values::IntValue<'ctx>),
+}
+
 /// Parse a TIME literal string (e.g., "T#100ms", "T#1s500ms", "T#1h30m") into nanoseconds.
 fn parse_time_literal_ns(s: &str) -> i64 {
     let s = s.trim();
@@ -3197,6 +3207,22 @@ impl<'ctx> Compiler<'ctx> {
         )
     }
 
+    /// The value of an expression that is a compile-time integer constant, if it is
+    /// one. Only literals and negated literals — enough to keep the common
+    /// `BY 2` / `BY -1` loops branch-free, with everything else settled at run time.
+    fn const_int_of(expr: &Expression) -> Option<i128> {
+        match &expr.kind {
+            ExpressionKind::IntegerLiteral(v) => Some(*v),
+            ExpressionKind::Parenthesized(inner)
+            | ExpressionKind::TypedLiteral { value: inner, .. } => Self::const_int_of(inner),
+            ExpressionKind::UnaryOp {
+                op: UnaryOp::Neg,
+                operand,
+            } => Self::const_int_of(operand).and_then(i128::checked_neg),
+            _ => None,
+        }
+    }
+
     /// Signedness of one operand of a binary operator.
     fn signedness_of(ty: Option<&IecType>) -> Signedness {
         match ty {
@@ -4839,6 +4865,47 @@ impl<'ctx> Compiler<'ctx> {
             .build_store(var_ptr, from_val)
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
 
+        let llvm_ty = self.iec_to_llvm_type(&var_ty);
+
+        // The step is evaluated once, before the loop, for two reasons. IEC 61131-3
+        // says so — BY is not re-read per iteration. And the loop condition needs it:
+        // the direction of the comparison depends on the step's sign, and a step held
+        // in a variable only has a sign at run time.
+        let (step, step_ty) = match by {
+            Some(by_expr) => {
+                let val = self
+                    .compile_expression(by_expr, function)?
+                    .ok_or_else(|| CodegenError::LlvmError("failed to compile step".into()))?;
+                (val.into_int_value(), self.rvalue_iec_type(by_expr))
+            }
+            None => (
+                llvm_ty.into_int_type().const_int(1, false),
+                Some(var_ty.clone()),
+            ),
+        };
+
+        // Which way the control variable walks. `BY -1` and `BY 10` are settled here;
+        // `BY st` with `st : INT` is not, and used to be treated as ascending because
+        // the check was syntactic — a literal `< 0` or a unary minus. `FOR i := 5 TO 1
+        // BY st` with `st := -1` then compared with SLE and ran zero iterations.
+        let step_dir = match by {
+            // An ANY_BIT or ANY_UNSIGNED step cannot be negative, whatever it holds.
+            _ if step_ty.as_ref().is_some_and(Self::widens_unsigned) => StepDir::Up,
+            None => StepDir::Up,
+            Some(by_expr) => match Self::const_int_of(by_expr) {
+                Some(v) if v < 0 => StepDir::Down,
+                Some(_) => StepDir::Up,
+                None => {
+                    let zero = step.get_type().const_zero();
+                    let neg = self
+                        .builder
+                        .build_int_compare(IntPredicate::SLT, step, zero, "step_neg")
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    StepDir::Runtime(neg)
+                }
+            },
+        };
+
         let loop_bb = self.context.append_basic_block(function, "for_loop");
         let body_bb = self.context.append_basic_block(function, "for_body");
         let end_bb = self.context.append_basic_block(function, "for_end");
@@ -4853,42 +4920,50 @@ impl<'ctx> Compiler<'ctx> {
 
         // Loop condition
         self.builder.position_at_end(loop_bb);
-        let llvm_ty = self.iec_to_llvm_type(&var_ty);
         let cur_val = self
             .builder
             .build_load(llvm_ty, var_ptr, "cur")
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-        // The bound widens by *its* signedness, not the control variable's.
-        let (cur_i, to_i) = self.match_int_widths_typed(
+        // The bound widens by *its* signedness, not the control variable's, and the
+        // predicate follows the pair's signedness: an unsigned control variable
+        // holding a value above its signed range compared wrongly with SLE, so
+        // `FOR i := 100 TO lim` with `i, lim : BYTE` and `lim := 200` ran no
+        // iterations at all.
+        let (cur_i, to_i, unsigned) = self.prepare_int_operands(
             cur_val.into_int_value(),
             Some(&var_ty),
             to_val.into_int_value(),
             to_ty.as_ref(),
         )?;
-        // Determine loop direction: if BY is negative, compare with SGE instead of SLE
-        let step_is_negative = if let Some(by_expr) = by {
-            if let ExpressionKind::UnaryOp {
-                op: UnaryOp::Neg, ..
-            } = &by_expr.kind
-            {
-                true
-            } else if let ExpressionKind::IntegerLiteral(v) = &by_expr.kind {
-                *v < 0
-            } else {
-                false
+        let (le, ge) = if unsigned {
+            (IntPredicate::ULE, IntPredicate::UGE)
+        } else {
+            (IntPredicate::SLE, IntPredicate::SGE)
+        };
+        let cond = match step_dir {
+            StepDir::Up => self
+                .builder
+                .build_int_compare(le, cur_i, to_i, "for_cond")
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?,
+            StepDir::Down => self
+                .builder
+                .build_int_compare(ge, cur_i, to_i, "for_cond")
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?,
+            StepDir::Runtime(neg) => {
+                let up = self
+                    .builder
+                    .build_int_compare(le, cur_i, to_i, "for_cond_up")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                let down = self
+                    .builder
+                    .build_int_compare(ge, cur_i, to_i, "for_cond_down")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                self.builder
+                    .build_select(neg, down, up, "for_cond")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                    .into_int_value()
             }
-        } else {
-            false
         };
-        let predicate = if step_is_negative {
-            IntPredicate::SGE
-        } else {
-            IntPredicate::SLE
-        };
-        let cond = self
-            .builder
-            .build_int_compare(predicate, cur_i, to_i, "for_cond")
-            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
         self.builder
             .build_conditional_branch(cond, body_bb, end_bb)
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
@@ -4904,28 +4979,12 @@ impl<'ctx> Compiler<'ctx> {
             .builder
             .build_load(llvm_ty, var_ptr, "cur2")
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-        let (step, step_ty) = if let Some(by_expr) = by {
-            let val = self
-                .compile_expression(by_expr, function)?
-                .ok_or_else(|| CodegenError::LlvmError("failed to compile step".into()))?;
-            (val, self.rvalue_iec_type(by_expr))
-        } else {
-            // Default step = 1 with same type as loop variable
-            (
-                cur_val2
-                    .into_int_value()
-                    .get_type()
-                    .const_int(1, false)
-                    .into(),
-                Some(var_ty.clone()),
-            )
-        };
         // Same rule for the step: `BY st` with `st : BYTE := 16#C8` is +200, and
         // sign-extending it to -56 walked the control variable downward forever.
         let (cur_i, step_i) = self.match_int_widths_typed(
             cur_val2.into_int_value(),
             Some(&var_ty),
-            step.into_int_value(),
+            step,
             step_ty.as_ref(),
         )?;
         let next_val = self
