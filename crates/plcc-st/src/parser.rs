@@ -151,6 +151,19 @@ impl<'s> Parser<'s> {
         let mut declarations = Vec::new();
 
         while self.ts.peek().is_some() {
+            // Guard against a non-advancing iteration.
+            //
+            // The loop only skips a token when parse_declaration returns None, so any
+            // path that returns Some *without consuming input* spins forever pushing
+            // declarations into an unbounded Vec. That is not a hypothetical failure
+            // mode: a parser test binary in this repo reached 38.6 GiB resident and
+            // OOM-killed the host. A lexer regex that can match the empty string
+            // produces the same shape, since logos will emit zero-length tokens
+            // indefinitely.
+            //
+            // Nothing should hit this. If something does, stopping with a diagnostic
+            // beats consuming every byte of memory on the machine.
+            let pos_before = self.ts.pos;
             let parsed = self.parse_declaration();
             // Drain `pending` on both arms and in declaration order. A construct that
             // yields several declarations may also fail to produce a first one — a
@@ -167,6 +180,15 @@ impl<'s> Parser<'s> {
                 if self.ts.advance().is_none() {
                     break;
                 }
+            } else if self.ts.pos == pos_before {
+                let span = self.ts.peek_span();
+                self.errors.push(ParseError::General {
+                    message: "parser made no progress here; stopping so it cannot loop \
+                              forever (this is a compiler bug — please report it)"
+                        .to_string(),
+                    span: span.into(),
+                });
+                break;
             }
         }
 
