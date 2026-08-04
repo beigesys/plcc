@@ -90,18 +90,18 @@ Complete IEC 61131-3:2013 (3rd edition) Structured Text:
 |---------|--------|
 | PROGRAM, FUNCTION, FUNCTION_BLOCK | Full |
 | CLASS, INTERFACE, METHOD (OOP) | Full |
-| VAR, VAR_INPUT, VAR_OUTPUT, VAR_IN_OUT, VAR_TEMP, VAR_GLOBAL | Full |
+| VAR, VAR_INPUT, VAR_OUTPUT, VAR_IN_OUT (by reference), VAR_TEMP, VAR_GLOBAL | Full |
 | VAR CONSTANT, VAR RETAIN | Full |
 | All elementary types (BOOL through LREAL, STRING, WSTRING, TIME, DATE) | Full |
 | ARRAY (1D, multi-dimensional, negative and non-zero lower bounds) | Full |
 | ARRAY aggregate initializers (`[10, 20, 30]`, `[3(0)]`) | Full |
-| STRUCT, ENUM, UNION, subranges, alias types | Full |
+| STRUCT (incl. field default initializers), ENUM, UNION, subranges, alias types | Full |
 | IF/ELSIF/ELSE, CASE, FOR/TO/BY, WHILE, REPEAT/UNTIL | Full |
 | EXIT, CONTINUE, RETURN | Full |
 | CONFIGURATION, RESOURCE, TASK | Parsed |
 | Direct representation (%I, %Q, %M) | Parsed |
 | Typed literals (INT#5, REAL#3.14) | Full |
-| POINTER TO, dereference (^) | Full |
+| POINTER TO, dereference (^) | Reads only — `pt^ := x` is not yet an lvalue |
 | Pragmas, block/line comments | Full |
 
 ## Standard Library
@@ -224,7 +224,7 @@ sudo apt install llvm-21-dev
 # Build
 cargo build --release
 
-# Run tests (328 tests)
+# Run tests (560 tests)
 cargo test
 
 # Run the Linux simulator example
@@ -233,7 +233,7 @@ cargo run --example linux_sim -p plcc-hal
 
 ## Test Suite
 
-328 tests across all crates, all passing:
+560 tests across all crates, all passing:
 
 | Suite | Tests | What's Verified |
 |-------|-------|-----------------|
