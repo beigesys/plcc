@@ -157,6 +157,41 @@ Any LLVM target triple. Tested:
 - `wasm32-unknown-unknown` -- WebAssembly
 - `riscv32-unknown-none-elf` -- RISC-V
 
+### CPU and features
+
+A triple underdetermines codegen. `thumbv7em-none-eabihf` says floats are passed
+in VFP registers but not that the part has a VFP unit, so plcc picks a
+representative CPU per triple -- `cortex-m4` for `thumbv7em`, `cortex-m33` for
+`thumbv8m.main`, and LLVM's default elsewhere. Override either half:
+
+```
+plcc compile prog.st -o prog.o --target thumbv7em-none-eabihf --cpu cortex-m7
+plcc compile prog.st -o prog.o --target riscv32-unknown-none-elf --features +f,+m
+```
+
+A hard-float triple paired with an FPU-less CPU is rejected rather than compiled:
+it links cleanly and computes garbage, because the arithmetic falls back to
+soft-float libcalls that pass floats in core registers while everything else
+built for that triple uses `s0`-`s15`.
+
+### Code size
+
+Each function is emitted into its own ELF section, so `--gc-sections` drops the
+standard function blocks a program never instantiates. Generated code is also
+marked `nounwind` -- ST cannot throw, and without it the ARM backend emits unwind
+tables referencing `__aeabi_unwind_cpp_pr0`, which pulls the whole C++ unwinder
+out of libgcc.
+
+`tests/fixtures/programs/water_treatment.st` (188 lines, 3 function blocks, 8
+instances) for `thumbv7em-none-eabihf`, linked with `--gc-sections`:
+
+| | `.text` | `.bss` | undefined symbols |
+|---|---|---|---|
+| linked | 1062 B | 0 | 1 (`plcc_monotonic_ns`) |
+
+State lives in a caller-owned struct -- 136 bytes for that program, with no
+static storage and no init table to run at boot.
+
 ## Hardware Abstraction Layer
 
 The `plcc-hal` crate provides traits for PLC platform integrators:

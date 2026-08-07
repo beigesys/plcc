@@ -36,6 +36,13 @@ enum Commands {
         /// Target triple (e.g. x86_64-unknown-linux-gnu, wasm32-unknown-unknown)
         #[arg(long, default_value = "x86_64-unknown-linux-gnu")]
         target: String,
+        /// CPU model to generate code for (e.g. cortex-m7). Defaults to a
+        /// representative part for the triple.
+        #[arg(long)]
+        cpu: Option<String>,
+        /// LLVM feature string (e.g. "+vfp4d16sp,-fp64" or "+f,+d" on RISC-V)
+        #[arg(long)]
+        features: Option<String>,
         /// Standard function block library to compile alongside the program
         #[arg(long, value_enum, default_value_t = StdlibOpt::BundledSt)]
         stdlib: StdlibOpt,
@@ -226,6 +233,8 @@ fn main() -> Result<()> {
             inputs,
             output,
             target,
+            cpu,
+            features,
             stdlib,
         } => {
             if inputs.is_empty() {
@@ -249,8 +258,15 @@ fn main() -> Result<()> {
             } else if out_str.ends_with(".bc") {
                 compiler.emit_bitcode(&output);
             } else {
+                let mut spec = plcc_codegen::TargetSpec::new(&target);
+                if let Some(cpu) = &cpu {
+                    spec = spec.with_cpu(cpu);
+                }
+                if let Some(features) = &features {
+                    spec = spec.with_features(features);
+                }
                 compiler
-                    .emit_object(&output, &target)
+                    .emit_object_for(&output, &spec)
                     .map_err(|e| miette::miette!("{e}"))?;
             }
 

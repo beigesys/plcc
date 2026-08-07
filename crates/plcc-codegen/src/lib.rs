@@ -3,4 +3,4 @@
 
 pub mod compiler;
 
-pub use compiler::Compiler;
+pub use compiler::{Compiler, TargetSpec};

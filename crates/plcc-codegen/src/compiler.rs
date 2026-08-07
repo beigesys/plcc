@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::intrinsics::Intrinsic;
@@ -6643,18 +6644,83 @@ impl<'ctx> Compiler<'ctx> {
         self.module.print_to_string().to_string()
     }
 
-    /// Write object file to disk.
+    /// Give every defined function its own ELF section, so the linker's
+    /// `--gc-sections` can drop the ones the program never calls.
+    ///
+    /// The standard function block library is compiled into the module whole —
+    /// a program that only uses TON still gets code for CTUD, RS, F_TRIG and the
+    /// rest. LLVM emits one monolithic `.text` by default, which leaves the
+    /// linker nothing to garbage-collect at less than whole-object granularity.
+    /// Splitting functions apart is what `clang -ffunction-sections` does; the
+    /// LLVM C API does not expose that flag, so set the section per function.
+    ///
+    /// Only ELF needs this. Mach-O dead-strips via `.subsections_via_symbols`,
+    /// wasm-ld collects unreachable functions on its own, and COFF relies on
+    /// COMDAT that an explicit section name would defeat rather than enable.
+    fn apply_function_sections(&self, triple: &str) {
+        if !triple_uses_elf(triple) {
+            return;
+        }
+
+        let mut func = self.module.get_first_function();
+        while let Some(f) = func {
+            func = f.get_next_function();
+
+            // Declarations have no body to place, and a function that already
+            // asked for a specific section keeps it.
+            if f.count_basic_blocks() == 0 || f.get_section().is_some() {
+                continue;
+            }
+            if let Ok(name) = f.get_name().to_str() {
+                f.set_section(Some(&format!(".text.{name}")));
+            }
+        }
+    }
+
+    /// Mark every defined function `nounwind`.
+    ///
+    /// Structured Text has no exceptions, so no plcc-generated function can ever
+    /// unwind. Without the attribute the ARM backend emits `.ARM.exidx` unwind
+    /// tables and a reference to `__aeabi_unwind_cpp_pr0`, which drags the C++
+    /// personality routine out of libgcc into a program that cannot throw.
+    fn apply_nounwind(&self) {
+        let kind = Attribute::get_named_enum_kind_id("nounwind");
+        if kind == 0 {
+            return;
+        }
+        let nounwind = self.context.create_enum_attribute(kind, 0);
+
+        let mut func = self.module.get_first_function();
+        while let Some(f) = func {
+            func = f.get_next_function();
+            if f.count_basic_blocks() > 0 {
+                f.add_attribute(AttributeLoc::Function, nounwind);
+            }
+        }
+    }
+
+    /// Write object file to disk for the host's default target settings.
     pub fn emit_object(&self, path: &Path, triple: &str) -> Result<(), CodegenError> {
+        self.emit_object_for(path, &TargetSpec::new(triple))
+    }
+
+    /// Write object file to disk for an explicit CPU and feature set.
+    pub fn emit_object_for(&self, path: &Path, spec: &TargetSpec) -> Result<(), CodegenError> {
+        spec.validate()?;
+
         Target::initialize_all(&InitializationConfig::default());
 
-        let target_triple = TargetTriple::create(triple);
+        self.apply_function_sections(&spec.triple);
+        self.apply_nounwind();
+
+        let target_triple = TargetTriple::create(&spec.triple);
         let target = Target::from_triple(&target_triple)
             .map_err(|e| CodegenError::TargetError(e.to_string()))?;
         let machine = target
             .create_target_machine(
                 &target_triple,
-                "generic",
-                "",
+                &spec.cpu,
+                &spec.features,
                 OptimizationLevel::Default,
                 RelocMode::Default,
                 CodeModel::Default,
@@ -6672,4 +6738,112 @@ impl<'ctx> Compiler<'ctx> {
     pub fn emit_bitcode(&self, path: &Path) -> bool {
         self.module.write_bitcode_to_path(path)
     }
+}
+
+/// What LLVM needs to know about the target beyond its triple.
+///
+/// The triple alone underdetermines codegen. `thumbv7em-none-eabihf` says floats
+/// are passed in VFP registers but not that the part has a VFP unit, and LLVM's
+/// `generic` CPU assumes it does not — so every REAL operation became a call to
+/// `__mulsf3` in libgcc, passing arguments under the *soft*-float ABI while the
+/// triple promised hard. Naming a real CPU is what settles it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetSpec {
+    pub triple: String,
+    /// LLVM CPU model, e.g. `cortex-m4`. Empty means LLVM's own default.
+    pub cpu: String,
+    /// LLVM feature string, e.g. `+vfp4d16sp,-fp64`. Empty means the CPU's default set.
+    pub features: String,
+}
+
+impl TargetSpec {
+    /// Derive the default CPU and features for a triple.
+    pub fn new(triple: &str) -> Self {
+        TargetSpec {
+            triple: triple.to_string(),
+            cpu: default_cpu_for_triple(triple).to_string(),
+            features: String::new(),
+        }
+    }
+
+    /// Override the CPU model. An empty string restores LLVM's default.
+    pub fn with_cpu(mut self, cpu: &str) -> Self {
+        self.cpu = cpu.to_string();
+        self
+    }
+
+    /// Override the feature string.
+    pub fn with_features(mut self, features: &str) -> Self {
+        self.features = features.to_string();
+        self
+    }
+
+    /// Reject combinations that would silently produce ABI-incompatible code.
+    ///
+    /// A hard-float triple with an FPU-less CPU is the dangerous case: LLVM
+    /// lowers the arithmetic to soft-float libcalls that pass floats in core
+    /// registers, while everything else built for that triple passes them in
+    /// `s0`-`s15`. Nothing errors at link time; the values just arrive wrong.
+    pub fn validate(&self) -> Result<(), CodegenError> {
+        let hard_float = self.triple.to_ascii_lowercase().contains("eabihf");
+        let fpu_less = FPU_LESS_CPUS.contains(&self.cpu.as_str());
+        let features_add_fp = self.features.contains("+vfp") || self.features.contains("+fp");
+
+        if hard_float && fpu_less && !features_add_fp {
+            return Err(CodegenError::TargetError(format!(
+                "target `{}` requests the hard-float ABI but CPU `{}` has no FPU; \
+                 floats would be passed in core registers instead of VFP registers. \
+                 Pass --cpu with an FPU-equipped part, or use a soft-float triple \
+                 ending in `-eabi`.",
+                self.triple, self.cpu
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Cortex-M parts with no floating-point unit, used to catch hard-float triples
+/// paired with a CPU that cannot honour them.
+const FPU_LESS_CPUS: &[&str] = &[
+    "cortex-m0",
+    "cortex-m0plus",
+    "cortex-m1",
+    "cortex-m3",
+    "cortex-m23",
+];
+
+/// Pick a default CPU model for a triple.
+///
+/// Only the Cortex-M family is listed. Those are the targets where LLVM's
+/// `generic` CPU is actively wrong — it assumes no FPU, so `thumbv7em` and
+/// `thumbv8m.main` fall back to soft-float libcalls even on parts that have
+/// hardware floating point. Everywhere else (`x86_64`, `aarch64`, `armv7`,
+/// `wasm32`) `generic` already implies an FPU, so leave LLVM's default alone
+/// rather than pinning a CPU and narrowing what the output runs on.
+fn default_cpu_for_triple(triple: &str) -> &'static str {
+    let t = triple.to_ascii_lowercase();
+    match t.split('-').next().unwrap_or("") {
+        "thumbv6m" => "cortex-m0",
+        "thumbv7m" => "cortex-m3",
+        "thumbv7em" => "cortex-m4",
+        "thumbv8m.base" => "cortex-m23",
+        "thumbv8m.main" => "cortex-m33",
+        _ => "generic",
+    }
+}
+
+/// Whether a target triple produces ELF objects.
+///
+/// Judged by exclusion: the three non-ELF object formats LLVM emits are Mach-O
+/// for Apple platforms, COFF for Windows, and wasm's own format. Bare-metal
+/// triples like `thumbv7em-none-eabihf` name no OS at all and are ELF, so a
+/// whitelist of known-ELF systems would miss exactly the targets that care most
+/// about code size.
+fn triple_uses_elf(triple: &str) -> bool {
+    let t = triple.to_ascii_lowercase();
+    let non_elf = [
+        "wasm", "apple", "darwin", "macos", "ios", "tvos", "watchos", "windows", "msvc", "mingw",
+        "cygwin",
+    ];
+    !non_elf.iter().any(|m| t.contains(m))
 }
