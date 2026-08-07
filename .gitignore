@@ -8,3 +8,6 @@ tests/external
 
 # Agent git worktrees — each is a full second copy of the workspace
 .claude/worktrees/
+
+# Firmware build output
+examples/*/build/
