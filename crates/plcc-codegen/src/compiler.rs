@@ -6713,7 +6713,18 @@ impl<'ctx> Compiler<'ctx> {
         self.apply_function_sections(&spec.triple);
         self.apply_nounwind();
 
-        let target_triple = TargetTriple::create(&spec.triple);
+        // Normalize before handing the triple to LLVM.
+        //
+        // `thumbv7em-none-eabihf` has only three components, so an unnormalized
+        // parse files `eabihf` as the OS and leaves the environment unknown —
+        // which makes `isTargetHardFloat()` false. The result still selected VFP
+        // instructions (that follows from the CPU) but emitted no
+        // `Tag_ABI_VFP_args`, so floats were computed in VFP registers and
+        // *passed* in core registers. GNU ld rejects linking such an object
+        // against a hard-float one; a linker that did not check would have
+        // produced a binary that silently reads arguments from the wrong place.
+        let target_triple =
+            TargetMachine::normalize_triple(&TargetTriple::create(&spec.triple));
         let target = Target::from_triple(&target_triple)
             .map_err(|e| CodegenError::TargetError(e.to_string()))?;
         let machine = target

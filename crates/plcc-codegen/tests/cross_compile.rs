@@ -214,6 +214,127 @@ fn hard_float_target_avoids_soft_float_libcalls() {
     );
 }
 
+fn read_uleb128(data: &[u8], pos: &mut usize) -> u64 {
+    let mut value = 0u64;
+    let mut shift = 0;
+    while *pos < data.len() {
+        let byte = data[*pos];
+        *pos += 1;
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+    }
+    value
+}
+
+fn skip_ntbs(data: &[u8], pos: &mut usize) {
+    while *pos < data.len() && data[*pos] != 0 {
+        *pos += 1;
+    }
+    *pos += 1;
+}
+
+/// Read `Tag_ABI_VFP_args` (tag 28) from an object's `.ARM.attributes`.
+///
+/// `None` means the object never declared a float ABI, which is the bug this
+/// guards: the ELF header's hard-float bit is written by the *linker*, so at
+/// object level this attribute is the only ground truth. GCC's own objects also
+/// carry `e_flags = 0x5000000` before linking.
+///
+/// Tags take ULEB128 values except 4, 5, 65 and 67, which are strings, and 32,
+/// which is a ULEB128 followed by a string. Tags 1-3 open a scope and are
+/// followed by a `u32` size.
+fn arm_abi_vfp_args(bytes: &[u8]) -> Option<u64> {
+    let file = object::File::parse(bytes).ok()?;
+    let section = file.section_by_name(".ARM.attributes")?;
+    let data = section.data().ok()?;
+
+    if data.first() != Some(&b'A') {
+        return None;
+    }
+
+    let mut pos = 1;
+    while pos + 4 <= data.len() {
+        let len = u32::from_le_bytes(data[pos..pos + 4].try_into().ok()?) as usize;
+        if len < 4 || pos + len > data.len() {
+            return None;
+        }
+        let sub = &data[pos..pos + len];
+        pos += len;
+
+        let mut p = 4;
+        let vendor_start = p;
+        skip_ntbs(sub, &mut p);
+        if &sub[vendor_start..p.saturating_sub(1)] != b"aeabi" {
+            continue;
+        }
+
+        while p < sub.len() {
+            let tag = read_uleb128(sub, &mut p);
+            match tag {
+                // Scope tags: a u32 size follows. Tag_File's attributes come
+                // straight after; Tag_Section and Tag_Symbol first list indices.
+                1 => p += 4,
+                2 | 3 => {
+                    p += 4;
+                    while p < sub.len() && read_uleb128(sub, &mut p) != 0 {}
+                }
+                4 | 5 | 65 | 67 => skip_ntbs(sub, &mut p),
+                32 => {
+                    read_uleb128(sub, &mut p);
+                    skip_ntbs(sub, &mut p);
+                }
+                28 => return Some(read_uleb128(sub, &mut p)),
+                _ => {
+                    read_uleb128(sub, &mut p);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Selecting VFP instructions is not the same as declaring the hard-float ABI.
+///
+/// `TargetTriple::create` does not normalize, so `thumbv7em-none-eabihf` parsed
+/// `eabihf` as the OS and left the environment unknown. Instruction selection
+/// still used the FPU — that follows from the CPU — but the object carried no
+/// `Tag_ABI_VFP_args`, meaning floats were computed in VFP registers and passed
+/// in core ones. GNU ld refuses to link that against hard-float code; a linker
+/// that did not check would have produced a binary reading arguments from the
+/// wrong registers, with nothing failing until the numbers came out wrong.
+#[test]
+fn hard_float_target_declares_hard_float_abi() {
+    // Tag_ABI_VFP_args: 0 = core registers (soft), 1 = VFP registers (hard).
+    const VFP_REGISTERS: u64 = 1;
+
+    let spec = TargetSpec::new("thumbv7em-none-eabihf");
+    let bytes = object_bytes(FLOAT_MATH_ST, &spec, "abi_tag");
+
+    assert_eq!(
+        arm_abi_vfp_args(&bytes),
+        Some(VFP_REGISTERS),
+        "hard-float triple produced an object that does not pass floats in VFP \
+         registers; it will not link against hard-float code"
+    );
+}
+
+/// The soft-float triple must stay soft — normalization should not make every
+/// ARM target hard-float.
+#[test]
+fn soft_float_target_does_not_claim_vfp_args() {
+    let spec = TargetSpec::new("thumbv7m-none-eabi");
+    let bytes = object_bytes(FLOAT_MATH_ST, &spec, "abi_tag_soft");
+
+    assert_ne!(
+        arm_abi_vfp_args(&bytes),
+        Some(1),
+        "soft-float triple claimed to pass floats in VFP registers"
+    );
+}
+
 /// Structured Text cannot throw, so nothing should reference the ARM EHABI
 /// personality routine. It pulls the whole C++ unwinder out of libgcc — around
 /// 5 KB of `__gnu_Unwind_*`, including WMMX register save/restore, into a
