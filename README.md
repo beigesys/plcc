@@ -100,8 +100,8 @@ Complete IEC 61131-3:2013 (3rd edition) Structured Text:
 | EXIT, CONTINUE, RETURN | Full |
 | CONFIGURATION, RESOURCE, TASK | Parsed |
 | Direct representation (%I, %Q, %M) | Parsed |
-| Typed literals (INT#5, REAL#3.14) | Full |
-| POINTER TO, dereference (^) | Reads only — `pt^ := x` is not yet an lvalue |
+| Typed literals (INT#5, REAL#3.14, BYTE#255) | Full |
+| POINTER TO, dereference (^) on either side of `:=`, ADR | Full — pointer arithmetic (`p + 1`) is not supported |
 | Pragmas, block/line comments | Full |
 
 ## Standard Library
@@ -114,9 +114,10 @@ Complete IEC 61131-3:2013 (3rd edition) Structured Text:
 | Rounding | TRUNC, FLOOR, CEIL, ROUND |
 | Selection | MIN, MAX, LIMIT, SEL |
 | Bit ops | SHL, SHR, ROL, ROR |
-| String | LEN, CONCAT, LEFT, RIGHT, MID, FIND |
+| String | LEN, CONCAT, LEFT, RIGHT, MID, FIND, REPLACE |
 | Time | ADD_TIME, SUB_TIME, MUL_TIME, DIV_TIME |
-| Type conversion | 40+ variants: INT_TO_REAL, REAL_TO_INT, BYTE_TO_WORD, BOOL_TO_DINT, etc. |
+| Type conversion | every `X_TO_Y` between a number and a bit string, plus DWORD_TO_TIME / TIME_TO_DWORD (a DWORD duration is milliseconds) |
+| Addresses | ADR |
 
 **10 standard function blocks**, per IEC 61131-3 section 2.5.2:
 
@@ -268,15 +269,20 @@ cargo run --example linux_sim -p plcc-hal
 
 ## Test Suite
 
-560 tests across all crates, all passing:
+588 tests across all crates, all passing:
 
 | Suite | Tests | What's Verified |
 |-------|-------|-----------------|
-| Parser (unit + fixtures + comprehensive) | 75 | Every grammar construct, error recovery, OSCAT corpus 98.6% |
-| Type checker | 22 | IEC type hierarchy, implicit conversions, negative tests |
-| Runtime (FBs + functions) | 64 | All 11 standard FBs, all math/selection/conversion functions |
-| Codegen (JIT execution) | 156 | Arithmetic, control flow, functions, FB instantiation, arrays, OOP, stdlib, IEC conformance, IR safety, cross-compile, real-world PLC patterns |
-| HAL (simulator) | 11 | Process image, clock, retain, diagnostics, scan cycle |
+| Parser (`plcc-st`) | 92 | Every grammar construct, error recovery, OSCAT corpus 559/559 |
+| Type checker (`plcc-hir`) | 24 | IEC type hierarchy, implicit conversions, negative tests |
+| Runtime contract (`plcc-runtime`) | 67 | All 11 standard FBs, all math/selection/conversion functions |
+| Codegen, JIT execution (`plcc-codegen`) | 379 | Arithmetic, control flow, functions, FB instantiation, arrays, OOP, pointers, stdlib, IEC conformance, IR safety, cross-compile, real-world PLC patterns |
+| HAL simulator (`plcc-hal`) | 11 | Process image, clock, retain, diagnostics, scan cycle |
+| Bundled stdlib (`plcc-stdlib`) | 3 | The ST prelude parses and compiles |
+| CLI (`plcc`) | 12 | Argument handling, target and stdlib options |
+
+The OSCAT corpus parses completely; **299 of its 559 files compile** one at a time —
+see [docs/oscat-conformance.md](docs/oscat-conformance.md) for what blocks the rest.
 
 Real-world PLC patterns verified end-to-end with JIT execution:
 - PID controllers

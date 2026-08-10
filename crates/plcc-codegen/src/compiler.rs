@@ -391,6 +391,28 @@ impl<'ctx> Compiler<'ctx> {
     ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
         let uname = name.to_uppercase();
 
+        // ADR(x) — the address of a variable. It is answered before the argument loop
+        // below, which evaluates each argument as a *value*: an ARRAY or STRUCT
+        // argument has no loadable value at all, and its address is exactly what the
+        // call asks for. Pairs with `p^` on either side of `:=`.
+        if uname == "ADR" {
+            if args.len() != 1 {
+                return Err(CodegenError::LlvmError(format!(
+                    "ADR expects 1 argument, got {}",
+                    args.len()
+                )));
+            }
+            let ptr = self
+                .compile_lvalue_with_fn(&args[0].value, function)?
+                .ok_or_else(|| {
+                    CodegenError::UnsupportedType(format!(
+                        "`{}` has no address, so ADR cannot be taken of it",
+                        Self::describe_lvalue(&args[0].value)
+                    ))
+                })?;
+            return Ok(Some(ptr.into()));
+        }
+
         // The arguments' static IEC types, for the builtins whose lowering depends on
         // signedness (the shift and rotate family).
         let arg_tys: Vec<Option<IecType>> = args
@@ -403,8 +425,15 @@ impl<'ctx> Compiler<'ctx> {
             if let Some(val) = self.compile_expression(&arg.value, function)? {
                 arg_vals.push(val);
             } else {
+                // Blame the argument, not the builtin. `failed to compile argument
+                // for MIN` reads as "MIN is unimplemented" — MIN is implemented, and
+                // an hour went into re-verifying that before the message was read as
+                // what it is: an argument that produced no value. A nested call fails
+                // as an `Err` from its own argument loop and propagates, so what
+                // reaches here is always the innermost cause.
                 return Err(CodegenError::LlvmError(format!(
-                    "failed to compile argument for {uname}"
+                    "in the call to {uname}: {}",
+                    self.explain_no_value(&arg.value)
                 )));
             }
         }
@@ -1230,6 +1259,81 @@ impl<'ctx> Compiler<'ctx> {
                 Ok(Some(result.into()))
             }
 
+            // --- DWORD <-> TIME ---
+            //
+            // TIME is i64 nanoseconds internally, but a duration held in a DWORD is
+            // milliseconds — that is what CODESYS means by the conversion and what
+            // OSCAT's code assumes, storing timeouts as raw ms in a DWORD and shifting
+            // them. Reinterpreting the word as nanoseconds instead would make every
+            // such duration a million times too short.
+            "DWORD_TO_TIME" | "TIME_TO_DWORD" => {
+                if arg_vals.len() != 1 {
+                    return Err(CodegenError::LlvmError(format!(
+                        "{uname} expects 1 argument"
+                    )));
+                }
+                let iv = arg_vals[0].into_int_value();
+                let i64_ty = self.context.i64_type();
+                let ns_per_ms = i64_ty.const_int(1_000_000, false);
+                if uname == "DWORD_TO_TIME" {
+                    // Unsigned: a DWORD is a bit string, and 16#FFFF_FFFF ms is a
+                    // 49-day timeout, not a negative one.
+                    let ms = self
+                        .builder
+                        .build_int_z_extend(iv, i64_ty, "ms")
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    let ns = self
+                        .builder
+                        .build_int_mul(ms, ns_per_ms, "dword_to_time")
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    Ok(Some(ns.into()))
+                } else {
+                    let ms = self
+                        .builder
+                        .build_int_signed_div(iv, ns_per_ms, "ms")
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    let truncated = self
+                        .builder
+                        .build_int_truncate(ms, self.context.i32_type(), "time_to_dword")
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    Ok(Some(truncated.into()))
+                }
+            }
+
+            // --- DWORD <-> REAL (numeric value, not bit pattern) ---
+            //
+            // IEC conversion between ANY_BIT and ANY_REAL carries the value across, so
+            // `DWORD_TO_REAL(16#10)` is 16.0. A bitcast would give 2.2e-44.
+            "DWORD_TO_REAL" => {
+                if arg_vals.len() != 1 {
+                    return Err(CodegenError::LlvmError(
+                        "DWORD_TO_REAL expects 1 argument".into(),
+                    ));
+                }
+                let iv = arg_vals[0].into_int_value();
+                let result = self
+                    .builder
+                    .build_unsigned_int_to_float(iv, self.context.f32_type(), "dword_to_real")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(Some(result.into()))
+            }
+            "REAL_TO_DWORD" => {
+                if arg_vals.len() != 1 {
+                    return Err(CodegenError::LlvmError(
+                        "REAL_TO_DWORD expects 1 argument".into(),
+                    ));
+                }
+                let fv = arg_vals[0].into_float_value();
+                // Unsigned, to match the destination's range: the rest of this table
+                // truncates toward zero rather than rounding, and REAL_TO_DWORD stays
+                // consistent with its siblings.
+                let result = self
+                    .builder
+                    .build_float_to_unsigned_int(fv, self.context.i32_type(), "real_to_dword")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(Some(result.into()))
+            }
+
             // --- Float to signed int ---
             "REAL_TO_LINT" | "LREAL_TO_INT" | "LREAL_TO_DINT" | "LREAL_TO_LINT" => {
                 if arg_vals.len() != 1 {
@@ -1340,7 +1444,7 @@ impl<'ctx> Compiler<'ctx> {
                         _ => Err(CodegenError::LlvmError("LEN: expected return value".into())),
                     }
                 } else {
-                    Ok(Some(self.context.i16_type().const_zero().into()))
+                    Err(Self::no_string_argument("LEN", "IN", &args[0].value))
                 }
             }
 
@@ -1367,7 +1471,17 @@ impl<'ctx> Compiler<'ctx> {
                         )),
                     }
                 } else {
-                    Ok(Some(self.context.i16_type().const_zero().into()))
+                    // Answering 0 here was a silent wrong answer: `FIND(s, 'abc')`
+                    // reported "not found" for a search that never ran.
+                    let bad = if self
+                        .compile_lvalue_with_fn(&args[0].value, function)?
+                        .is_none()
+                    {
+                        &args[0].value
+                    } else {
+                        &args[1].value
+                    };
+                    Err(Self::no_string_argument("FIND", "IN", bad))
                 }
             }
 
@@ -1449,13 +1563,111 @@ impl<'ctx> Compiler<'ctx> {
 
             // String functions that return STRING are handled as special cases
             // in compile_statement (Assignment), not here. CONCAT, LEFT, RIGHT, MID
-            // need a destination pointer which is only available at the assignment level.
-            "CONCAT" | "LEFT" | "RIGHT" | "MID" => {
+            // and REPLACE need a destination pointer which is only available at the
+            // assignment level.
+            "CONCAT" | "LEFT" | "RIGHT" | "MID" | "REPLACE" => {
                 // Return None here — handled in compile_string_assignment
                 Ok(None)
             }
 
-            _ => Ok(None),
+            // Every remaining `X_TO_Y` between a number and a bit string is the same
+            // width-and-signedness change, and enumerating them by hand is how
+            // `UINT_TO_INT` and `INT_TO_DWORD` came to be missing while their
+            // neighbours were present. The named arms above still win, because they
+            // are the ones that are *not* a plain reinterpretation — `DWORD_TO_TIME`
+            // scales, and answering it here would silently drop the factor.
+            //
+            // ANY_DATE is deliberately excluded: date and time-of-day literals still
+            // compile to a placeholder, so `DATE_TO_DWORD` would convert a zero and
+            // look like it worked.
+            other => {
+                let Some((from, to)) = other.split_once("_TO_") else {
+                    return Ok(None);
+                };
+                // A FUNCTION the program declares itself wins, exactly as it does
+                // against a bundled stdlib POU of the same name. OSCAT ships its own
+                // `DT_TO_DWORD`, and shadowing it here would be a silent substitution.
+                if self.module.get_function(&name.to_lowercase()).is_some() {
+                    return Ok(None);
+                }
+                let (Some(src), Some(dst)) = (
+                    self.type_registry.resolve(from),
+                    self.type_registry.resolve(to),
+                ) else {
+                    return Ok(None);
+                };
+                let numeric = |t: &IecType| t.is_any_num() || t.is_any_bit();
+                if !numeric(&src) || !numeric(&dst) {
+                    return Ok(None);
+                }
+                if arg_vals.len() != 1 {
+                    return Err(CodegenError::LlvmError(format!(
+                        "{uname} expects 1 argument"
+                    )));
+                }
+                // Signedness comes from the source when widening and from the
+                // destination when leaving or entering floating point — the two are
+                // different questions, and `coerce_value` only answers the first.
+                let src_unsigned = Self::widens_unsigned(&src);
+                let dst_unsigned = Self::widens_unsigned(&dst);
+                let name = uname.to_lowercase();
+                let out: BasicValueEnum<'ctx> = match (arg_vals[0], self.iec_to_llvm_type(&dst)) {
+                    (BasicValueEnum::IntValue(iv), BasicTypeEnum::IntType(it)) => {
+                        let (sw, tw) = (iv.get_type().get_bit_width(), it.get_bit_width());
+                        if sw == tw {
+                            iv.into()
+                        } else if sw < tw && src_unsigned {
+                            self.builder
+                                .build_int_z_extend(iv, it, &name)
+                                .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                                .into()
+                        } else if sw < tw {
+                            self.builder
+                                .build_int_s_extend(iv, it, &name)
+                                .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                                .into()
+                        } else {
+                            self.builder
+                                .build_int_truncate(iv, it, &name)
+                                .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                                .into()
+                        }
+                    }
+                    (BasicValueEnum::IntValue(iv), BasicTypeEnum::FloatType(ft)) => {
+                        if src_unsigned {
+                            self.builder
+                                .build_unsigned_int_to_float(iv, ft, &name)
+                                .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                                .into()
+                        } else {
+                            self.builder
+                                .build_signed_int_to_float(iv, ft, &name)
+                                .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                                .into()
+                        }
+                    }
+                    (BasicValueEnum::FloatValue(fv), BasicTypeEnum::IntType(it)) => {
+                        if dst_unsigned {
+                            self.builder
+                                .build_float_to_unsigned_int(fv, it, &name)
+                                .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                                .into()
+                        } else {
+                            self.builder
+                                .build_float_to_signed_int(fv, it, &name)
+                                .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                                .into()
+                        }
+                    }
+                    (BasicValueEnum::FloatValue(fv), BasicTypeEnum::FloatType(ft)) => self
+                        .builder
+                        .build_float_cast(fv, ft, &name)
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                        .into(),
+                    _ => return Ok(None),
+                };
+                Ok(Some(out))
+            }
         }
     }
 
@@ -2484,6 +2696,334 @@ impl<'ctx> Compiler<'ctx> {
         function
     }
 
+    /// `plcc_replace(dest, s1, s2, l, p, max_len)` — IEC `REPLACE(IN1, IN2, L, P)`:
+    /// `IN1` with the `L` characters starting at 1-based position `P` replaced by `IN2`.
+    ///
+    /// The result is built in a stack temporary and copied out at the end. Writing the
+    /// prefix straight into `dest` would corrupt `s := REPLACE(s, t, 2, 3);` — the
+    /// idiomatic form — because `dest` and `s1` are then the same buffer and the
+    /// inserted text would land on the tail before it had been read.
+    ///
+    /// `P` and `L` are clamped against the measured length of `s1`, so a position past
+    /// the end appends and an over-long `L` truncates, rather than reading past the
+    /// terminator.
+    fn get_or_create_replace_fn(&self) -> FunctionValue<'ctx> {
+        if let Some(f) = self.module.get_function("plcc_replace") {
+            return f;
+        }
+
+        let void_ty = self.context.void_type();
+        let i8_ty = self.context.i8_type();
+        let i32_ty = self.context.i32_type();
+        let i64_ty = self.context.i64_type();
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let fn_type = void_ty.fn_type(
+            &[
+                ptr_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+                i32_ty.into(),
+                i32_ty.into(),
+                i32_ty.into(),
+            ],
+            false,
+        );
+        let function = self.module.add_function("plcc_replace", fn_type, None);
+
+        let saved_block = self.builder.get_insert_block();
+
+        let entry = self.context.append_basic_block(function, "entry");
+        let len_loop = self.context.append_basic_block(function, "len_loop");
+        let len_body = self.context.append_basic_block(function, "len_body");
+        let clamp = self.context.append_basic_block(function, "clamp");
+        let p1_loop = self.context.append_basic_block(function, "p1_loop");
+        let p1_body = self.context.append_basic_block(function, "p1_body");
+        let p2_pre = self.context.append_basic_block(function, "p2_pre");
+        let p2_loop = self.context.append_basic_block(function, "p2_loop");
+        let p2_body = self.context.append_basic_block(function, "p2_body");
+        let p3_pre = self.context.append_basic_block(function, "p3_pre");
+        let p3_loop = self.context.append_basic_block(function, "p3_loop");
+        let p3_body = self.context.append_basic_block(function, "p3_body");
+        let out_pre = self.context.append_basic_block(function, "out_pre");
+        let out_loop = self.context.append_basic_block(function, "out_loop");
+        let out_body = self.context.append_basic_block(function, "out_body");
+        let done = self.context.append_basic_block(function, "done");
+
+        let dest = function.get_nth_param(0).unwrap().into_pointer_value();
+        let s1 = function.get_nth_param(1).unwrap().into_pointer_value();
+        let s2 = function.get_nth_param(2).unwrap().into_pointer_value();
+        let l_param = function.get_nth_param(3).unwrap().into_int_value();
+        let p_param = function.get_nth_param(4).unwrap().into_int_value();
+        let max_len = function.get_nth_param(5).unwrap().into_int_value();
+
+        let char_ptr = |base: PointerValue<'ctx>, idx: inkwell::values::IntValue<'ctx>| {
+            let idx64 = self
+                .builder
+                .build_int_s_extend(idx, i64_ty, "idx64")
+                .unwrap();
+            unsafe {
+                self.builder
+                    .build_in_bounds_gep(i8_ty, base, &[idx64], "ch_ptr")
+                    .unwrap()
+            }
+        };
+        let load_char = |base: PointerValue<'ctx>, idx: inkwell::values::IntValue<'ctx>| {
+            let p = char_ptr(base, idx);
+            self.builder
+                .build_load(i8_ty, p, "ch")
+                .unwrap()
+                .into_int_value()
+        };
+        let one = i32_ty.const_int(1, false);
+        let bump = |slot: PointerValue<'ctx>, cur: inkwell::values::IntValue<'ctx>| {
+            let next = self.builder.build_int_add(cur, one, "next").unwrap();
+            self.builder.build_store(slot, next).unwrap();
+        };
+
+        // entry: scratch buffer sized to the destination, plus the four cursors.
+        self.builder.position_at_end(entry);
+        let tmp = self
+            .builder
+            .build_array_alloca(i8_ty, max_len, "tmp")
+            .unwrap();
+        let ti = self.builder.build_alloca(i32_ty, "ti").unwrap();
+        let si = self.builder.build_alloca(i32_ty, "si").unwrap();
+        let sj = self.builder.build_alloca(i32_ty, "sj").unwrap();
+        let len_slot = self.builder.build_alloca(i32_ty, "len").unwrap();
+        for slot in [ti, si, sj, len_slot] {
+            self.builder.build_store(slot, i32_ty.const_zero()).unwrap();
+        }
+        self.builder.build_unconditional_branch(len_loop).unwrap();
+
+        // len_loop: measure s1, so every later index can be clamped against it.
+        self.builder.position_at_end(len_loop);
+        let n = self
+            .builder
+            .build_load(i32_ty, len_slot, "n")
+            .unwrap()
+            .into_int_value();
+        let n_ch = load_char(s1, n);
+        let n_more = self
+            .builder
+            .build_int_compare(IntPredicate::NE, n_ch, i8_ty.const_zero(), "n_more")
+            .unwrap();
+        self.builder
+            .build_conditional_branch(n_more, len_body, clamp)
+            .unwrap();
+
+        self.builder.position_at_end(len_body);
+        bump(len_slot, n);
+        self.builder.build_unconditional_branch(len_loop).unwrap();
+
+        // clamp: 1-based P to a 0-based start inside [0, len1], and the tail likewise.
+        self.builder.position_at_end(clamp);
+        let len1 = self
+            .builder
+            .build_load(i32_ty, len_slot, "len1")
+            .unwrap()
+            .into_int_value();
+        let max_m1 = self.builder.build_int_sub(max_len, one, "max_m1").unwrap();
+        let pm1 = self.builder.build_int_sub(p_param, one, "pm1").unwrap();
+        let p_neg = self
+            .builder
+            .build_int_compare(IntPredicate::SLT, pm1, i32_ty.const_zero(), "p_neg")
+            .unwrap();
+        let start0 = self
+            .builder
+            .build_select(p_neg, i32_ty.const_zero(), pm1, "start0")
+            .unwrap()
+            .into_int_value();
+        let p_over = self
+            .builder
+            .build_int_compare(IntPredicate::SGT, start0, len1, "p_over")
+            .unwrap();
+        let start = self
+            .builder
+            .build_select(p_over, len1, start0, "start")
+            .unwrap()
+            .into_int_value();
+        let l_neg = self
+            .builder
+            .build_int_compare(IntPredicate::SLT, l_param, i32_ty.const_zero(), "l_neg")
+            .unwrap();
+        let l_ok = self
+            .builder
+            .build_select(l_neg, i32_ty.const_zero(), l_param, "l_ok")
+            .unwrap()
+            .into_int_value();
+        let tail0 = self.builder.build_int_add(start, l_ok, "tail0").unwrap();
+        let t_over = self
+            .builder
+            .build_int_compare(IntPredicate::SGT, tail0, len1, "t_over")
+            .unwrap();
+        let tail = self
+            .builder
+            .build_select(t_over, len1, tail0, "tail")
+            .unwrap()
+            .into_int_value();
+        self.builder.build_unconditional_branch(p1_loop).unwrap();
+
+        // p1: the prefix of s1, up to the replacement point.
+        self.builder.position_at_end(p1_loop);
+        let i1 = self
+            .builder
+            .build_load(i32_ty, si, "i1")
+            .unwrap()
+            .into_int_value();
+        let t1 = self
+            .builder
+            .build_load(i32_ty, ti, "t1")
+            .unwrap()
+            .into_int_value();
+        let in_prefix = self
+            .builder
+            .build_int_compare(IntPredicate::SLT, i1, start, "in_prefix")
+            .unwrap();
+        let room1 = self
+            .builder
+            .build_int_compare(IntPredicate::SLT, t1, max_m1, "room1")
+            .unwrap();
+        let go1 = self.builder.build_and(in_prefix, room1, "go1").unwrap();
+        self.builder
+            .build_conditional_branch(go1, p1_body, p2_pre)
+            .unwrap();
+
+        self.builder.position_at_end(p1_body);
+        let c1 = load_char(s1, i1);
+        self.builder.build_store(char_ptr(tmp, t1), c1).unwrap();
+        bump(si, i1);
+        bump(ti, t1);
+        self.builder.build_unconditional_branch(p1_loop).unwrap();
+
+        // p2: all of s2.
+        self.builder.position_at_end(p2_pre);
+        self.builder.build_store(sj, i32_ty.const_zero()).unwrap();
+        self.builder.build_unconditional_branch(p2_loop).unwrap();
+
+        self.builder.position_at_end(p2_loop);
+        let j2 = self
+            .builder
+            .build_load(i32_ty, sj, "j2")
+            .unwrap()
+            .into_int_value();
+        let t2 = self
+            .builder
+            .build_load(i32_ty, ti, "t2")
+            .unwrap()
+            .into_int_value();
+        let c2 = load_char(s2, j2);
+        let c2_more = self
+            .builder
+            .build_int_compare(IntPredicate::NE, c2, i8_ty.const_zero(), "c2_more")
+            .unwrap();
+        let room2 = self
+            .builder
+            .build_int_compare(IntPredicate::SLT, t2, max_m1, "room2")
+            .unwrap();
+        let go2 = self.builder.build_and(c2_more, room2, "go2").unwrap();
+        self.builder
+            .build_conditional_branch(go2, p2_body, p3_pre)
+            .unwrap();
+
+        self.builder.position_at_end(p2_body);
+        self.builder.build_store(char_ptr(tmp, t2), c2).unwrap();
+        bump(sj, j2);
+        bump(ti, t2);
+        self.builder.build_unconditional_branch(p2_loop).unwrap();
+
+        // p3: what is left of s1 after the replaced run.
+        self.builder.position_at_end(p3_pre);
+        self.builder.build_store(si, tail).unwrap();
+        self.builder.build_unconditional_branch(p3_loop).unwrap();
+
+        self.builder.position_at_end(p3_loop);
+        let i3 = self
+            .builder
+            .build_load(i32_ty, si, "i3")
+            .unwrap()
+            .into_int_value();
+        let t3 = self
+            .builder
+            .build_load(i32_ty, ti, "t3")
+            .unwrap()
+            .into_int_value();
+        let in_tail = self
+            .builder
+            .build_int_compare(IntPredicate::SLT, i3, len1, "in_tail")
+            .unwrap();
+        let room3 = self
+            .builder
+            .build_int_compare(IntPredicate::SLT, t3, max_m1, "room3")
+            .unwrap();
+        let go3 = self.builder.build_and(in_tail, room3, "go3").unwrap();
+        self.builder
+            .build_conditional_branch(go3, p3_body, out_pre)
+            .unwrap();
+
+        self.builder.position_at_end(p3_body);
+        let c3 = load_char(s1, i3);
+        self.builder.build_store(char_ptr(tmp, t3), c3).unwrap();
+        bump(si, i3);
+        bump(ti, t3);
+        self.builder.build_unconditional_branch(p3_loop).unwrap();
+
+        // out: copy the scratch buffer into dest. Only now can dest be touched.
+        self.builder.position_at_end(out_pre);
+        let total = self
+            .builder
+            .build_load(i32_ty, ti, "total")
+            .unwrap()
+            .into_int_value();
+        self.builder
+            .build_store(char_ptr(tmp, total), i8_ty.const_zero())
+            .unwrap();
+        self.builder.build_store(si, i32_ty.const_zero()).unwrap();
+        self.builder.build_unconditional_branch(out_loop).unwrap();
+
+        self.builder.position_at_end(out_loop);
+        let k = self
+            .builder
+            .build_load(i32_ty, si, "k")
+            .unwrap()
+            .into_int_value();
+        let more = self
+            .builder
+            .build_int_compare(IntPredicate::SLT, k, total, "more")
+            .unwrap();
+        self.builder
+            .build_conditional_branch(more, out_body, done)
+            .unwrap();
+
+        self.builder.position_at_end(out_body);
+        let ck = load_char(tmp, k);
+        self.builder.build_store(char_ptr(dest, k), ck).unwrap();
+        bump(si, k);
+        self.builder.build_unconditional_branch(out_loop).unwrap();
+
+        self.builder.position_at_end(done);
+        self.builder
+            .build_store(char_ptr(dest, total), i8_ty.const_zero())
+            .unwrap();
+        self.builder.build_return(None).unwrap();
+
+        if let Some(bb) = saved_block {
+            self.builder.position_at_end(bb);
+        }
+        function
+    }
+
+    /// The string builtins take addresses, not values, so an argument with no address
+    /// stops them. Nearly always that is a literal — `FIND(s, 'abc')` — which needs
+    /// string literals to have storage before it can work.
+    fn no_string_argument(func: &str, param: &str, arg: &Expression) -> CodegenError {
+        CodegenError::UnsupportedType(format!(
+            "{func}: `{}` has no address, so it cannot be passed as {param} — the \
+             string builtins take a STRING variable, and a string literal has no \
+             storage yet",
+            Self::describe_lvalue(arg)
+        ))
+    }
+
     /// Try to handle string function assignments like `result := CONCAT(a, b)`.
     /// Returns true if the assignment was handled as a string function call.
     fn try_compile_string_assignment(
@@ -2502,7 +3042,10 @@ impl<'ctx> Compiler<'ctx> {
         };
 
         // Only handle known string functions
-        if !matches!(func_name.as_str(), "CONCAT" | "LEFT" | "RIGHT" | "MID") {
+        if !matches!(
+            func_name.as_str(),
+            "CONCAT" | "LEFT" | "RIGHT" | "MID" | "REPLACE"
+        ) {
             return Ok(false);
         }
 
@@ -2536,14 +3079,10 @@ impl<'ctx> Compiler<'ctx> {
                 }
                 let s1_ptr = self
                     .compile_lvalue_with_fn(&args[0].value, function)?
-                    .ok_or_else(|| {
-                        CodegenError::LlvmError("CONCAT: failed to get s1 pointer".into())
-                    })?;
+                    .ok_or_else(|| Self::no_string_argument("CONCAT", "IN1", &args[0].value))?;
                 let s2_ptr = self
                     .compile_lvalue_with_fn(&args[1].value, function)?
-                    .ok_or_else(|| {
-                        CodegenError::LlvmError("CONCAT: failed to get s2 pointer".into())
-                    })?;
+                    .ok_or_else(|| Self::no_string_argument("CONCAT", "IN2", &args[1].value))?;
                 let concat_fn = self.get_or_create_concat_fn();
                 self.builder
                     .build_call(
@@ -2565,9 +3104,7 @@ impl<'ctx> Compiler<'ctx> {
                 }
                 let src_ptr = self
                     .compile_lvalue_with_fn(&args[0].value, function)?
-                    .ok_or_else(|| {
-                        CodegenError::LlvmError("LEFT: failed to get src pointer".into())
-                    })?;
+                    .ok_or_else(|| Self::no_string_argument("LEFT", "IN", &args[0].value))?;
                 let n_val = self
                     .compile_expression(&args[1].value, function)?
                     .ok_or_else(|| CodegenError::LlvmError("LEFT: failed to compile n".into()))?;
@@ -2604,9 +3141,7 @@ impl<'ctx> Compiler<'ctx> {
                 }
                 let src_ptr = self
                     .compile_lvalue_with_fn(&args[0].value, function)?
-                    .ok_or_else(|| {
-                        CodegenError::LlvmError("RIGHT: failed to get src pointer".into())
-                    })?;
+                    .ok_or_else(|| Self::no_string_argument("RIGHT", "IN", &args[0].value))?;
                 let n_val = self
                     .compile_expression(&args[1].value, function)?
                     .ok_or_else(|| CodegenError::LlvmError("RIGHT: failed to compile n".into()))?;
@@ -2645,9 +3180,7 @@ impl<'ctx> Compiler<'ctx> {
                 }
                 let src_ptr = self
                     .compile_lvalue_with_fn(&args[0].value, function)?
-                    .ok_or_else(|| {
-                        CodegenError::LlvmError("MID: failed to get src pointer".into())
-                    })?;
+                    .ok_or_else(|| Self::no_string_argument("MID", "IN", &args[0].value))?;
                 let len_val = self
                     .compile_expression(&args[1].value, function)?
                     .ok_or_else(|| CodegenError::LlvmError("MID: failed to compile len".into()))?;
@@ -2687,6 +3220,57 @@ impl<'ctx> Compiler<'ctx> {
                             src_ptr.into(),
                             len_i32.into(),
                             pos_i32.into(),
+                            max_len_val.into(),
+                        ],
+                        "",
+                    )
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(true)
+            }
+            "REPLACE" => {
+                if args.len() != 4 {
+                    return Err(CodegenError::LlvmError(
+                        "REPLACE expects 4 arguments (IN1, IN2, L, P)".into(),
+                    ));
+                }
+                let s1_ptr = self
+                    .compile_lvalue_with_fn(&args[0].value, function)?
+                    .ok_or_else(|| Self::no_string_argument("REPLACE", "IN1", &args[0].value))?;
+                let s2_ptr = self
+                    .compile_lvalue_with_fn(&args[1].value, function)?
+                    .ok_or_else(|| Self::no_string_argument("REPLACE", "IN2", &args[1].value))?;
+                let count = |this: &mut Self, idx: usize, what: &str| {
+                    let val = this
+                        .compile_expression(&args[idx].value, function)?
+                        .ok_or_else(|| {
+                            CodegenError::LlvmError(format!("REPLACE: failed to compile {what}"))
+                        })?;
+                    if !val.is_int_value() {
+                        return Err(CodegenError::LlvmError(format!(
+                            "REPLACE: {what} must be an integer"
+                        )));
+                    }
+                    let iv = val.into_int_value();
+                    if iv.get_type().get_bit_width() < 32 {
+                        this.builder
+                            .build_int_s_extend(iv, i32_ty, "cnt_ext")
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))
+                    } else {
+                        Ok(iv)
+                    }
+                };
+                let l_i32 = count(self, 2, "L")?;
+                let p_i32 = count(self, 3, "P")?;
+                let replace_fn = self.get_or_create_replace_fn();
+                self.builder
+                    .build_call(
+                        replace_fn,
+                        &[
+                            dest_ptr.into(),
+                            s1_ptr.into(),
+                            s2_ptr.into(),
+                            l_i32.into(),
+                            p_i32.into(),
                             max_len_val.into(),
                         ],
                         "",
@@ -5322,9 +5906,12 @@ impl<'ctx> Compiler<'ctx> {
         else_body: &Option<Vec<Statement>>,
         function: FunctionValue<'ctx>,
     ) -> Result<(), CodegenError> {
-        let cond_val = self
-            .compile_expression(condition, function)?
-            .ok_or_else(|| CodegenError::LlvmError("failed to compile condition".into()))?;
+        let Some(cond_val) = self.compile_expression(condition, function)? else {
+            return Err(CodegenError::LlvmError(format!(
+                "in the IF condition: {}",
+                self.explain_no_value(condition)
+            )));
+        };
 
         let then_bb = self.context.append_basic_block(function, "then");
         let merge_bb = self.context.append_basic_block(function, "merge");
@@ -5355,11 +5942,13 @@ impl<'ctx> Compiler<'ctx> {
             // Handle elsif chains
             if !elsif_branches.is_empty() {
                 for (i, branch) in elsif_branches.iter().enumerate() {
-                    let elsif_cond = self
-                        .compile_expression(&branch.condition, function)?
-                        .ok_or_else(|| {
-                            CodegenError::LlvmError("failed to compile elsif condition".into())
-                        })?;
+                    let Some(elsif_cond) = self.compile_expression(&branch.condition, function)?
+                    else {
+                        return Err(CodegenError::LlvmError(format!(
+                            "in the ELSIF condition: {}",
+                            self.explain_no_value(&branch.condition)
+                        )));
+                    };
 
                     let elsif_then = self.context.append_basic_block(function, "elsif_then");
                     // Always a fresh block, never `merge_bb` itself. Aliasing the last
@@ -5414,12 +6003,18 @@ impl<'ctx> Compiler<'ctx> {
             .ok_or_else(|| CodegenError::UndefinedVariable(variable.name.clone()))?
             .clone();
 
-        let from_val = self
-            .compile_expression(from, function)?
-            .ok_or_else(|| CodegenError::LlvmError("failed to compile from".into()))?;
-        let to_val = self
-            .compile_expression(to, function)?
-            .ok_or_else(|| CodegenError::LlvmError("failed to compile to".into()))?;
+        let Some(from_val) = self.compile_expression(from, function)? else {
+            return Err(CodegenError::LlvmError(format!(
+                "in the FOR loop's start value: {}",
+                self.explain_no_value(from)
+            )));
+        };
+        let Some(to_val) = self.compile_expression(to, function)? else {
+            return Err(CodegenError::LlvmError(format!(
+                "in the FOR loop's end value: {}",
+                self.explain_no_value(to)
+            )));
+        };
         let to_ty = self.rvalue_iec_type(to);
 
         // Store the initial value at the control variable's own width. A raw store
@@ -5602,9 +6197,12 @@ impl<'ctx> Compiler<'ctx> {
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
 
         self.builder.position_at_end(cond_bb);
-        let cond_val = self
-            .compile_expression(condition, function)?
-            .ok_or_else(|| CodegenError::LlvmError("failed to compile condition".into()))?;
+        let Some(cond_val) = self.compile_expression(condition, function)? else {
+            return Err(CodegenError::LlvmError(format!(
+                "in the loop condition: {}",
+                self.explain_no_value(condition)
+            )));
+        };
         // BOOL is an i8 in this ABI; a branch condition must be i1.
         let cond_bool = self.to_i1(cond_val.into_int_value())?;
         self.builder
@@ -5655,9 +6253,12 @@ impl<'ctx> Compiler<'ctx> {
 
         // Condition check: if UNTIL condition is true, exit; otherwise loop back
         self.builder.position_at_end(cond_bb);
-        let cond_val = self
-            .compile_expression(until, function)?
-            .ok_or_else(|| CodegenError::LlvmError("failed to compile UNTIL condition".into()))?;
+        let cond_val = self.compile_expression(until, function)?.ok_or_else(|| {
+            CodegenError::LlvmError(format!(
+                "in the UNTIL condition: {}",
+                self.explain_no_value(until)
+            ))
+        })?;
         let cond_bool = self.to_i1(cond_val.into_int_value())?;
         // UNTIL means: exit when true, loop when false
         self.builder
@@ -5677,9 +6278,12 @@ impl<'ctx> Compiler<'ctx> {
         else_body: &Option<Vec<Statement>>,
         function: FunctionValue<'ctx>,
     ) -> Result<(), CodegenError> {
-        let sel_val = self
-            .compile_expression(selector, function)?
-            .ok_or_else(|| CodegenError::LlvmError("failed to compile selector".into()))?;
+        let Some(sel_val) = self.compile_expression(selector, function)? else {
+            return Err(CodegenError::LlvmError(format!(
+                "in the CASE selector: {}",
+                self.explain_no_value(selector)
+            )));
+        };
 
         let end_bb = self.context.append_basic_block(function, "case_end");
         let else_bb = if else_body.is_some() {
@@ -5778,6 +6382,13 @@ impl<'ctx> Compiler<'ctx> {
                 IecType::Array { element_type, .. } => Some(*element_type),
                 _ => None,
             },
+            // `p^` denotes what `p` points at. Without this arm the type was unknown,
+            // so a store through it took the fallback width and `p^ := x` wrote the
+            // wrong number of bytes even once it had an address.
+            ExpressionKind::Dereference(inner) => match self.lvalue_iec_type(inner)? {
+                IecType::Pointer(base) => Some(*base),
+                _ => None,
+            },
             ExpressionKind::MemberAccess { object, member } => {
                 // STRUCT field or FB-instance field, at any depth: `s.i.v` and
                 // `x.f.o` both ask the type of the object first.
@@ -5837,8 +6448,15 @@ impl<'ctx> Compiler<'ctx> {
         match &expr.kind {
             ExpressionKind::Identifier(_)
             | ExpressionKind::ArrayIndex { .. }
-            | ExpressionKind::MemberAccess { .. } => self.lvalue_iec_type(expr),
+            | ExpressionKind::MemberAccess { .. }
+            | ExpressionKind::Dereference(_) => self.lvalue_iec_type(expr),
             ExpressionKind::Parenthesized(inner) => self.rvalue_iec_type(inner),
+            // A typed literal says its own type, which is the whole reason to write
+            // one: `x < WORD#16#8000` compares unsigned only if the literal is known
+            // to be a WORD.
+            ExpressionKind::TypedLiteral { type_name, .. } => {
+                self.type_registry.resolve(&type_name.name)
+            }
             // Negation only makes sense on a signed value, and the result is signed
             // regardless of what went in. NOT preserves its operand's type.
             ExpressionKind::UnaryOp { op, operand } => match op {
@@ -5882,12 +6500,37 @@ impl<'ctx> Compiler<'ctx> {
                     // MIN/MAX return one of their operands, so the result type is the
                     // one the comparison was performed in.
                     "MIN" | "MAX" => Self::arith_result_type(arg_ty(0), arg_ty(1)),
+                    // ADR yields a pointer to whatever it was given, which is what
+                    // makes `p := ADR(x);` store a pointer-width value.
+                    "ADR" => Some(IecType::Pointer(Box::new(
+                        args.first()
+                            .and_then(|a| self.lvalue_iec_type(&a.value))
+                            .unwrap_or(IecType::Void),
+                    ))),
                     // LIMIT(MN, IN, MX) likewise, over all three.
                     "LIMIT" => Self::arith_result_type(
                         Self::arith_result_type(arg_ty(0), arg_ty(1)),
                         arg_ty(2),
                     ),
-                    _ => None,
+                    // A conversion states its own result type: the `Y` of `X_TO_Y`.
+                    // Without this every conversion was an untyped value, and an
+                    // unsigned result fed to a signedness-sensitive operator took the
+                    // signed path — `SHR(TIME_TO_DWORD(pt), 1)` shifted arithmetically
+                    // and dragged the sign bit down through the result.
+                    other => {
+                        // A user FUNCTION whose name happens to fit the pattern owns
+                        // its own return type; only unclaimed names are read this way.
+                        if self
+                            .module
+                            .get_function(&name.name.to_lowercase())
+                            .is_some()
+                        {
+                            return None;
+                        }
+                        let (from, to) = other.split_once("_TO_")?;
+                        plcc_hir::types::resolve_type_name(from)?;
+                        plcc_hir::types::resolve_type_name(to)
+                    }
                 }
             }
             _ => None,
@@ -5934,6 +6577,149 @@ impl<'ctx> Compiler<'ctx> {
                 "an arithmetic expression".into()
             }
             ExpressionKind::ArrayInitializer(_) => "an array initializer".into(),
+        }
+    }
+
+    /// Why an expression produced no value, said in the reader's terms.
+    ///
+    /// `compile_expression` answers `Ok(None)` for several unrelated reasons, and a
+    /// caller that blames itself sends the reader to the wrong file. Every cause below
+    /// was observed in the OSCAT corpus, where the top three failure buckets were all
+    /// the same misattributed message. See `docs/oscat-conformance.md`.
+    fn explain_no_value(&self, expr: &Expression) -> String {
+        self.specific_cause(expr)
+            .map(|(_, why)| why)
+            .unwrap_or_else(|| format!("`{}` produced no value", Self::describe_lvalue(expr)))
+    }
+
+    /// A cause that was checked against the symbol table and is therefore certain.
+    const CAUSE_CERTAIN: u8 = 0;
+    /// A cause inferred from a name alone. There is no list of standard functions to
+    /// check against, so "no such function" is a guess, and a certain cause elsewhere
+    /// in the same expression should be reported instead of it.
+    const CAUSE_GUESSED: u8 = 1;
+
+    /// The named reason `expr` cannot yield a value, if one can be pinned down, with
+    /// how sure that reason is.
+    ///
+    /// Recurses through operators, because a valueless operand is what makes the
+    /// whole expression valueless — and "an arithmetic expression produced no value"
+    /// is only marginally better than blaming the enclosing builtin. Ranking matters
+    /// as much as recursing: `IF LEN(list) > LIST_LENGTH` fails because
+    /// `LIST_LENGTH` lives in a sibling file, and reporting the leftmost cause named
+    /// `LEN` — which is implemented — repeats the mistake this whole path exists to
+    /// stop. `None` means no sub-expression stands out, and the caller falls back to
+    /// naming the expression itself.
+    fn specific_cause(&self, expr: &Expression) -> Option<(u8, String)> {
+        match &expr.kind {
+            ExpressionKind::Parenthesized(inner)
+            | ExpressionKind::TypedLiteral { value: inner, .. } => self.specific_cause(inner),
+            ExpressionKind::UnaryOp { operand, .. } => self.specific_cause(operand),
+            ExpressionKind::BinaryOp { left, right, .. } => {
+                match (self.specific_cause(left), self.specific_cause(right)) {
+                    (Some(l), Some(r)) => Some(if r.0 < l.0 { r } else { l }),
+                    (Some(one), None) | (None, Some(one)) => Some(one),
+                    (None, None) => None,
+                }
+            }
+            ExpressionKind::Identifier(ident) => {
+                if self.variables.contains_key(&ident.name.to_uppercase()) {
+                    None
+                } else {
+                    Some((
+                        Self::CAUSE_CERTAIN,
+                        format!(
+                            "`{}` is not a variable in scope — a VAR_GLOBAL or CONSTANT \
+                             declared in another file is not visible when files are \
+                             compiled one at a time",
+                            ident.name
+                        ),
+                    ))
+                }
+            }
+            ExpressionKind::MemberAccess { object, member } => {
+                if let Some(inner) = self.specific_cause(object) {
+                    return Some(inner);
+                }
+                // `in.7` on a BYTE is CODESYS bit access, not a member — a dialect
+                // question with its own entry in docs/codesys-compatibility.md, and
+                // worth counting separately from a genuine unknown field.
+                if member.name.parse::<u32>().is_ok() {
+                    return Some((
+                        Self::CAUSE_CERTAIN,
+                        format!(
+                            "`{}.{}` is CODESYS bit access on a scalar, which is not supported",
+                            Self::describe_lvalue(object),
+                            member.name
+                        ),
+                    ));
+                }
+                match self.lvalue_iec_type(object) {
+                    Some(ty) => Some((
+                        Self::CAUSE_CERTAIN,
+                        format!(
+                            "`{}` is {ty}, which has no member `{}`",
+                            Self::describe_lvalue(object),
+                            member.name
+                        ),
+                    )),
+                    None => Some((
+                        Self::CAUSE_CERTAIN,
+                        format!(
+                            "the type of `{}` is not known here, so `{}` cannot be resolved",
+                            Self::describe_lvalue(object),
+                            Self::describe_lvalue(expr)
+                        ),
+                    )),
+                }
+            }
+            ExpressionKind::FunctionCall { callee, .. } => match &callee.kind {
+                ExpressionKind::Identifier(name) => {
+                    let uname = name.name.to_uppercase();
+                    if matches!(
+                        uname.as_str(),
+                        "CONCAT" | "LEFT" | "RIGHT" | "MID" | "REPLACE"
+                    ) {
+                        Some((
+                            Self::CAUSE_CERTAIN,
+                            format!(
+                                "`{}` returns a STRING, which is only supported as the \
+                                 whole right-hand side of an assignment, not nested in \
+                                 an expression",
+                                name.name
+                            ),
+                        ))
+                    } else if self
+                        .module
+                        .get_function(&name.name.to_lowercase())
+                        .is_some()
+                    {
+                        Some((
+                            Self::CAUSE_CERTAIN,
+                            format!("`{}` returns nothing, so it has no value here", name.name),
+                        ))
+                    } else {
+                        Some((
+                            Self::CAUSE_GUESSED,
+                            format!(
+                                "`{}` is neither a standard function nor a FUNCTION \
+                                 declared in this compilation unit",
+                                name.name
+                            ),
+                        ))
+                    }
+                }
+                _ => None,
+            },
+            ExpressionKind::StringLiteral(_) | ExpressionKind::WstringLiteral(_) => Some((
+                Self::CAUSE_CERTAIN,
+                "a string literal has no value outside a string assignment or PRINT".into(),
+            )),
+            ExpressionKind::DirectVariable(addr) => Some((
+                Self::CAUSE_CERTAIN,
+                format!("`%{addr}` is not bound to storage"),
+            )),
+            _ => None,
         }
     }
 
@@ -6137,6 +6923,35 @@ impl<'ctx> Compiler<'ctx> {
                 }
                 Ok(Some(field_ptr))
             }
+            // `p^` is an address in its own right: the one the pointer holds. Reaching
+            // it means loading the pointer *variable* first, which is why this asks
+            // for `p`'s address and loads through it rather than compiling `p` as a
+            // value — `p` may itself be a field, an array element or a deref chain
+            // (`pp^^`), and each layer is one more load.
+            ExpressionKind::Dereference(inner) => {
+                let Some(slot) = self.compile_lvalue_inner(inner, function)? else {
+                    return Err(CodegenError::UnsupportedType(format!(
+                        "`{}` has no address, so `{}` cannot be dereferenced",
+                        Self::describe_lvalue(inner),
+                        Self::describe_lvalue(expr)
+                    )));
+                };
+                match self.lvalue_iec_type(inner) {
+                    Some(IecType::Pointer(_)) | None => {}
+                    Some(other) => {
+                        return Err(CodegenError::UnsupportedType(format!(
+                            "`{}` is {other}, not a POINTER, so `^` does not apply",
+                            Self::describe_lvalue(inner)
+                        )));
+                    }
+                }
+                let ptr_ty = self.context.ptr_type(AddressSpace::default());
+                let target = self
+                    .builder
+                    .build_load(ptr_ty, slot, "deref")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(Some(target.into_pointer_value()))
+            }
             // Literals, calls, and direct representation (%IX0.0) have no address.
             // This is the one arm where `None` is the honest answer, and the string
             // builtins depend on it to accept a literal where a variable would also
@@ -6276,6 +7091,26 @@ impl<'ctx> Compiler<'ctx> {
                     self.context.i64_type().const_int(ns as u64, true).into(),
                 ))
             }
+            // `BYTE#255`, `INT#5`, `REAL#3.14`, `BOOL#TRUE` — the literal, at the
+            // named type's width. There was no arm for this at all, so every typed
+            // literal was silently valueless: `SHL(x, BYTE#1)` failed where
+            // `SHL(x, 1)` worked, and the README claimed the feature was complete.
+            // The width matters as much as the value — `DWORD#16#FFFFFFFF` compiled
+            // as a bare integer literal is an i16.
+            ExpressionKind::TypedLiteral { type_name, value } => {
+                let Some(val) = self.compile_expression(value, function)? else {
+                    return Ok(None);
+                };
+                match self.type_registry.resolve(&type_name.name) {
+                    Some(ty) => {
+                        let src = self.rvalue_iec_type(value);
+                        Ok(Some(self.coerce_value(val, src.as_ref(), &ty)?))
+                    }
+                    // An unregistered name is a typed enum spelling or a type from
+                    // another file; the value still stands on its own.
+                    None => Ok(Some(val)),
+                }
+            }
             ExpressionKind::DateLiteral(_)
             | ExpressionKind::TodLiteral(_)
             | ExpressionKind::DtLiteral(_) => {
@@ -6306,6 +7141,25 @@ impl<'ctx> Compiler<'ctx> {
                 let val = self
                     .builder
                     .build_load(elem_llvm_ty, elem_ptr, "arr_load")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(Some(val))
+            }
+            // `p^` on the right of `:=`. The address comes from the lvalue walk, so
+            // `p^`, `p^[i]` and `p^.field` all read through the same one place.
+            ExpressionKind::Dereference(_) => {
+                let Some(target) = self.compile_lvalue_with_fn(expr, function)? else {
+                    return Ok(None);
+                };
+                let Some(pointee) = self.lvalue_iec_type(expr) else {
+                    return Err(CodegenError::UnsupportedType(format!(
+                        "cannot determine what `{}` points at",
+                        Self::describe_lvalue(expr)
+                    )));
+                };
+                let llvm_ty = self.iec_to_llvm_type(&pointee);
+                let val = self
+                    .builder
+                    .build_load(llvm_ty, target, "deref_load")
                     .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                 Ok(Some(val))
             }
@@ -6344,6 +7198,18 @@ impl<'ctx> Compiler<'ctx> {
         right: BasicValueEnum<'ctx>,
         right_ty: Option<&IecType>,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        // A pointer operand reaches neither `into_int_value` nor `into_float_value`
+        // without panicking, and OSCAT writes `pt := pt + 1;` in seventeen files. The
+        // answer is a diagnostic rather than a guess: CODESYS pointer arithmetic is a
+        // documented semantic divergence (does `+ 1` advance one byte or one element?)
+        // and picking wrong here miscomputes addresses silently.
+        if left.is_pointer_value() || right.is_pointer_value() {
+            return Err(CodegenError::UnsupportedType(format!(
+                "pointer arithmetic ({op:?} on a POINTER) is not supported — see \
+                 docs/codesys-compatibility.md"
+            )));
+        }
+
         // Check if we're dealing with integers or floats
         let is_float = left.is_float_value() || right.is_float_value();
 
@@ -6723,8 +7589,7 @@ impl<'ctx> Compiler<'ctx> {
         // *passed* in core registers. GNU ld rejects linking such an object
         // against a hard-float one; a linker that did not check would have
         // produced a binary that silently reads arguments from the wrong place.
-        let target_triple =
-            TargetMachine::normalize_triple(&TargetTriple::create(&spec.triple));
+        let target_triple = TargetMachine::normalize_triple(&TargetTriple::create(&spec.triple));
         let target = Target::from_triple(&target_triple)
             .map_err(|e| CodegenError::TargetError(e.to_string()))?;
         let machine = target

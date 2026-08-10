@@ -1,6 +1,8 @@
 # CODESYS Compatibility Plan
 
-Status: proposal. Nothing here is implemented yet.
+Status: proposal, with the two blockers below now cleared. `--std` and `--profile` do
+not exist yet; `--stdlib` does. The "Blockers" section is kept as the record of what B1
+and B2 were and how they were resolved.
 
 ## Goal
 
@@ -209,6 +211,12 @@ be written down:
 - string index base
 - division by zero
 - overload resolution and implicit conversion tables
+- **pointer arithmetic** — `pt := pt + 1`: one byte, or one element? 23 OSCAT files
+  wait on the answer. The two readings agree for `POINTER TO BYTE`, which is most of
+  OSCAT, and diverge for every wider base type, so a wrong guess miscomputes addresses
+  without any diagnostic. Today it is a hard error naming this document.
+- **bit access on a scalar** — `X.0 := A0`, `in.7`. 11 OSCAT files. A vendor extension
+  with no IEC equivalent; currently a hard error that names it as such.
 
 **Default to CODESYS behaviour** — that is what real code expects — and maintain a table
 in this document of each divergence, which way we went, and why. Strict mode should warn
