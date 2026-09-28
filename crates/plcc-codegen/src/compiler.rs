@@ -565,6 +565,11 @@ impl<'ctx> Compiler<'ctx> {
         };
         let val = self.int_operand(val, "IN of a shift or rotate")?;
         let n = self.int_operand(n, "N of a shift or rotate")?;
+        let n = if n.get_type().get_bit_width() < 8 {
+            self.widen_to(n, Signedness::Unsigned, self.context.i8_type())?
+        } else {
+            n
+        };
         let n_sign = Self::signedness_of(arg_tys.get(1).and_then(|t| t.as_ref()));
         let target = val.get_type();
         let n = match n.get_type().get_bit_width().cmp(&target.get_bit_width()) {
@@ -576,6 +581,59 @@ impl<'ctx> Compiler<'ctx> {
                 .map_err(|e| CodegenError::LlvmError(e.to_string()))?,
         };
         Ok((val, n))
+    }
+
+    /// `SHL(IN, N)` / `SHR(IN, N)`: zero-filling shifts. Shifting by the width of IN
+    /// or more (or by a negative N) yields 0 — every bit has been shifted out.
+    /// LLVM's `shl`/`lshr` by the width or more is poison; x86 masks the count, so
+    /// `SHL(dint, 32)` returned the input unchanged, and an N wider than IN was
+    /// truncated first, so `SHL(byte, 256)` was a shift by 0.
+    fn checked_shift(
+        &self,
+        arg_vals: &[BasicValueEnum<'ctx>],
+        arg_tys: &[Option<IecType>],
+        left: bool,
+    ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+        let err = |e: inkwell::builder::BuilderError| CodegenError::LlvmError(e.to_string());
+        let raw_n = arg_vals
+            .get(1)
+            .map(|v| self.int_operand(*v, "N of a shift"))
+            .transpose()?;
+        let (val, n) = self.shift_operands(arg_vals, arg_tys)?;
+        let width = val.get_type().get_bit_width() as u64;
+        // Compare the count before it was narrowed to IN's width, unsigned: a
+        // negative N is huge.
+        let raw_n = raw_n.unwrap_or(n);
+        let raw_n = if raw_n.get_type().get_bit_width() < 8 {
+            self.widen_to(raw_n, Signedness::Unsigned, self.context.i8_type())?
+        } else {
+            raw_n
+        };
+        let too_far = self
+            .builder
+            .build_int_compare(
+                IntPredicate::UGE,
+                raw_n,
+                raw_n.get_type().const_int(width, false),
+                "shift_out",
+            )
+            .map_err(err)?;
+        let zero = val.get_type().const_zero();
+        let safe_n = self.builder.build_select(too_far, zero, n, "shift_n").map_err(err)?;
+        let shifted = if left {
+            self.builder
+                .build_left_shift(val, safe_n.into_int_value(), "shl")
+                .map_err(err)?
+        } else {
+            self.builder
+                .build_right_shift(val, safe_n.into_int_value(), false, "shr")
+                .map_err(err)?
+        };
+        Ok(self
+            .builder
+            .build_select(too_far, zero, shifted, "shift")
+            .map_err(err)?
+            .into_int_value())
     }
 
     /// Try to compile a call to a standard library function.
@@ -931,12 +989,7 @@ impl<'ctx> Compiler<'ctx> {
                         arg_vals.len()
                     )));
                 }
-                let (val, n) = self.shift_operands(&arg_vals, &arg_tys)?;
-                let result = self
-                    .builder
-                    .build_left_shift(val, n, "shl")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                Ok(Some(result.into()))
+                Ok(Some(self.checked_shift(&arg_vals, &arg_tys, true)?.into()))
             }
             "SHR" => {
                 if arg_vals.len() != 2 {
@@ -945,16 +998,11 @@ impl<'ctx> Compiler<'ctx> {
                         arg_vals.len()
                     )));
                 }
-                let (val, n) = self.shift_operands(&arg_vals, &arg_tys)?;
                 // IEC 61131-3 SHR is defined on ANY_BIT: bits vacated at the top are
                 // filled with zeros, never with a sign. There is no arithmetic-shift
                 // spelling in the standard — a signed right shift is written by
-                // dividing — so `false` (lshr) here is right for every input type.
-                let result = self
-                    .builder
-                    .build_right_shift(val, n, false, "shr")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                Ok(Some(result.into()))
+                // dividing — so it is a logical shift for every input type.
+                Ok(Some(self.checked_shift(&arg_vals, &arg_tys, false)?.into()))
             }
 
             "ROL" => {
@@ -7995,18 +8043,7 @@ impl<'ctx> Compiler<'ctx> {
                     .map_err(|e| CodegenError::LlvmError(e.to_string()))?,
                 // ANY_BIT / ANY_UNSIGNED operands divide with udiv/urem. `BYTE 200 / 2`
                 // is 100; sdiv reads the 200 as -56 and answers 228.
-                BinaryOp::Div => if unsigned {
-                    self.builder.build_int_unsigned_div(l, r, "udiv")
-                } else {
-                    self.builder.build_int_signed_div(l, r, "div")
-                }
-                .map_err(|e| CodegenError::LlvmError(e.to_string()))?,
-                BinaryOp::Mod => if unsigned {
-                    self.builder.build_int_unsigned_rem(l, r, "umod")
-                } else {
-                    self.builder.build_int_signed_rem(l, r, "mod")
-                }
-                .map_err(|e| CodegenError::LlvmError(e.to_string()))?,
+                BinaryOp::Div | BinaryOp::Mod => self.checked_int_div(op, l, r, unsigned)?,
                 BinaryOp::And => self
                     .builder
                     .build_and(l, r, "and")
@@ -8092,6 +8129,74 @@ impl<'ctx> Compiler<'ctx> {
             };
             Ok(result.into())
         }
+    }
+
+    /// Integer `/` and `MOD` with a defined result for every operand pair.
+    ///
+    /// LLVM's `sdiv`/`udiv`/`srem`/`urem` are undefined behaviour for a zero divisor
+    /// and for `MIN / -1`; on x86 both raise SIGFPE and kill the process, on ARM a
+    /// division by zero quietly yields 0, and under optimization anything may
+    /// happen. So:
+    ///
+    /// * `x / 0` and `x MOD 0` are **0**;
+    /// * `MIN / -1` is MIN (two's complement wrap, like every other overflow here)
+    ///   and `MIN MOD -1` is 0.
+    ///
+    /// CODESYS raises a target-dependent runtime exception for a zero divisor unless
+    /// the project adds a `CheckDivDInt`-style implicit check; see
+    /// docs/codesys-compatibility.md for why plcc defines a value instead.
+    fn checked_int_div(
+        &self,
+        op: BinaryOp,
+        l: inkwell::values::IntValue<'ctx>,
+        r: inkwell::values::IntValue<'ctx>,
+        unsigned: bool,
+    ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+        let err = |e: inkwell::builder::BuilderError| CodegenError::LlvmError(e.to_string());
+        let ty = r.get_type();
+        let zero = ty.const_zero();
+        let one = ty.const_int(1, false);
+        let is_zero = self
+            .builder
+            .build_int_compare(IntPredicate::EQ, r, zero, "div_by_zero")
+            .map_err(err)?;
+        let mut safe_r = self
+            .builder
+            .build_select(is_zero, one, r, "divisor")
+            .map_err(err)?
+            .into_int_value();
+        if !unsigned {
+            // MIN / -1 overflows; MIN / 1 is the wrapped answer, MIN MOD 1 is 0.
+            let bits = ty.get_bit_width();
+            let min = ty.const_int(1u64 << (bits - 1).min(63), false);
+            let min = if bits > 64 { ty.const_zero() } else { min };
+            let l_min = self
+                .builder
+                .build_int_compare(IntPredicate::EQ, l, min, "lhs_min")
+                .map_err(err)?;
+            let r_m1 = self
+                .builder
+                .build_int_compare(IntPredicate::EQ, r, ty.const_all_ones(), "rhs_m1")
+                .map_err(err)?;
+            let ovf = self.builder.build_and(l_min, r_m1, "div_ovf").map_err(err)?;
+            safe_r = self
+                .builder
+                .build_select(ovf, one, safe_r, "divisor")
+                .map_err(err)?
+                .into_int_value();
+        }
+        let q = match (op, unsigned) {
+            (BinaryOp::Div, true) => self.builder.build_int_unsigned_div(l, safe_r, "udiv"),
+            (BinaryOp::Div, false) => self.builder.build_int_signed_div(l, safe_r, "div"),
+            (_, true) => self.builder.build_int_unsigned_rem(l, safe_r, "umod"),
+            (_, false) => self.builder.build_int_signed_rem(l, safe_r, "mod"),
+        }
+        .map_err(err)?;
+        Ok(self
+            .builder
+            .build_select(is_zero, zero, q, "div_result")
+            .map_err(err)?
+            .into_int_value())
     }
 
     /// A binary operator with at least one POINTER operand.
