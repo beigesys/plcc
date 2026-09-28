@@ -5,7 +5,7 @@ use inkwell::context::Context;
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::Module;
 use inkwell::targets::{
-    CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetTriple,
+    CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
 };
 use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, StructType};
 use inkwell::values::{BasicValue, BasicValueEnum, FunctionValue, GlobalValue, PointerValue};
@@ -7865,12 +7865,21 @@ impl<'ctx> Compiler<'ctx> {
 
     /// Write object file to disk.
     pub fn emit_object(&self, path: &Path, triple: &str) -> Result<(), CodegenError> {
-        Target::initialize_all(&InitializationConfig::default());
+        let machine = self.target_machine(triple)?;
+        self.set_target(triple)?;
+        machine
+            .write_to_file(&self.module, FileType::Object, path)
+            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
 
+        Ok(())
+    }
+
+    fn target_machine(&self, triple: &str) -> Result<TargetMachine, CodegenError> {
+        Target::initialize_all(&InitializationConfig::default());
         let target_triple = TargetTriple::create(triple);
         let target = Target::from_triple(&target_triple)
             .map_err(|e| CodegenError::TargetError(e.to_string()))?;
-        let machine = target
+        target
             .create_target_machine(
                 &target_triple,
                 "generic",
@@ -7879,12 +7888,21 @@ impl<'ctx> Compiler<'ctx> {
                 RelocMode::Default,
                 CodeModel::Default,
             )
-            .ok_or_else(|| CodegenError::TargetError("failed to create target machine".into()))?;
+            .ok_or_else(|| CodegenError::TargetError("failed to create target machine".into()))
+    }
 
-        machine
-            .write_to_file(&self.module, FileType::Object, path)
-            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-
+    /// Stamp the module with `triple` and that target's data layout.
+    ///
+    /// Without it an emitted `.ll`/`.bc` carries no data layout, and any optimizer
+    /// that later runs over it (`opt -O2`, `clang -O2 x.ll`) folds struct accesses
+    /// into byte offsets using LLVM's *default* layout, where an i64 is only 4-byte
+    /// aligned: every LINT/LREAL/TIME field after a 4-byte one moves, and the code
+    /// no longer agrees with the offsets in the generated C header.
+    pub fn set_target(&self, triple: &str) -> Result<(), CodegenError> {
+        let machine = self.target_machine(triple)?;
+        self.module.set_triple(&TargetTriple::create(triple));
+        self.module
+            .set_data_layout(&machine.get_target_data().get_data_layout());
         Ok(())
     }
 

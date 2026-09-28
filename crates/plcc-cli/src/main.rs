@@ -366,6 +366,11 @@ fn main() -> Result<()> {
                 report_codegen_error(&e, &inputs);
                 std::process::exit(1);
             }
+            // Every output (.ll, .bc, .o) carries the target's triple and data
+            // layout, so a later optimizer lays structs out as the header says.
+            compiler
+                .set_target(&target)
+                .map_err(|e| miette::miette!("{e}"))?;
 
             if emit_header.is_some() || emit_symbols.is_some() {
                 let contract = compiler
