@@ -590,6 +590,7 @@ impl<'s> Parser<'s> {
         // Parse all type declarations in this TYPE..END_TYPE block
         let mut first_decl = None;
         while !self.ts.at(&Token::EndType) && self.ts.peek().is_some() {
+            let pos_before = self.ts.pos;
             let name = self.expect_ident();
             self.ts.expect(&Token::Colon, &mut self.errors);
             let type_spec = self.parse_type_spec();
@@ -599,6 +600,13 @@ impl<'s> Parser<'s> {
                 None
             };
             self.ts.eat(&Token::Semicolon);
+            // A declaration that consumed nothing (a stray token) must not be
+            // retried forever: this loop queued empty declarations until the
+            // process ran out of memory.
+            if self.ts.pos == pos_before {
+                self.ts.advance();
+                continue;
+            }
 
             let span = name.span.merge(type_spec.span);
             let decl = TypeDeclaration {
@@ -876,6 +884,7 @@ impl<'s> Parser<'s> {
         let mut fields = Vec::new();
 
         while !self.ts.at(&Token::EndUnion) && self.ts.peek().is_some() {
+            let pos_before = self.ts.pos;
             let name = self.expect_ident();
             self.ts.expect(&Token::Colon, &mut self.errors);
             let type_spec = self.parse_type_spec();
@@ -883,6 +892,10 @@ impl<'s> Parser<'s> {
                 .ts
                 .eat(&Token::Semicolon)
                 .unwrap_or(self.ts.peek_span());
+            if self.ts.pos == pos_before {
+                self.ts.advance();
+                continue;
+            }
             let span = name.span.merge(end_span);
             fields.push(StructField {
                 name,
@@ -1221,13 +1234,25 @@ impl<'s> Parser<'s> {
 
         loop {
             match self.ts.peek() {
-                Some(Token::EndCase) | None => break,
+                // A POU that ends inside the CASE: END_CASE is missing. Leave the
+                // END_* for the POU (the expect below reports the missing END_CASE)
+                // instead of eating the rest of the file.
+                Some(
+                    Token::EndCase
+                    | Token::EndProgram
+                    | Token::EndFunction
+                    | Token::EndFunctionBlock
+                    | Token::EndMethod
+                    | Token::EndClass,
+                )
+                | None => break,
                 Some(Token::Else) => {
                     self.ts.advance();
                     else_body = Some(self.parse_statement_list(&[Token::EndCase]));
                     break;
                 }
                 _ => {
+                    let pos_before = self.ts.pos;
                     let branch_start = self.ts.peek_span();
                     let mut labels = Vec::new();
                     loop {
@@ -1247,6 +1272,11 @@ impl<'s> Parser<'s> {
                     let span =
                         branch_start.merge(body.last().map(|s| s.span).unwrap_or(branch_start));
                     branches.push(CaseBranch { labels, body, span });
+                    // A branch that consumed nothing (a token that is neither a
+                    // label nor a statement) must not be retried forever.
+                    if self.ts.pos == pos_before {
+                        self.ts.advance();
+                    }
                 }
             }
         }

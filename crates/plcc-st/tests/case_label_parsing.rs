@@ -42,3 +42,17 @@ END_PROGRAM";
     let (_unit, errors) = plcc_st::parse(src);
     assert!(!errors.is_empty());
 }
+
+/// Tokens that neither start a label nor a statement, in a CASE branch list and a
+/// TYPE block: each used to loop forever, allocating until the process died.
+#[test]
+fn recovery_loops_always_make_progress() {
+    for src in [
+        "PROGRAM p VAR x : INT; END_VAR CASE x OF VAR END_CASE; END_PROGRAM",
+        "TYPE ) END_TYPE",
+        "TYPE T : UNION ) END_UNION; END_TYPE",
+    ] {
+        let (_unit, errors) = plcc_st::parse(src);
+        assert!(!errors.is_empty(), "`{src}` should report an error");
+    }
+}
