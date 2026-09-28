@@ -22,6 +22,7 @@ mod bits;
 mod convert;
 mod enums;
 mod image;
+mod interfaces;
 mod ondemand;
 mod oop;
 mod refs;
@@ -484,6 +485,8 @@ pub struct Compiler<'ctx> {
     enums: enums::EnumTable,
     /// `EXTENDS`: bases and inherited-method origins (see `oop.rs`).
     hierarchy: oop::Hierarchy,
+    /// INTERFACE method tables and IMPLEMENTS sets (see `interfaces.rs`).
+    interfaces: interfaces::InterfaceTable,
     /// (uppercase FB/CLASS, uppercase input) for every `REFERENCE TO` input: a
     /// call binds it to its argument's address (see refs.rs).
     reference_inputs: std::collections::HashSet<(String, String)>,
@@ -519,6 +522,7 @@ impl<'ctx> Compiler<'ctx> {
             rt: image::ContractState::default(),
             enums: enums::EnumTable::default(),
             hierarchy: oop::Hierarchy::default(),
+            interfaces: interfaces::InterfaceTable::default(),
             reference_inputs: std::collections::HashSet::new(),
             current_pou: None,
         }
@@ -2756,7 +2760,7 @@ impl<'ctx> Compiler<'ctx> {
                 // declaration a hard error.
                 Declaration::Interface(iface) => (
                     iface.name.name.clone(),
-                    IecType::Pointer(Box::new(IecType::FbInstance(iface.name.name.clone()))),
+                    Self::interface_type(&iface.name.name),
                 ),
                 _ => continue,
             };
@@ -2792,6 +2796,7 @@ impl<'ctx> Compiler<'ctx> {
         // Record every METHOD signature up front for the same reason: a method call
         // resolves through the owner's recorded `methods` map.
         self.layout_pou_methods(unit);
+        self.layout_interfaces(unit);
 
         // And every FUNCTION signature, for the same reason one level over: a call site
         // has to coerce its arguments to the declared parameter types, and it may be
@@ -5507,6 +5512,10 @@ impl<'ctx> Compiler<'ctx> {
                 if self.try_compile_bit_assignment(target, value, function)? {
                     return Ok(());
                 }
+                // `itf := inst;` — bind an INTERFACE reference.
+                if self.try_compile_interface_store(target, value, function)? {
+                    return Ok(());
+                }
                 // `s := 'abc';` stores the literal's bytes into the STRING buffer.
                 if let (Some(text), Some(ty)) =
                     (Self::string_literal_text(value), self.lvalue_iec_type(target))
@@ -5660,6 +5669,8 @@ impl<'ctx> Compiler<'ctx> {
                     // from the FB-call case above.
                     if self.fb_layout_of(object).is_some() {
                         self.compile_method_call(object, &member.name, args, function)?;
+                    } else if self.interface_of_expr(object).is_some() {
+                        self.compile_interface_call(object, &member.name, args, function)?;
                     } else {
                         as_expression(self)?;
                     }
@@ -5714,6 +5725,11 @@ impl<'ctx> Compiler<'ctx> {
         what: &str,
         function: FunctionValue<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        if let Some(iface) = param_ty.and_then(Self::interface_of_type) {
+            if let Some(v) = self.interface_value(arg, &iface, function)? {
+                return Ok(v);
+            }
+        }
         if let (Some(text), Some(ty)) = (Self::string_literal_text(arg), param_ty) {
             return self.string_literal_const(ty, text).ok_or_else(|| {
                 CodegenError::UnsupportedType(format!(
@@ -5959,6 +5975,15 @@ impl<'ctx> Compiler<'ctx> {
                     continue;
                 }
 
+                // `f(shape := inst)` on an INTERFACE-typed input.
+                if let Some(iface) = Self::interface_of_type(&field.declared) {
+                    if let Some(v) = self.interface_value(&arg.value, &iface, function)? {
+                        self.builder
+                            .build_store(field_ptr, v)
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                        continue;
+                    }
+                }
                 // `f(name := 'abc')`: the literal's bytes into the STRING input.
                 if let Some(text) = Self::string_literal_text(&arg.value) {
                     self.store_string_literal(field_ptr, &field.declared, &arg.value, text)?;
@@ -6745,6 +6770,9 @@ impl<'ctx> Compiler<'ctx> {
                 }
                 // `obj.Method(..)`: the method's declared result type.
                 if let ExpressionKind::MemberAccess { object, member } = &callee.kind {
+                    if self.interface_of_expr(object).is_some() {
+                        return self.interface_method_type(object, &member.name);
+                    }
                     return self
                         .fb_layout_of(object)?
                         .methods
@@ -7273,6 +7301,11 @@ impl<'ctx> Compiler<'ctx> {
                 }
             }
             ExpressionKind::BinaryOp { op, left, right } => {
+                if self.interface_of_expr(left).is_some() || self.interface_of_expr(right).is_some() {
+                    if let Some(v) = self.compile_interface_compare(*op, left, right, function)? {
+                        return Ok(Some(v));
+                    }
+                }
                 if matches!(
                     op,
                     BinaryOp::Equal
@@ -7456,6 +7489,9 @@ impl<'ctx> Compiler<'ctx> {
                     // FB/CLASS instance — including one held in a STRUCT field.
                     if self.fb_layout_of(object).is_some() {
                         return self.compile_method_call(object, &member.name, args, function);
+                    }
+                    if self.interface_of_expr(object).is_some() {
+                        return self.compile_interface_call(object, &member.name, args, function);
                     }
                     // `fb_layout_of` above resolves the instance by type from any
                     // addressable expression — `a[1].Bump(5)`, `s.parts[2].Reset()` —

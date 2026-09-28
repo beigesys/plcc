@@ -105,7 +105,7 @@ Complete IEC 61131-3:2013 (3rd edition) Structured Text:
 |---------|--------|
 | PROGRAM, FUNCTION, FUNCTION_BLOCK | Full |
 | CLASS, METHOD, EXTENDS, THIS^, SUPER^ (OOP) | Full — methods are late-bound for every call through a variable of a known FB/CLASS type (an inherited method is compiled per derived POU); `SUPER^()` runs the base body |
-| INTERFACE | Partial — declarations and IMPLEMENTS parse; an INTERFACE-typed variable (a reference, `itf := inst; itf.M()`) is not compiled yet, see docs/known-issues.md |
+| INTERFACE | Full — `itf := inst`, late-bound `itf.M(..)` (inputs, outputs, in-outs), `itf = 0` / `itf <> 0`, interface-typed FB inputs, FUNCTION parameters and arrays, EXTENDS between interfaces, IMPLEMENTS inherited from a base; no `__QUERYINTERFACE` yet |
 | VAR, VAR_INPUT, VAR_OUTPUT, VAR_IN_OUT (by reference), VAR_TEMP, VAR_GLOBAL | Full |
 | VAR CONSTANT, VAR RETAIN | Full |
 | All elementary types (BOOL through LREAL, STRING, WSTRING, TIME, DATE) | Full — every TIME/date type is i64 nanoseconds (since 1970-01-01 for DATE and DT, since midnight for TOD); converted to/from numbers in CODESYS units (see Standard Library) |

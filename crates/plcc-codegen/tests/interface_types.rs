@@ -7,7 +7,7 @@
 //! FUNCTION_BLOCK and CLASS, so `r : ITimer;` resolved to nothing, and once unknown
 //! types became a hard error, every program declaring one stopped compiling.
 //!
-//! The slot is a pointer, not an inline instance — registering it as an FB instance
+//! The slot is a reference (instance pointer and method table), not an inline instance — registering it as an FB instance
 //! would find no struct layout and silently fall back to an i32 field.
 
 use inkwell::context::Context;
@@ -40,10 +40,11 @@ END_PROGRAM
 #[test]
 fn an_interface_typed_variable_compiles() {
     let ir = emit_ir(IFACE);
-    // The state struct is { ptr, i16 }: a reference slot, then x.
+    // The state struct is { { ptr, ptr }, i16 }: a reference (instance and
+    // method table, see interfaces.rs), then x.
     assert!(
-        ir.contains("{ ptr, i16 }"),
-        "an ITimer variable must lay out as a pointer-sized reference:\n{ir}"
+        ir.contains("{ { ptr, ptr }, i16 }"),
+        "an ITimer variable must lay out as an (instance, table) reference:\n{ir}"
     );
     assert!(
         ir.contains("store i16 5"),
@@ -55,7 +56,7 @@ fn an_interface_typed_variable_compiles() {
 fn an_interface_type_is_case_insensitive_too() {
     let ir = emit_ir(&IFACE.replace("r : ITimer;", "r : itimer;"));
     assert!(
-        ir.contains("{ ptr, i16 }"),
+        ir.contains("{ { ptr, ptr }, i16 }"),
         "`r : itimer;` must resolve the same as `r : ITimer;`:\n{ir}"
     );
 }
