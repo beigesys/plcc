@@ -23,6 +23,7 @@ mod convert;
 mod enums;
 mod image;
 mod oop;
+mod stdfns;
 mod strings;
 pub use contract::{RuntimeContract, TaskOptions};
 
@@ -987,8 +988,37 @@ impl<'ctx> Compiler<'ctx> {
                     )));
                 }
                 let g = self.int_operand(arg_vals[0], &uname)?;
-                let in0 = arg_vals[1];
-                let in1 = arg_vals[2];
+                let (mut in0, mut in1) = (arg_vals[1], arg_vals[2]);
+                // IN0 and IN1 of different types (`SEL(g, int_var, dint_var)`) are
+                // brought to their common type first; selecting between an i16 and
+                // an i32 is invalid IR.
+                if in0.get_type() != in1.get_type() {
+                    let common = Self::arith_result_type(arg_tys[1].clone(), arg_tys[2].clone())
+                        .or_else(|| {
+                            if in0.is_float_value() || in1.is_float_value() {
+                                Some(IecType::Lreal)
+                            } else {
+                                let w = in0
+                                    .into_int_value()
+                                    .get_type()
+                                    .get_bit_width()
+                                    .max(in1.into_int_value().get_type().get_bit_width());
+                                Some(match w {
+                                    0..=8 => IecType::Sint,
+                                    9..=16 => IecType::Int,
+                                    17..=32 => IecType::Dint,
+                                    _ => IecType::Lint,
+                                })
+                            }
+                        })
+                        .ok_or_else(|| {
+                            CodegenError::UnsupportedType(
+                                "SEL: IN0 and IN1 have no common type".into(),
+                            )
+                        })?;
+                    in0 = self.coerce_value(in0, arg_tys[1].as_ref(), &common)?;
+                    in1 = self.coerce_value(in1, arg_tys[2].as_ref(), &common)?;
+                }
                 let cond = self.to_i1(g)?;
                 let result = self
                     .builder
@@ -6542,6 +6572,12 @@ impl<'ctx> Compiler<'ctx> {
                     };
                     return self.rvalue_iec_type(&call);
                 }
+                if let Some(d) = self.desugar_std_call(expr) {
+                    return self.rvalue_iec_type(&d);
+                }
+                if self.is_mux_call(expr) {
+                    return self.mux_result_type(expr);
+                }
                 // `obj.Method(..)`: the method's declared result type.
                 if let ExpressionKind::MemberAccess { object, member } = &callee.kind {
                     return self
@@ -6579,6 +6615,7 @@ impl<'ctx> Compiler<'ctx> {
                     // MIN/MAX return one of their operands, so the result type is the
                     // one the comparison was performed in.
                     "MIN" | "MAX" => Self::arith_result_type(arg_ty(0), arg_ty(1)),
+                    "SEL" => Self::arith_result_type(arg_ty(1), arg_ty(2)),
                     // LIMIT(MN, IN, MX) likewise, over all three.
                     "LIMIT" => Self::arith_result_type(
                         Self::arith_result_type(arg_ty(0), arg_ty(1)),
@@ -7140,6 +7177,12 @@ impl<'ctx> Compiler<'ctx> {
                         span: expr.span,
                     };
                     return self.compile_expression(&call, function);
+                }
+                if let Some(d) = self.desugar_std_call(expr) {
+                    return self.compile_expression(&d, function);
+                }
+                if self.is_mux_call(expr) {
+                    return self.compile_mux(expr, function);
                 }
                 if let ExpressionKind::Identifier(ident) = &callee.kind {
                     // ADR and SIZEOF take their argument as a *location* or a type,

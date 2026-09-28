@@ -126,7 +126,8 @@ Complete IEC 61131-3:2013 (3rd edition) Structured Text:
 |----------|-----------|
 | Math | ABS, SQRT, SIN, COS, TAN, ASIN, ACOS, ATAN, ATAN2, EXP, LN, LOG, EXPT |
 | Rounding | TRUNC, FLOOR, CEIL, ROUND |
-| Selection | MIN, MAX, LIMIT, SEL |
+| Selection | MIN, MAX (extensible), LIMIT, SEL, MUX, MOVE |
+| Operators as functions | ADD, MUL (extensible), SUB, DIV, GT, GE, EQ, LE, LT (extensible, monotonic), NE |
 | Bit ops | SHL, SHR, ROL, ROR |
 | Memory | ADR, SIZEOF |
 | String | LEN, CONCAT (2 or more inputs), LEFT, RIGHT, MID, INSERT, DELETE, FIND, REPLACE, and `=` `<>` `<` `<=` `>` `>=` on STRING — usable anywhere in an expression, nested, with literal arguments; results are truncated to the destination's length. WSTRING values are supported in declarations and assignments only |
