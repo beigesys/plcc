@@ -3272,30 +3272,34 @@ impl<'ctx> Compiler<'ctx> {
 
     /// The formal parameters of a FUNCTION or METHOD, in calling-convention order.
     ///
-    /// VAR_INPUT first, then VAR_IN_OUT — an arbitrary but fixed choice, since caller
-    /// and callee are both generated here. VAR_IN_OUT parameters are passed as
+    /// Declaration order (inputs, in-outs and outputs interleaved as declared), which
+    /// is also the positional-argument order. VAR_IN_OUT parameters are passed as
     /// pointers to the caller's variable (IEC 61131-3 §6.6.1.5, pass-by-reference).
     /// They used to be neither parameters nor references: a VAR_IN_OUT declaration
     /// fell into the "local variable" branch and became an alloca, so `BUMPF(t := v)`
     /// passed an argument to a function that declared none and LLVM's verifier
     /// rejected the module outright.
     fn resolve_params(&mut self, var_blocks: &[VarBlock]) -> Vec<Param> {
+        // Declaration order, whatever the block kind: a positional call binds
+        // its arguments in this order (IEC 61131-3 §6.6.1.4.2). Grouping inputs
+        // before in-outs made `F(a, b)` on `VAR_IN_OUT x; VAR_INPUT y` pass `a` to
+        // y and `b` to x.
         let mut params = Vec::new();
-        for (kind, is_in_out) in [
-            (VarBlockKind::VarInput, false),
-            (VarBlockKind::VarInOut, true),
-            (VarBlockKind::VarOutput, false),
-        ] {
-            for block in var_blocks.iter().filter(|b| b.kind == kind) {
-                for decl in &block.declarations {
-                    let ty = self.resolve_type_spec(&decl.type_spec);
-                    params.push(Param {
-                        name: decl.name.name.clone(),
-                        ty,
-                        is_in_out,
-                        is_output: kind == VarBlockKind::VarOutput,
-                    });
-                }
+        for block in var_blocks {
+            let (is_in_out, is_output) = match block.kind {
+                VarBlockKind::VarInput => (false, false),
+                VarBlockKind::VarInOut => (true, false),
+                VarBlockKind::VarOutput => (false, true),
+                _ => continue,
+            };
+            for decl in &block.declarations {
+                let ty = self.resolve_type_spec(&decl.type_spec);
+                params.push(Param {
+                    name: decl.name.name.clone(),
+                    ty,
+                    is_in_out,
+                    is_output,
+                });
             }
         }
         params
