@@ -1429,7 +1429,7 @@ impl<'ctx> Compiler<'ctx> {
         let i8_ty = self.context.i8_type();
         let ptr_ty = self.context.ptr_type(AddressSpace::default());
         let fn_type = i16_ty.fn_type(&[ptr_ty.into()], false);
-        let function = self.module.add_function("plcc_strlen", fn_type, None);
+        let function = self.module.add_function("plcc_strlen", fn_type, Some(inkwell::module::Linkage::Internal));
 
         let saved_block = self.builder.get_insert_block();
 
@@ -1510,7 +1510,7 @@ impl<'ctx> Compiler<'ctx> {
         let i64_ty = self.context.i64_type();
         let ptr_ty = self.context.ptr_type(AddressSpace::default());
         let fn_type = i16_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
-        let function = self.module.add_function("plcc_find", fn_type, None);
+        let function = self.module.add_function("plcc_find", fn_type, Some(inkwell::module::Linkage::Internal));
 
         let saved_block = self.builder.get_insert_block();
 
@@ -1700,7 +1700,7 @@ impl<'ctx> Compiler<'ctx> {
             &[ptr_ty.into(), ptr_ty.into(), i32_ty.into(), i32_ty.into()],
             false,
         );
-        let function = self.module.add_function("plcc_left", fn_type, None);
+        let function = self.module.add_function("plcc_left", fn_type, Some(inkwell::module::Linkage::Internal));
 
         let saved_block = self.builder.get_insert_block();
 
@@ -1820,7 +1820,7 @@ impl<'ctx> Compiler<'ctx> {
             &[ptr_ty.into(), ptr_ty.into(), i32_ty.into(), i32_ty.into()],
             false,
         );
-        let function = self.module.add_function("plcc_right", fn_type, None);
+        let function = self.module.add_function("plcc_right", fn_type, Some(inkwell::module::Linkage::Internal));
 
         let saved_block = self.builder.get_insert_block();
 
@@ -1981,7 +1981,7 @@ impl<'ctx> Compiler<'ctx> {
             ],
             false,
         );
-        let function = self.module.add_function("plcc_mid", fn_type, None);
+        let function = self.module.add_function("plcc_mid", fn_type, Some(inkwell::module::Linkage::Internal));
 
         let saved_block = self.builder.get_insert_block();
 
@@ -2271,7 +2271,7 @@ impl<'ctx> Compiler<'ctx> {
             ],
             false,
         );
-        let function = self.module.add_function("plcc_replace", fn_type, None);
+        let function = self.module.add_function("plcc_replace", fn_type, Some(inkwell::module::Linkage::Internal));
         let saved_block = self.builder.get_insert_block();
 
         let param = |n: u32| {
