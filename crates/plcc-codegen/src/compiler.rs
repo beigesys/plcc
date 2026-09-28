@@ -4374,6 +4374,12 @@ impl<'ctx> Compiler<'ctx> {
         if let ExpressionKind::StructInitializer(fields) = &init.kind {
             return self.emit_struct_initializer(ptr, iec_ty, fields, function);
         }
+        if let Some(ns) = Self::temporal_literal_ns(init, iec_ty) {
+            self.builder
+                .build_store(ptr, self.context.i64_type().const_int(ns as u64, true))
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+            return Ok(());
+        }
         if let Some(text) = Self::string_literal_text(init) {
             return self.store_string_literal(ptr, iec_ty, init, text);
         }
@@ -4396,6 +4402,10 @@ impl<'ctx> Compiler<'ctx> {
         ty: &IecType,
     ) -> Option<BasicValueEnum<'ctx>> {
         match &expr.kind {
+            ExpressionKind::IntegerLiteral(_) if Self::temporal_literal_ns(expr, ty).is_some() => {
+                let ns = Self::temporal_literal_ns(expr, ty)?;
+                Some(self.context.i64_type().const_int(ns as u64, true).into())
+            }
             ExpressionKind::IntegerLiteral(v) => Some(self.int_literal(*v).into()),
             ExpressionKind::RealLiteral(v) => Some(self.context.f64_type().const_float(*v).into()),
             ExpressionKind::BoolLiteral(v) => {
@@ -5613,6 +5623,15 @@ impl<'ctx> Compiler<'ctx> {
                                 Self::describe_lvalue(target)
                             ))
                         })?;
+                    if let Some(ns) = self
+                        .lvalue_iec_type(target)
+                        .and_then(|t| Self::temporal_literal_ns(value, &t))
+                    {
+                        self.builder
+                            .build_store(ptr, self.context.i64_type().const_int(ns as u64, true))
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                        return Ok(());
+                    }
                     // A right-hand side that yields no value is a diagnostic, like an
                     // unaddressable target. Skipping the store instead made
                     // `pt := ADR(bin);` compile to nothing and leave `pt` unset.
@@ -5805,6 +5824,9 @@ impl<'ctx> Compiler<'ctx> {
         what: &str,
         function: FunctionValue<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        if let Some(ns) = param_ty.and_then(|t| Self::temporal_literal_ns(arg, t)) {
+            return Ok(self.context.i64_type().const_int(ns as u64, true).into());
+        }
         if let Some(iface) = param_ty.and_then(Self::interface_of_type) {
             if let Some(v) = self.interface_value(arg, &iface, function)? {
                 return Ok(v);
@@ -6058,6 +6080,13 @@ impl<'ctx> Compiler<'ctx> {
                     continue;
                 }
 
+                // `ton(PT := 20)`: an integer literal on a TIME input is ms.
+                if let Some(ns) = Self::temporal_literal_ns(&arg.value, &field.declared) {
+                    self.builder
+                        .build_store(field_ptr, self.context.i64_type().const_int(ns as u64, true))
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    continue;
+                }
                 // `f(shape := inst)` on an INTERFACE-typed input.
                 if let Some(iface) = Self::interface_of_type(&field.declared) {
                     if let Some(v) = self.interface_value(&arg.value, &iface, function)? {
@@ -7402,6 +7431,45 @@ impl<'ctx> Compiler<'ctx> {
                 }
             }
             ExpressionKind::BinaryOp { op, left, right } => {
+                // `t + 1000`, `t > 500` with t a TIME: the literal is milliseconds.
+                if matches!(
+                    op,
+                    BinaryOp::Add
+                        | BinaryOp::Sub
+                        | BinaryOp::Equal
+                        | BinaryOp::NotEqual
+                        | BinaryOp::Less
+                        | BinaryOp::LessEqual
+                        | BinaryOp::Greater
+                        | BinaryOp::GreaterEqual
+                ) {
+                    let lt = self.rvalue_iec_type(left);
+                    let rt = self.rvalue_iec_type(right);
+                    let scaled = |ty: &Option<IecType>, lit: &Expression| {
+                        ty.as_ref().and_then(|t| Self::temporal_literal_ns(lit, t)).map(|ns| (ns, t_of(ty)))
+                    };
+                    fn t_of(t: &Option<IecType>) -> IecType {
+                        t.clone().unwrap_or(IecType::Time)
+                    }
+                    if let Some((ns, t)) = scaled(&lt, right) {
+                        let l = self
+                            .compile_expression(left, function)?
+                            .ok_or_else(|| self.no_value_error("operand", left))?;
+                        let r = self.context.i64_type().const_int(ns as u64, true).into();
+                        return self
+                            .compile_binary_op(*op, l, lt.as_ref(), r, Some(&t))
+                            .map(Some);
+                    }
+                    if let Some((ns, t)) = scaled(&rt, left) {
+                        let r = self
+                            .compile_expression(right, function)?
+                            .ok_or_else(|| self.no_value_error("operand", right))?;
+                        let l = self.context.i64_type().const_int(ns as u64, true).into();
+                        return self
+                            .compile_binary_op(*op, l, Some(&t), r, rt.as_ref())
+                            .map(Some);
+                    }
+                }
                 if self.interface_of_expr(left).is_some() || self.interface_of_expr(right).is_some() {
                     if let Some(v) = self.compile_interface_compare(*op, left, right, function)? {
                         return Ok(Some(v));

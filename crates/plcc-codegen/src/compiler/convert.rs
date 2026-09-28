@@ -69,6 +69,17 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
+    /// An integer literal used where a TIME / date value is expected — `t := 5000;`,
+    /// `ton(PT := 20)`, `t > 1000` — in nanoseconds, reading the number in the
+    /// type's numeric unit (milliseconds for TIME, as CODESYS does; see
+    /// `temporal_scale`). It used to be taken as raw nanoseconds, so
+    /// `PT := 20` was a 20 ns timer.
+    pub(super) fn temporal_literal_ns(expr: &Expression, ty: &IecType) -> Option<i64> {
+        let scale = Self::temporal_scale(ty.base())?;
+        let v = Self::const_int_of(expr)?;
+        i64::try_from(v).ok()?.checked_mul(scale)
+    }
+
     /// Lower `name(args)` if it is a conversion function.
     pub(super) fn compile_conversion_call(
         &mut self,
