@@ -6552,44 +6552,62 @@ impl<'ctx> Compiler<'ctx> {
         )
     }
 
-    /// Compile a call on an FB instance that is *not* reached by a bare name —
-    /// `a[1](s := 4)`, `s.parts[2](...)`. Returns `false` when the callee is not an
-    /// FB instance, so the caller can fall through to its other dispatch paths.
+    /// Give every positional argument of an FB call the name of the parameter it
+    /// binds, so the call is lowered as if it had been written formally.
     ///
-    /// `fb_instances` is keyed by instance name and GEPs off the parent state struct
-    /// by field index, so it can only describe a directly named instance. Anything
-    /// else used to reach `compile_expression`, which has no arm for a call on an
-    /// `ArrayIndex` — `a[1](s := 4);` emitted no code and no diagnostic.
-    fn compile_indirect_fb_call(
-        &mut self,
-        callee: &Expression,
-        args: &[CallArg],
-        function: FunctionValue<'ctx>,
-    ) -> Result<bool, CodegenError> {
-        let Some(IecType::FbInstance(fb_type_name)) = self.lvalue_iec_type(callee) else {
-            return Ok(false);
+    /// IEC 61131-3 3rd ed. Annex A lets any `param_assign` omit its name. The
+    /// positional (non-formal) order is the declaration order of the VAR_INPUT and
+    /// VAR_IN_OUT parameters — outputs are not bound positionally, as for a
+    /// FUNCTION call. Unnamed arguments used to be skipped outright, so `f(1, 2);`
+    /// ran the FB with its inputs unchanged. Mixing named and positional arguments
+    /// is an error (CODESYS 3 rejects it), as is passing more than there are inputs.
+    fn name_positional_fb_args<'a>(
+        label: &str,
+        fields: &[PouField],
+        args: &'a [CallArg],
+    ) -> Result<std::borrow::Cow<'a, [CallArg]>, CodegenError> {
+        if args.iter().all(|a| a.name.is_some()) {
+            return Ok(std::borrow::Cow::Borrowed(args));
+        }
+        let err = |problem: String| CodegenError::ArgumentBinding {
+            callee: label.to_string(),
+            problem,
         };
-        let Some(layout) = self.compiled_fbs.get(&fb_type_name.to_uppercase()).cloned() else {
-            return Ok(false);
-        };
-        let Some(fb_ptr) = self.compile_lvalue_with_fn(callee, function)? else {
-            return Err(CodegenError::UnsupportedType(format!(
-                "`{}` is an instance of `{fb_type_name}` but has no address, so it cannot be called",
-                Self::describe_lvalue(callee)
+        if args.iter().any(|a| a.name.is_some()) {
+            return Err(err(
+                "named and positional arguments cannot be mixed — name every argument \
+                 or none of them"
+                    .into(),
+            ));
+        }
+        let params: Vec<&PouField> = fields
+            .iter()
+            .filter(|f| {
+                matches!(
+                    f.block,
+                    Some(VarBlockKind::VarInput) | Some(VarBlockKind::VarInOut)
+                )
+            })
+            .collect();
+        if args.len() > params.len() {
+            return Err(err(format!(
+                "too many arguments: it takes {} input(s)",
+                params.len()
             )));
-        };
-        let label = Self::describe_lvalue(callee);
-        self.emit_fb_call(
-            fb_ptr,
-            layout.struct_type,
-            &layout.fields,
-            &fb_type_name,
-            &layout.scan_fn_name,
-            args,
-            function,
-            &label,
-        )?;
-        Ok(true)
+        }
+        Ok(std::borrow::Cow::Owned(
+            args.iter()
+                .zip(params)
+                .map(|(a, p)| {
+                    let mut a = a.clone();
+                    a.name = Some(Ident {
+                        name: p.name.clone(),
+                        span: a.span,
+                    });
+                    a
+                })
+                .collect(),
+        ))
     }
 
     /// Store the named inputs into an FB instance's state and call its scan function.
@@ -6609,7 +6627,8 @@ impl<'ctx> Compiler<'ctx> {
         // Write named arguments (inputs) to the FB struct fields. Output bindings
         // (`q => x`) are collected and copied out after the call.
         let mut outputs = Vec::new();
-        for arg in args {
+        let args = Self::name_positional_fb_args(label, fields, args)?;
+        for arg in args.iter() {
             if let Some(arg_name) = &arg.name {
                 // Find the field index in the FB's struct
                 let field_idx = fields
