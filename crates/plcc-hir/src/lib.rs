@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 pub mod check;
+pub mod consts;
 pub mod scope;
 pub mod types;
 

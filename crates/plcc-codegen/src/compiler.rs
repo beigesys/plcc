@@ -2706,6 +2706,16 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     pub fn compile(&mut self, unit: &CompilationUnit) -> Result<(), CodegenError> {
+        // `ARRAY[1..N]`, `STRING(LEN)` with named constants: fold to literals. A
+        // bound that is not a constant used to become a one-element array.
+        let (folded, unresolved) = plcc_hir::consts::fold_type_constants(unit);
+        if let Some((_, span, what)) = unresolved.first() {
+            return Err(CodegenError::UnsupportedType(format!(
+                "{what} at source offset {} is not a constant integer expression",
+                span.start
+            )));
+        }
+        let unit = folded.as_ref().unwrap_or(unit);
         // CONFIGURATION / RESOURCE VAR_GLOBAL blocks become ordinary VAR_GLOBALs.
         let hoisted = contract::hoist_configuration_globals(unit);
         let unit = hoisted.as_ref().unwrap_or(unit);

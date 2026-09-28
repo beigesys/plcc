@@ -206,13 +206,28 @@ impl TypeChecker {
         mut self,
         unit: &CompilationUnit,
     ) -> (SymbolTable, Vec<(usize, CheckError)>) {
+        // Named constants in array bounds and string lengths, folded to literals.
+        let (folded, unresolved) = crate::consts::fold_type_constants(unit);
+        let unit = folded.as_ref().unwrap_or(unit);
+        let mut located: Vec<(usize, CheckError)> = unresolved
+            .into_iter()
+            .map(|(i, span, what)| {
+                (
+                    i,
+                    CheckError::General {
+                        message: format!("{what} is not a constant integer expression"),
+                        span: span.into(),
+                    },
+                )
+            })
+            .collect();
+
         // First pass: register all POUs and types
         for decl in &unit.declarations {
             self.register_declaration(decl);
         }
 
         // Second pass: type-check bodies
-        let mut located = Vec::new();
         for (i, decl) in unit.declarations.iter().enumerate() {
             self.check_declaration(decl);
             located.extend(self.errors.drain(..).map(|e| (i, e)));
