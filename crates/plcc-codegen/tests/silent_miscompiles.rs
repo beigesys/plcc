@@ -976,3 +976,42 @@ END_PROGRAM
     assert_eq!(real(&state, 2), 250.0, "MAX(1.5, USINT 250)");
     assert_eq!(lreal(&state, 2), 65000.0, "LREAL := WORD 65000");
 }
+
+// ---------------------------------------------------------------------------
+// DATE / TOD / DT literals carry their value (they compiled to 0)
+// ---------------------------------------------------------------------------
+
+fn i64_at(state: &[u8], idx: usize) -> i64 {
+    let o = idx * 8;
+    i64::from_ne_bytes(state[o..o + 8].try_into().unwrap())
+}
+
+#[test]
+fn date_and_time_literals() {
+    const DAY: i64 = 86_400_000_000_000;
+    const SEC: i64 = 1_000_000_000;
+    let src = r#"
+PROGRAM p
+VAR
+    d1 : DATE := D#2024-01-02;
+    d2 : DATE;
+    d3 : DATE := DATE#2000-02-29;
+    t1 : TOD := TOD#12:30:15.5;
+    t2 : TIME_OF_DAY := TIME_OF_DAY#07:05;
+    dt1 : DT := DT#2024-01-02-12:30:00;
+    later : BOOL;
+    pad : BYTE;
+END_VAR
+    d2 := D#1969-12-31;
+    later := d1 > D#2024-01-01;
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(i64_at(&state, 0), 19_724 * DAY);
+    assert_eq!(i64_at(&state, 1), -DAY);
+    assert_eq!(i64_at(&state, 2), 11_016 * DAY, "leap day");
+    assert_eq!(i64_at(&state, 3), (12 * 3600 + 30 * 60 + 15) * SEC + SEC / 2);
+    assert_eq!(i64_at(&state, 4), (7 * 3600 + 5 * 60) * SEC);
+    assert_eq!(i64_at(&state, 5), 19_724 * DAY + (12 * 3600 + 30 * 60) * SEC);
+    assert_eq!(state[48], 1, "D#2024-01-02 > D#2024-01-01");
+}

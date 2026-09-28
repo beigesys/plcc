@@ -75,6 +75,74 @@ const TYPED_CONVERSIONS: &[&str] = &[
 ];
 
 /// Parse a TIME literal string (e.g., "T#100ms", "T#1s500ms", "T#1h30m") into nanoseconds.
+/// Days from 1970-01-01 to the proleptic-Gregorian date `y-m-d` (Howard Hinnant's
+/// `days_from_civil`).
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Nanoseconds since midnight for `hh:mm[:ss[.frac]]`.
+fn parse_tod_ns(s: &str) -> Option<i64> {
+    let mut parts = s.split(':');
+    let h: i64 = parts.next()?.parse().ok()?;
+    let m: i64 = parts.next()?.parse().ok()?;
+    let (sec, frac_ns) = match parts.next() {
+        None => (0, 0),
+        Some(sec) => {
+            let (whole, frac) = sec.split_once('.').unwrap_or((sec, ""));
+            let whole: i64 = whole.parse().ok()?;
+            let digits: String = frac.chars().take(9).collect();
+            let frac_ns = if digits.is_empty() {
+                0
+            } else {
+                digits.parse::<i64>().ok()? * 10i64.pow(9 - digits.len() as u32)
+            };
+            (whole, frac_ns)
+        }
+    };
+    if parts.next().is_some() || h > 23 || m > 59 || sec > 59 {
+        return None;
+    }
+    Some(((h * 60 + m) * 60 + sec) * 1_000_000_000 + frac_ns)
+}
+
+/// Nanoseconds since 1970-01-01 at midnight for `yyyy-mm-dd`.
+fn parse_date_ns(s: &str) -> Option<i64> {
+    let mut parts = s.splitn(3, '-');
+    let y: i64 = parts.next()?.parse().ok()?;
+    let m: i64 = parts.next()?.parse().ok()?;
+    let d: i64 = parts.next()?.parse().ok()?;
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    days_from_civil(y, m, d).checked_mul(86_400_000_000_000)
+}
+
+/// The value of a DATE / TIME_OF_DAY / DATE_AND_TIME literal in plcc's storage
+/// representation: i64 nanoseconds — since 1970-01-01T00:00 for DATE and DT, since
+/// midnight for TOD. `None` for a malformed literal.
+fn parse_date_time_literal_ns(kind: &ExpressionKind) -> Option<i64> {
+    let body = |raw: &str| raw.split_once('#').map(|(_, b)| b.trim().to_string());
+    match kind {
+        ExpressionKind::DateLiteral(raw) => parse_date_ns(&body(raw)?),
+        ExpressionKind::TodLiteral(raw) => parse_tod_ns(&body(raw)?),
+        ExpressionKind::DtLiteral(raw) => {
+            let b = body(raw)?;
+            // yyyy-mm-dd-hh:mm[:ss[.f]]: the date is the first three '-' fields.
+            let mut it = b.splitn(4, '-');
+            let date = format!("{}-{}-{}", it.next()?, it.next()?, it.next()?);
+            parse_date_ns(&date)?.checked_add(parse_tod_ns(it.next()?)?)
+        }
+        _ => None,
+    }
+}
+
 fn parse_time_literal_ns(s: &str) -> i64 {
     let s = s.trim();
     // Strip the duration prefix. IEC 61131-3 Annex A B.1.2.3 allows T#, LT#,
@@ -7580,12 +7648,20 @@ impl<'ctx> Compiler<'ctx> {
                     self.context.i64_type().const_int(ns as u64, true).into(),
                 ))
             }
+            // DATE and DT are nanoseconds since 1970-01-01, TOD nanoseconds since
+            // midnight — the i64 representation `iec_to_llvm_type` documents. These
+            // used to compile to a constant 0 whatever the literal said.
             ExpressionKind::DateLiteral(_)
             | ExpressionKind::TodLiteral(_)
-            | ExpressionKind::DtLiteral(_) => {
-                // Date/time-of-day literals — store as i64 placeholder
-                Ok(Some(self.context.i64_type().const_int(0, false).into()))
-            }
+            | ExpressionKind::DtLiteral(_) => match parse_date_time_literal_ns(&expr.kind) {
+                Some(ns) => Ok(Some(
+                    self.context.i64_type().const_int(ns as u64, true).into(),
+                )),
+                None => Err(CodegenError::UnsupportedType(format!(
+                    "malformed date/time literal `{}`",
+                    Self::describe_lvalue(expr)
+                ))),
+            },
             ExpressionKind::StringLiteral(_) | ExpressionKind::WstringLiteral(_) => {
                 // String literals — not yet supported in codegen
                 self.no_value_here(expr)
