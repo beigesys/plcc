@@ -7353,7 +7353,17 @@ impl<'ctx> Compiler<'ctx> {
             return Ok(Some(self.enum_value_const(v, &ty)));
         }
         match &expr.kind {
-            ExpressionKind::IntegerLiteral(v) => Ok(Some(self.int_literal(*v).into())),
+            // An integer literal needs 64 bits at most (LINT or ULINT); a larger
+            // one was truncated to its low 64 bits without a word.
+            ExpressionKind::IntegerLiteral(v) => {
+                if !(i64::MIN as i128..=u64::MAX as i128).contains(v) {
+                    return Err(CodegenError::UnsupportedType(format!(
+                        "integer literal {v} does not fit in 64 bits (source offset {})",
+                        expr.span.start
+                    )));
+                }
+                Ok(Some(self.int_literal(*v).into()))
+            }
             // An untyped real literal is held as an LREAL and takes the type its
             // context needs (IEC 61131-3 §6.3.3): stored into a REAL it is rounded
             // once, combined with a REAL it becomes a REAL (`compile_binary_op`).
@@ -7796,6 +7806,26 @@ impl<'ctx> Compiler<'ctx> {
             // its own here, so compile it untyped.
             return self.compile_expression(value, function);
         };
+        // `INT#70000`: a typed literal must fit its type (either as a signed or as
+        // an unsigned value of its width, so `WORD#16#FFFF` and `INT#-1` pass).
+        // It used to be truncated to its low bits: INT#70000 was 4464.
+        if let (Some(Ok(v)), Some(bits)) = (Self::typed_literal_number(value), ty.bit_size()) {
+            let fits = if ty == IecType::Bool {
+                v == 0 || v == 1
+            } else if ty.is_any_int() || ty.is_any_bit() {
+                let lo = -(1i128 << (bits - 1));
+                let hi = (1i128 << bits) - 1;
+                (lo..=hi).contains(&v)
+            } else {
+                true
+            };
+            if !fits {
+                return Err(CodegenError::UnsupportedType(format!(
+                    "typed literal `{}`: {v} is out of range for {ty}",
+                    Self::describe_lvalue(expr)
+                )));
+            }
+        }
         if let Some(c) = self.typed_literal_const(&ty, value) {
             return Ok(Some(c));
         }
