@@ -43,8 +43,6 @@ CODESYS bit-access dialect question.
 Found along the way and **not** fixed here (each is a silent wrong result, not a
 diagnostic):
 
-- `NOT` on any 8-bit value is *boolean* NOT, so `NOT BYTE#16#0F` is 0, not 16#F0 — codegen
-  cannot tell BOOL from BYTE by LLVM width alone.
 - Integer `**` returns its left operand unchanged; REAL `**` is rejected.
 - A STRING initializer on a PROGRAM variable (`s : STRING := 'abc';`) is not applied.
 - Non-standard builtins (`FLOOR`, `CEIL`, `ROUND`) return REAL and shadow OSCAT's own

@@ -334,6 +334,9 @@ pub struct Compiler<'ctx> {
     /// LLVM's verifier rejected the module — `F(5)` against
     /// `FUNCTION F : DINT VAR_INPUT x : DINT`.
     fn_signatures: HashMap<String, Vec<Param>>,
+    /// Declared result type of every user FUNCTION that has one, keyed by lowercased
+    /// name, so a call's static IEC type is known (see [`Self::rvalue_iec_type`]).
+    fn_return_types: HashMap<String, IecType>,
     /// The parent struct type for the current POU being compiled (needed for GEP on FB instances).
     current_struct_type: Option<StructType<'ctx>>,
     /// The state pointer for the current POU being compiled.
@@ -365,6 +368,7 @@ impl<'ctx> Compiler<'ctx> {
             compiled_fbs: HashMap::new(),
             type_specs: HashMap::new(),
             fn_signatures: HashMap::new(),
+            fn_return_types: HashMap::new(),
             current_struct_type: None,
             current_state_ptr: None,
             no_value_cause: None,
@@ -5414,6 +5418,13 @@ impl<'ctx> Compiler<'ctx> {
             let params = self.resolve_params(&func.var_blocks);
             self.fn_signatures
                 .insert(func.name.name.to_lowercase(), params);
+            if let Some(rt) = &func.return_type {
+                let rt = self.resolve_type_spec(rt);
+                if rt != IecType::Void {
+                    self.fn_return_types
+                        .insert(func.name.name.to_lowercase(), rt);
+                }
+            }
         }
     }
 
@@ -6580,6 +6591,7 @@ impl<'ctx> Compiler<'ctx> {
             | ExpressionKind::MemberAccess { .. }
             | ExpressionKind::Dereference(_) => self.lvalue_iec_type(expr),
             ExpressionKind::Parenthesized(inner) => self.rvalue_iec_type(inner),
+            ExpressionKind::BoolLiteral(_) => Some(IecType::Bool),
             // `DWORD#1` is a DWORD: unsigned, whatever the digits look like.
             ExpressionKind::TypedLiteral { type_name, .. } => {
                 plcc_hir::types::resolve_type_name(&type_name.name)
@@ -6615,6 +6627,15 @@ impl<'ctx> Compiler<'ctx> {
             // sign-extended it to -4 in any wider destination — the same for
             // `MAX(b, 100)` = 200.
             ExpressionKind::FunctionCall { callee, args } => {
+                // `obj.Method(..)`: the method's declared result type.
+                if let ExpressionKind::MemberAccess { object, member } = &callee.kind {
+                    return self
+                        .fb_layout_of(object)?
+                        .methods
+                        .get(&member.name.to_uppercase())
+                        .map(|m| m.return_type.clone())
+                        .filter(|t| *t != IecType::Void);
+                }
                 let ExpressionKind::Identifier(name) = &callee.kind else {
                     return None;
                 };
@@ -6645,7 +6666,9 @@ impl<'ctx> Compiler<'ctx> {
                         .rsplit("_TO_")
                         .next()
                         .and_then(plcc_hir::types::resolve_type_name),
-                    _ => None,
+                    // A user FUNCTION's declared result type. Without it
+                    // `NOT MY_BYTE_FN()` could not be told from a BOOL NOT.
+                    _ => self.fn_return_types.get(&name.name.to_lowercase()).cloned(),
                 }
             }
             _ => None,
@@ -7146,7 +7169,8 @@ impl<'ctx> Compiler<'ctx> {
                 let val = self.compile_expression(operand, function)?;
                 match val {
                     Some(v) => {
-                        let result = self.compile_unary_op(*op, v)?;
+                        let operand_ty = self.rvalue_iec_type(operand);
+                        let result = self.compile_unary_op(*op, v, operand_ty.as_ref())?;
                         Ok(Some(result))
                     }
                     None => Ok(None),
@@ -7806,6 +7830,7 @@ impl<'ctx> Compiler<'ctx> {
         &self,
         op: UnaryOp,
         operand: BasicValueEnum<'ctx>,
+        operand_ty: Option<&IecType>,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         match op {
             UnaryOp::Neg => {
@@ -7830,8 +7855,17 @@ impl<'ctx> Compiler<'ctx> {
             }
             UnaryOp::Not => {
                 let int_val = self.int_operand(operand, "NOT")?;
-                let bit_width = int_val.get_type().get_bit_width();
-                if bit_width <= 8 {
+                // NOT is logical on BOOL and bitwise on everything else. BOOL and
+                // BYTE/SINT/USINT share the i8 storage type, so the choice is made by
+                // the operand's *static IEC type*, never by LLVM width: deciding by
+                // width made `NOT BYTE#16#0F` 0 instead of 16#F0. An i1 is always a
+                // BOOL (a comparison result). An i8 with no static type is treated as
+                // BOOL — the untyped i8 values codegen produces are BOOL literals.
+                let is_bool = match operand_ty {
+                    Some(t) => matches!(t, IecType::Bool),
+                    None => int_val.get_type().get_bit_width() <= 8,
+                } || int_val.get_type().get_bit_width() == 1;
+                if is_bool {
                     // Boolean NOT: compare equal to zero, then extend back to i8
                     let zero = int_val.get_type().const_zero();
                     let is_zero = self
@@ -7844,7 +7878,7 @@ impl<'ctx> Compiler<'ctx> {
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                     Ok(result.into())
                 } else {
-                    // Bitwise NOT for wider integer types (WORD, DWORD, etc.)
+                    // Bitwise NOT for every ANY_BIT / ANY_INT type but BOOL.
                     Ok(self
                         .builder
                         .build_not(int_val, "not")

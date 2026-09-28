@@ -296,3 +296,157 @@ END_PROGRAM
     let state = run(src);
     assert_eq!(dint(&state, 0), 4);
 }
+
+// ---------------------------------------------------------------------------
+// NOT is bitwise on every ANY_BIT/ANY_INT type except BOOL
+// ---------------------------------------------------------------------------
+
+fn byte(state: &[u8], idx: usize) -> u8 {
+    state[idx]
+}
+
+#[test]
+fn not_byte_is_bitwise() {
+    let src = r#"
+PROGRAM p
+VAR
+    r1 : BYTE;
+    r2 : BYTE;
+    r3 : BYTE;
+    r4 : BYTE;
+    b : BYTE := 16#0F;
+    z : BYTE;
+END_VAR
+    r1 := NOT BYTE#16#0F;
+    r2 := NOT b;
+    r3 := NOT z;
+    r4 := NOT (b AND 16#03);
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(byte(&state, 0), 0xF0);
+    assert_eq!(byte(&state, 1), 0xF0);
+    assert_eq!(byte(&state, 2), 0xFF);
+    assert_eq!(byte(&state, 3), 0xFC);
+}
+
+#[test]
+fn not_sint_is_bitwise() {
+    let src = r#"
+PROGRAM p
+VAR
+    r1 : SINT;
+    r2 : SINT;
+    s : SINT := 5;
+END_VAR
+    r1 := NOT s;
+    r2 := NOT SINT#0;
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(state[0] as i8, -6, "NOT SINT#5 = -6 (two's complement)");
+    assert_eq!(state[1] as i8, -1);
+}
+
+#[test]
+fn not_bool_stays_logical() {
+    let src = r#"
+PROGRAM p
+VAR
+    r1 : BOOL;
+    r2 : BOOL;
+    r3 : BOOL;
+    r4 : BOOL;
+    t : BOOL := TRUE;
+    n : DINT := 3;
+END_VAR
+    r1 := NOT t;
+    r2 := NOT FALSE;
+    r3 := NOT (n > 5);
+    r4 := NOT NOT t;
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(&state[0..4], &[0, 1, 1, 1]);
+}
+
+#[test]
+fn not_of_byte_function_and_method_results() {
+    let src = r#"
+FUNCTION MASK : BYTE
+VAR_INPUT
+    x : BYTE;
+END_VAR
+    MASK := x AND 16#3C;
+END_FUNCTION
+
+FUNCTION IS_BIG : BOOL
+VAR_INPUT
+    x : BYTE;
+END_VAR
+    IS_BIG := x > 100;
+END_FUNCTION
+
+FUNCTION_BLOCK FB
+METHOD Get : BYTE
+    Get := 16#81;
+END_METHOD
+END_FUNCTION_BLOCK
+
+PROGRAM p
+VAR
+    r1 : BYTE;
+    r2 : BOOL;
+    r3 : BYTE;
+    f : FB;
+END_VAR
+    r1 := NOT MASK(16#FF);
+    r2 := NOT IS_BIG(200);
+    r3 := NOT f.Get();
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(byte(&state, 0), 0xC3);
+    assert_eq!(byte(&state, 1), 0);
+    assert_eq!(byte(&state, 2), 0x7E);
+}
+
+#[test]
+fn byte_bitwise_ops_compares_and_conversions() {
+    let src = r#"
+PROGRAM p
+VAR
+    r_and : BYTE;
+    r_or : BYTE;
+    r_xor : BYTE;
+    gt : BOOL;
+    eq : BOOL;
+    to_bool : BOOL;
+    to_byte : BYTE;
+    pad : BYTE;
+    wide : WORD;
+    a : BYTE := 16#F0;
+    b : BYTE := 16#3C;
+    flag : BOOL := TRUE;
+END_VAR
+    r_and := a AND b;
+    r_or := a OR b;
+    r_xor := a XOR b;
+    gt := a > b;
+    eq := (a AND 16#80) = 16#80;
+    to_bool := BYTE_TO_BOOL(16#10);
+    to_byte := BOOL_TO_BYTE(flag) + 1;
+    wide := NOT BYTE_TO_WORD(a);
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(byte(&state, 0), 0x30);
+    assert_eq!(byte(&state, 1), 0xFC);
+    assert_eq!(byte(&state, 2), 0xCC);
+    assert_eq!(byte(&state, 3), 1);
+    assert_eq!(byte(&state, 4), 1);
+    assert_eq!(byte(&state, 5), 1, "BYTE_TO_BOOL(16#10) is TRUE");
+    assert_eq!(byte(&state, 6), 2);
+    let w = u16::from_ne_bytes([state[8], state[9]]);
+    assert_eq!(w, 0xFF0F);
+}
