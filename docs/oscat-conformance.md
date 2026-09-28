@@ -43,8 +43,6 @@ CODESYS bit-access dialect question.
 Found along the way and **not** fixed here (each is a silent wrong result, not a
 diagnostic):
 
-- `RETURN` compiles to nothing (`compile_statement` has it as a TODO), though the README
-  lists it as Full. Code after `RETURN` runs.
 - `NOT` on any 8-bit value is *boolean* NOT, so `NOT BYTE#16#0F` is 0, not 16#F0 — codegen
   cannot tell BOOL from BYTE by LLVM width alone.
 - Integer `**` returns its left operand unchanged; REAL `**` is rejected.

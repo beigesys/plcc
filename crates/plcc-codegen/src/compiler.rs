@@ -308,6 +308,12 @@ pub struct Compiler<'ctx> {
     /// the loop's condition test: a FOR loop has to run its increment first, or
     /// `CONTINUE` would spin on the same control value forever.
     loop_continue_bb: Option<inkwell::basic_block::BasicBlock<'ctx>>,
+    /// Target block for RETURN: the POU's single exit, where the epilogue (load the
+    /// result, `ret`) is emitted. `None` outside a POU body.
+    return_bb: Option<inkwell::basic_block::BasicBlock<'ctx>>,
+    /// Uppercase name of the result variable of the FUNCTION/METHOD being compiled,
+    /// so `RETURN expr;` (a common vendor extension) can store into it.
+    return_result_var: Option<String>,
     /// Global variables: (global LLVM value, struct type, field names+types).
     global_var: Option<(GlobalValue<'ctx>, StructType<'ctx>, Vec<(String, IecType)>)>,
     /// Compiled FB layouts, keyed by uppercase FB type name.
@@ -353,6 +359,8 @@ impl<'ctx> Compiler<'ctx> {
             type_checker: TypeChecker::new(),
             loop_exit_bb: None,
             loop_continue_bb: None,
+            return_bb: None,
+            return_result_var: None,
             global_var: None,
             compiled_fbs: HashMap::new(),
             type_specs: HashMap::new(),
@@ -4734,6 +4742,80 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
+    /// Compile a POU body with a single exit block that RETURN can branch to.
+    ///
+    /// On return the builder is positioned at the (unterminated) exit block, so the
+    /// caller emits its epilogue — load the result, `ret` — exactly once, and every
+    /// RETURN reaches it with the result value as assigned so far.
+    fn compile_pou_body(
+        &mut self,
+        body: &[Statement],
+        function: FunctionValue<'ctx>,
+        result_var: Option<String>,
+    ) -> Result<(), CodegenError> {
+        let exit_bb = self.context.append_basic_block(function, "pou_exit");
+        let saved = (
+            self.return_bb.replace(exit_bb),
+            std::mem::replace(&mut self.return_result_var, result_var),
+            self.loop_exit_bb.take(),
+            self.loop_continue_bb.take(),
+        );
+        let result = body
+            .iter()
+            .try_for_each(|stmt| self.compile_statement(stmt, function));
+        let (rb, rv, le, lc) = saved;
+        self.return_bb = rb;
+        self.return_result_var = rv;
+        self.loop_exit_bb = le;
+        self.loop_continue_bb = lc;
+        result?;
+        self.branch_to_join(exit_bb)?;
+        self.builder.position_at_end(exit_bb);
+        Ok(())
+    }
+
+    /// `RETURN;` — leave the POU now, from any depth of IF/CASE/loop nesting.
+    ///
+    /// `RETURN expr;` (not IEC 61131-3, but accepted by CODESYS and parsed here) first
+    /// assigns `expr` to the FUNCTION/METHOD result. Like EXIT, the branch terminates
+    /// the current block, so anything after it is compiled into a fresh block with no
+    /// predecessors rather than after the terminator.
+    fn compile_return(
+        &mut self,
+        value: Option<&Expression>,
+        function: FunctionValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let Some(exit_bb) = self.return_bb else {
+            return Err(CodegenError::LlvmError(
+                "RETURN outside a POU body".to_string(),
+            ));
+        };
+        if let Some(value) = value {
+            let Some(name) = self.return_result_var.clone() else {
+                return Err(CodegenError::LlvmError(
+                    "RETURN with a value in a POU that has no result".to_string(),
+                ));
+            };
+            let Some((ptr, ty)) = self.variables.get(&name).cloned() else {
+                return Err(CodegenError::LlvmError(format!(
+                    "result variable '{name}' not bound"
+                )));
+            };
+            let Some(val) = self.compile_expression(value, function)? else {
+                return Err(self.no_value_error("RETURN value", value));
+            };
+            let src = self.rvalue_iec_type(value);
+            let val = self.coerce_value(val, src.as_ref(), &ty)?;
+            self.builder
+                .build_store(ptr, val)
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+        }
+        self.branch_to_join(exit_bb)?;
+        let after = self.context.append_basic_block(function, "after_return");
+        self.builder.position_at_end(after);
+        Ok(())
+    }
+
     /// Branch to `target` unless the block being built already ends in a terminator.
     ///
     /// LLVM's builder appends blindly at the end of the current block, so emitting a
@@ -5027,9 +5109,7 @@ impl<'ctx> Compiler<'ctx> {
         self.add_globals_to_variables()?;
 
         // Compile body
-        for stmt in &prog.body {
-            self.compile_statement(stmt, function)?;
-        }
+        self.compile_pou_body(&prog.body, function, None)?;
 
         self.builder
             .build_return(None)
@@ -5122,9 +5202,7 @@ impl<'ctx> Compiler<'ctx> {
         self.add_globals_to_variables()?;
 
         // Compile body
-        for stmt in &func.body {
-            self.compile_statement(stmt, function)?;
-        }
+        self.compile_pou_body(&func.body, function, (ret_iec_ty != IecType::Void).then(|| func.name.name.to_uppercase()))?;
 
         // Return
         if ret_iec_ty != IecType::Void {
@@ -5205,9 +5283,7 @@ impl<'ctx> Compiler<'ctx> {
         // Add global variables
         self.add_globals_to_variables()?;
 
-        for stmt in &fb.body {
-            self.compile_statement(stmt, function)?;
-        }
+        self.compile_pou_body(&fb.body, function, None)?;
 
         self.builder
             .build_return(None)
@@ -5512,9 +5588,7 @@ impl<'ctx> Compiler<'ctx> {
         self.add_globals_to_variables()?;
 
         // Compile method body
-        for stmt in &method.body {
-            self.compile_statement(stmt, function)?;
-        }
+        self.compile_pou_body(&method.body, function, (ret_iec_ty != IecType::Void).then(|| method.name.name.to_uppercase()))?;
 
         // Return
         if ret_iec_ty != IecType::Void {
@@ -5698,9 +5772,10 @@ impl<'ctx> Compiler<'ctx> {
                     self.builder.position_at_end(after_continue);
                 }
             }
-            StatementKind::Return { .. } | StatementKind::Empty => {
-                // TODO: implement these
+            StatementKind::Return { value } => {
+                self.compile_return(value.as_ref(), function)?;
             }
+            StatementKind::Empty => {}
         }
         Ok(())
     }
