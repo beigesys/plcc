@@ -667,6 +667,10 @@ impl<'ctx> Compiler<'ctx> {
     ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
         let uname = name.to_uppercase();
 
+        // `STRING_TO_<int>`: parse the text.
+        if Self::string_to_target(&uname).is_some() {
+            return self.compile_string_to_int(&uname, args, function);
+        }
         // `<SRC>_TO_<DST>` / `TO_<DST>` between any two elementary types.
         if Self::parse_conversion(&uname).is_some() {
             return self.compile_conversion_call(&uname, args, function);
@@ -6669,6 +6673,7 @@ impl<'ctx> Compiler<'ctx> {
                         Self::parse_conversion(n).map(|(_, dst)| dst)
                     }
                     n if Self::is_datetime_function(n) => Self::datetime_result_type(n),
+                    n if Self::string_to_target(n).is_some() => Self::string_to_target(n),
                     // A user FUNCTION's declared result type. Without it
                     // `NOT MY_BYTE_FN()` could not be told from a BOOL NOT.
                     _ => self.fn_return_types.get(&name.name.to_lowercase()).cloned(),

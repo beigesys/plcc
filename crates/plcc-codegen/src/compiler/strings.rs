@@ -26,7 +26,79 @@ impl<'ctx> Compiler<'ctx> {
         matches!(
             name.to_uppercase().as_str(),
             "CONCAT" | "LEFT" | "RIGHT" | "MID" | "INSERT" | "DELETE" | "REPLACE"
-        )
+        ) || Self::to_string_source(name).is_some()
+    }
+
+    /// `<SRC>_TO_STRING` for an integer, bit-string or BOOL source: its source
+    /// type. (REAL, TIME and date sources are not supported yet; see
+    /// docs/known-issues.md.)
+    pub(super) fn to_string_source(name: &str) -> Option<IecType> {
+        let src = name.to_uppercase();
+        let src = src.strip_suffix("_TO_STRING")?;
+        let ty = plcc_hir::types::resolve_type_name(src)?;
+        (ty.is_any_int() || ty.is_any_bit()).then_some(ty)
+    }
+
+    /// `STRING_TO_<DST>` for an integer, bit-string or BOOL destination.
+    pub(super) fn string_to_target(name: &str) -> Option<IecType> {
+        let dst = name.to_uppercase();
+        let dst = dst.strip_prefix("STRING_TO_")?;
+        let ty = plcc_hir::types::resolve_type_name(dst)?;
+        (ty.is_any_int() || ty.is_any_bit()).then_some(ty)
+    }
+
+    /// `STRING_TO_INT('-42')` and friends: optional blanks, an optional sign, then
+    /// decimal digits up to the first non-digit (`''` and `'abc'` are 0). BOOL is
+    /// TRUE for text starting with `T`/`t` or a non-zero number.
+    pub(super) fn compile_string_to_int(
+        &mut self,
+        name: &str,
+        args: &[CallArg],
+        function: FunctionValue<'ctx>,
+    ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
+        let err = |e: inkwell::builder::BuilderError| CodegenError::LlvmError(e.to_string());
+        let Some(dst) = Self::string_to_target(name) else {
+            return Ok(None);
+        };
+        let [arg] = args else {
+            return Err(CodegenError::ArgumentBinding {
+                callee: name.to_string(),
+                problem: format!("takes exactly 1 argument, got {}", args.len()),
+            });
+        };
+        let (ptr, _) = self.string_operand(&arg.value, name, function)?;
+        let f = self.get_or_create_str_to_i64_fn()?;
+        let v = match self
+            .builder
+            .build_call(f, &[ptr.into()], "str_to_i64")
+            .map_err(err)?
+            .try_as_basic_value()
+        {
+            inkwell::values::ValueKind::Basic(v) => v.into_int_value(),
+            inkwell::values::ValueKind::Instruction(_) => {
+                return Err(CodegenError::LlvmError("plcc_str_to_i64 returned no value".into()));
+            }
+        };
+        if dst == IecType::Bool {
+            let i8t = self.context.i8_type();
+            let first = self.builder.build_load(i8t, ptr, "c0").map_err(err)?.into_int_value();
+            let upper = self
+                .builder
+                .build_and(first, i8t.const_int(0xDF, false), "c0u")
+                .map_err(err)?;
+            let is_t = self
+                .builder
+                .build_int_compare(IntPredicate::EQ, upper, i8t.const_int(b'T' as u64, false), "is_t")
+                .map_err(err)?;
+            let nz = self
+                .builder
+                .build_int_compare(IntPredicate::NE, v, v.get_type().const_zero(), "nz")
+                .map_err(err)?;
+            let b = self.builder.build_or(is_t, nz, "strbool").map_err(err)?;
+            return Ok(Some(self.builder.build_int_z_extend(b, i8t, "strbool8").map_err(err)?.into()));
+        }
+        let it = self.iec_to_llvm_type(&dst).into_int_type();
+        Ok(Some(self.resize_int(v, it, true)?.into()))
     }
 
     /// Bytes (with terminator) of a STRING type.
@@ -92,6 +164,8 @@ impl<'ctx> Compiler<'ctx> {
         let bytes = match name {
             "CONCAT" => args.iter().map(|a| self.arg_string_bytes(&a.value) - 1).sum::<u32>() + 1,
             "INSERT" | "REPLACE" => cap(0) + cap(1) - 1,
+            // An i64 in decimal with its sign, or 'FALSE'.
+            n if Self::to_string_source(n).is_some() => 24,
             _ => cap(0),
         };
         bytes.clamp(1, 1 << 16)
@@ -365,6 +439,42 @@ impl<'ctx> Compiler<'ctx> {
                     )
                     .map_err(err)?;
             }
+            n if Self::to_string_source(n).is_some() => {
+                let src = Self::to_string_source(n).expect("guarded");
+                arity(1)?;
+                let a = &args[0].value;
+                let v = self
+                    .compile_expression(a, function)?
+                    .ok_or_else(|| self.no_value_error(format!("argument of `{name}`"), a))?;
+                let a_ty = self.rvalue_iec_type(a);
+                let v = self.coerce_value(v, a_ty.as_ref(), &src)?;
+                let iv = self.int_operand(v, name)?;
+                if src == IecType::Bool {
+                    let t = self.string_literal_global("TRUE");
+                    let f = self.string_literal_global("FALSE");
+                    let nz = self
+                        .builder
+                        .build_int_compare(IntPredicate::NE, iv, iv.get_type().const_zero(), "b")
+                        .map_err(err)?;
+                    let text = self.builder.build_select(nz, t, f, "booltext").map_err(err)?;
+                    self.emit_string_copy(buf, bytes, text.into_pointer_value())?;
+                } else {
+                    let unsigned = Self::widens_unsigned(&src);
+                    let wide = self.resize_int(iv, self.context.i64_type(), !unsigned)?;
+                    let f = self.get_or_create_i64_to_str_fn()?;
+                    self.builder
+                        .build_call(
+                            f,
+                            &[
+                                buf.into(),
+                                wide.into(),
+                                self.context.bool_type().const_int(unsigned as u64, false).into(),
+                            ],
+                            "",
+                        )
+                        .map_err(err)?;
+                }
+            }
             _ => {
                 return Err(CodegenError::LlvmError(format!(
                     "internal: {name} is not a string builtin"
@@ -372,6 +482,215 @@ impl<'ctx> Compiler<'ctx> {
             }
         }
         Ok(())
+    }
+
+    /// `plcc_i64_to_str(dest, v, unsigned)`: `v` in decimal (at most 21 bytes with
+    /// the terminator), read as unsigned when `unsigned` is set.
+    fn get_or_create_i64_to_str_fn(&self) -> Result<FunctionValue<'ctx>, CodegenError> {
+        let err = |e: inkwell::builder::BuilderError| CodegenError::LlvmError(e.to_string());
+        let ptr = self.context.ptr_type(AddressSpace::default());
+        let i8t = self.context.i8_type();
+        let i64t = self.context.i64_type();
+        let i1 = self.context.bool_type();
+        let ty = self
+            .context
+            .void_type()
+            .fn_type(&[ptr.into(), i64t.into(), i1.into()], false);
+        let (f, new) = self.string_helper("plcc_i64_to_str", ty);
+        if !new {
+            return Ok(f);
+        }
+        let saved = self.builder.get_insert_block();
+        let param = |n: u32| {
+            f.get_nth_param(n)
+                .ok_or_else(|| CodegenError::LlvmError("plcc_i64_to_str: missing param".into()))
+        };
+        let dest = param(0)?.into_pointer_value();
+        let v = param(1)?.into_int_value();
+        let uns = param(2)?.into_int_value();
+        let c = |n: u64| i64t.const_int(n, false);
+        let b = &self.builder;
+        let entry = self.context.append_basic_block(f, "entry");
+        let digits = self.context.append_basic_block(f, "digits");
+        let out_sign = self.context.append_basic_block(f, "sign");
+        let copy = self.context.append_basic_block(f, "copy");
+        let copy_body = self.context.append_basic_block(f, "copy_body");
+        let done = self.context.append_basic_block(f, "done");
+
+        b.position_at_end(entry);
+        let tmp = b.build_array_alloca(i8t, c(24), "tmp").map_err(err)?;
+        let neg = b
+            .build_int_compare(IntPredicate::SLT, v, i64t.const_zero(), "neg")
+            .map_err(err)?;
+        let not_uns = b.build_not(uns, "signed").map_err(err)?;
+        let neg = b.build_and(neg, not_uns, "is_neg").map_err(err)?;
+        let minus = b.build_int_sub(i64t.const_zero(), v, "minus").map_err(err)?;
+        let mag = b.build_select(neg, minus, v, "mag").map_err(err)?.into_int_value();
+        let mag_p = b.build_alloca(i64t, "mag_p").map_err(err)?;
+        let n_p = b.build_alloca(i64t, "n_p").map_err(err)?;
+        let k_p = b.build_alloca(i64t, "k_p").map_err(err)?;
+        b.build_store(mag_p, mag).map_err(err)?;
+        b.build_store(n_p, c(0)).map_err(err)?;
+        b.build_unconditional_branch(digits).map_err(err)?;
+
+        // Digits, least significant first, into tmp (do ... while mag != 0).
+        b.position_at_end(digits);
+        let m = b.build_load(i64t, mag_p, "m").map_err(err)?.into_int_value();
+        let n = b.build_load(i64t, n_p, "n").map_err(err)?.into_int_value();
+        let d = b.build_int_unsigned_rem(m, c(10), "d").map_err(err)?;
+        let ch = b.build_int_add(d, c(b'0' as u64), "ch").map_err(err)?;
+        let ch = b.build_int_truncate(ch, i8t, "ch8").map_err(err)?;
+        let slot = unsafe { b.build_in_bounds_gep(i8t, tmp, &[n], "slot") }.map_err(err)?;
+        b.build_store(slot, ch).map_err(err)?;
+        let m2 = b.build_int_unsigned_div(m, c(10), "m2").map_err(err)?;
+        b.build_store(mag_p, m2).map_err(err)?;
+        let n2 = b.build_int_add(n, c(1), "n2").map_err(err)?;
+        b.build_store(n_p, n2).map_err(err)?;
+        let more = b
+            .build_int_compare(IntPredicate::NE, m2, i64t.const_zero(), "more")
+            .map_err(err)?;
+        b.build_conditional_branch(more, digits, out_sign).map_err(err)?;
+
+        b.position_at_end(out_sign);
+        b.build_store(k_p, c(0)).map_err(err)?;
+        let minus_ch = i8t.const_int(b'-' as u64, false);
+        b.build_store(dest, b.build_select(neg, minus_ch, i8t.const_zero(), "s").map_err(err)?)
+            .map_err(err)?;
+        let k0 = b.build_int_z_extend(neg, i64t, "k0").map_err(err)?;
+        b.build_store(k_p, k0).map_err(err)?;
+        b.build_unconditional_branch(copy).map_err(err)?;
+
+        // Reverse tmp[0..n) into dest[k..].
+        b.position_at_end(copy);
+        let n = b.build_load(i64t, n_p, "n").map_err(err)?.into_int_value();
+        let any = b
+            .build_int_compare(IntPredicate::NE, n, i64t.const_zero(), "any")
+            .map_err(err)?;
+        b.build_conditional_branch(any, copy_body, done).map_err(err)?;
+
+        b.position_at_end(copy_body);
+        let n1 = b.build_int_sub(n, c(1), "n1").map_err(err)?;
+        b.build_store(n_p, n1).map_err(err)?;
+        let src = unsafe { b.build_in_bounds_gep(i8t, tmp, &[n1], "src") }.map_err(err)?;
+        let ch = b.build_load(i8t, src, "ch").map_err(err)?;
+        let k = b.build_load(i64t, k_p, "k").map_err(err)?.into_int_value();
+        let dst = unsafe { b.build_in_bounds_gep(i8t, dest, &[k], "dst") }.map_err(err)?;
+        b.build_store(dst, ch).map_err(err)?;
+        let k1 = b.build_int_add(k, c(1), "k1").map_err(err)?;
+        b.build_store(k_p, k1).map_err(err)?;
+        b.build_unconditional_branch(copy).map_err(err)?;
+
+        b.position_at_end(done);
+        let k = b.build_load(i64t, k_p, "k").map_err(err)?.into_int_value();
+        let end = unsafe { b.build_in_bounds_gep(i8t, dest, &[k], "end") }.map_err(err)?;
+        b.build_store(end, i8t.const_zero()).map_err(err)?;
+        b.build_return(None).map_err(err)?;
+        if let Some(bb) = saved {
+            self.builder.position_at_end(bb);
+        }
+        Ok(f)
+    }
+
+    /// `plcc_str_to_i64(s) -> i64`: blanks, optional sign, decimal digits.
+    fn get_or_create_str_to_i64_fn(&self) -> Result<FunctionValue<'ctx>, CodegenError> {
+        let err = |e: inkwell::builder::BuilderError| CodegenError::LlvmError(e.to_string());
+        let ptr = self.context.ptr_type(AddressSpace::default());
+        let i8t = self.context.i8_type();
+        let i64t = self.context.i64_type();
+        let ty = i64t.fn_type(&[ptr.into()], false);
+        let (f, new) = self.string_helper("plcc_str_to_i64", ty);
+        if !new {
+            return Ok(f);
+        }
+        let saved = self.builder.get_insert_block();
+        let s = f
+            .get_nth_param(0)
+            .ok_or_else(|| CodegenError::LlvmError("plcc_str_to_i64: missing param".into()))?
+            .into_pointer_value();
+        let c = |n: u64| i64t.const_int(n, false);
+        let c8 = |ch: u8| i8t.const_int(ch as u64, false);
+        let b = &self.builder;
+        let entry = self.context.append_basic_block(f, "entry");
+        let blanks = self.context.append_basic_block(f, "blanks");
+        let skip = self.context.append_basic_block(f, "skip");
+        let sign = self.context.append_basic_block(f, "sign");
+        let digits = self.context.append_basic_block(f, "digits");
+        let digit = self.context.append_basic_block(f, "digit");
+        let done = self.context.append_basic_block(f, "done");
+
+        b.position_at_end(entry);
+        let i_p = b.build_alloca(i64t, "i_p").map_err(err)?;
+        let v_p = b.build_alloca(i64t, "v_p").map_err(err)?;
+        let neg_p = b.build_alloca(i8t, "neg_p").map_err(err)?;
+        b.build_store(i_p, c(0)).map_err(err)?;
+        b.build_store(v_p, c(0)).map_err(err)?;
+        b.build_store(neg_p, c8(0)).map_err(err)?;
+        b.build_unconditional_branch(blanks).map_err(err)?;
+
+        let load_ch = |name: &str| -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+            let i = b.build_load(i64t, i_p, "i").map_err(err)?.into_int_value();
+            let p = unsafe { b.build_in_bounds_gep(i8t, s, &[i], name) }.map_err(err)?;
+            Ok(b.build_load(i8t, p, name).map_err(err)?.into_int_value())
+        };
+        let bump = || -> Result<(), CodegenError> {
+            let i = b.build_load(i64t, i_p, "i").map_err(err)?.into_int_value();
+            let i1 = b.build_int_add(i, c(1), "i1").map_err(err)?;
+            b.build_store(i_p, i1).map_err(err)?;
+            Ok(())
+        };
+
+        b.position_at_end(blanks);
+        let ch = load_ch("b")?;
+        let is_blank = b
+            .build_int_compare(IntPredicate::EQ, ch, c8(b' '), "blank")
+            .map_err(err)?;
+        b.build_conditional_branch(is_blank, skip, sign).map_err(err)?;
+        b.position_at_end(skip);
+        bump()?;
+        b.build_unconditional_branch(blanks).map_err(err)?;
+
+        b.position_at_end(sign);
+        let ch = load_ch("s")?;
+        let is_minus = b.build_int_compare(IntPredicate::EQ, ch, c8(b'-'), "minus").map_err(err)?;
+        let is_plus = b.build_int_compare(IntPredicate::EQ, ch, c8(b'+'), "plus").map_err(err)?;
+        let signed = b.build_or(is_minus, is_plus, "signed").map_err(err)?;
+        let neg8 = b.build_int_z_extend(is_minus, i8t, "neg8").map_err(err)?;
+        b.build_store(neg_p, neg8).map_err(err)?;
+        let i = b.build_load(i64t, i_p, "i").map_err(err)?.into_int_value();
+        let adv = b.build_int_z_extend(signed, i64t, "adv").map_err(err)?;
+        let i2 = b.build_int_add(i, adv, "i2").map_err(err)?;
+        b.build_store(i_p, i2).map_err(err)?;
+        b.build_unconditional_branch(digits).map_err(err)?;
+
+        b.position_at_end(digits);
+        let ch = load_ch("d")?;
+        let ge0 = b.build_int_compare(IntPredicate::UGE, ch, c8(b'0'), "ge0").map_err(err)?;
+        let le9 = b.build_int_compare(IntPredicate::ULE, ch, c8(b'9'), "le9").map_err(err)?;
+        let is_digit = b.build_and(ge0, le9, "isdigit").map_err(err)?;
+        b.build_conditional_branch(is_digit, digit, done).map_err(err)?;
+
+        b.position_at_end(digit);
+        let ch = load_ch("dd")?;
+        let dv = b.build_int_z_extend(ch, i64t, "dv").map_err(err)?;
+        let dv = b.build_int_sub(dv, c(b'0' as u64), "dv0").map_err(err)?;
+        let v = b.build_load(i64t, v_p, "v").map_err(err)?.into_int_value();
+        let v10 = b.build_int_mul(v, c(10), "v10").map_err(err)?;
+        let v2 = b.build_int_add(v10, dv, "v2").map_err(err)?;
+        b.build_store(v_p, v2).map_err(err)?;
+        bump()?;
+        b.build_unconditional_branch(digits).map_err(err)?;
+
+        b.position_at_end(done);
+        let v = b.build_load(i64t, v_p, "v").map_err(err)?.into_int_value();
+        let neg = b.build_load(i8t, neg_p, "neg").map_err(err)?.into_int_value();
+        let neg = b.build_int_compare(IntPredicate::NE, neg, c8(0), "negb").map_err(err)?;
+        let mv = b.build_int_sub(c(0), v, "mv").map_err(err)?;
+        let r = b.build_select(neg, mv, v, "r").map_err(err)?;
+        b.build_return(Some(&r)).map_err(err)?;
+        if let Some(bb) = saved {
+            self.builder.position_at_end(bb);
+        }
+        Ok(f)
     }
 
     /// `a <op> b` for two STRINGs: byte-wise (unsigned) lexicographic comparison.
