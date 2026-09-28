@@ -603,6 +603,20 @@ impl<'ctx> Compiler<'ctx> {
             )));
         };
         let val = self.int_operand(val, "IN of a shift or rotate")?;
+        // IN of a narrow type computed at native width (`ROL(b + 1, 1)`: integer
+        // temporaries are at least 32 bits) shifts and rotates at its type's
+        // width, not the temporary's.
+        let val = match arg_tys
+            .first()
+            .and_then(|t| t.as_ref())
+            .and_then(|t| t.base().bit_size())
+        {
+            Some(bits) if bits > 1 && bits < val.get_type().get_bit_width() => self
+                .builder
+                .build_int_truncate(val, self.context.custom_width_int_type(bits), "shift_in")
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?,
+            _ => val,
+        };
         let n = self.int_operand(n, "N of a shift or rotate")?;
         let n = if n.get_type().get_bit_width() < 8 {
             self.widen_to(n, Signedness::Unsigned, self.context.i8_type())?

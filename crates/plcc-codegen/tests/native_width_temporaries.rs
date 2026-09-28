@@ -45,3 +45,22 @@ END_PROGRAM
         assert_eq!(s.i64("q"), 128);
     }
 }
+
+#[test]
+fn shifts_and_rotates_of_a_narrow_temporary_use_its_type_width() {
+    let src = r#"
+PROGRAM p
+VAR b : BYTE := 16#80; r1 : BYTE; r2 : BYTE; w : WORD := 16#8000; r3 : WORD; r4 : DWORD; END_VAR
+r1 := ROL(b + 0, 1);
+r2 := ROR(b + 1, 1);
+r3 := ROL(w + 0, 1);
+r4 := SHL(b + 0, 1);
+END_PROGRAM
+"#;
+    for s in [run(src), run_o3(src)] {
+        assert_eq!(s.u64("r1"), 0x01, "rotated within 8 bits, not 32");
+        assert_eq!(s.u64("r2"), 0xC0);
+        assert_eq!(s.u64("r3"), 0x0001);
+        assert_eq!(s.u64("r4"), 0, "SHL of a BYTE drops the top bit");
+    }
+}
