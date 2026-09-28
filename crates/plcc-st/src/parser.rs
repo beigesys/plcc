@@ -1142,6 +1142,42 @@ impl<'s> Parser<'s> {
                 // Assignment or function call
                 let expr = self.parse_expression();
 
+                // CODESYS set/reset assignment: `q S= cond;` is `IF cond THEN q :=
+                // TRUE; END_IF`, `q R= cond;` the same with FALSE. Lexed as the
+                // identifier `S`/`R` directly followed by `=`, so a variable `S`
+                // compared with `=` elsewhere is unaffected.
+                if let (Some((Token::Identifier, op_span)), Some((Token::Equal, eq_span))) = (
+                    self.ts.tokens.get(self.ts.pos).cloned(),
+                    self.ts.tokens.get(self.ts.pos + 1).cloned(),
+                ) {
+                    let op = self.ts.slice(self.source, &op_span).to_uppercase();
+                    if (op == "S" || op == "R") && op_span.end == eq_span.start {
+                        self.ts.advance();
+                        self.ts.advance();
+                        let cond = self.parse_expression();
+                        let end = self.expect_statement_end();
+                        let span = start.merge(end);
+                        let assign = Statement {
+                            kind: StatementKind::Assignment {
+                                target: expr,
+                                value: Expression {
+                                    kind: ExpressionKind::BoolLiteral(op == "S"),
+                                    span: op_span,
+                                },
+                            },
+                            span,
+                        };
+                        return Some(Statement {
+                            kind: StatementKind::If {
+                                condition: cond,
+                                then_body: vec![assign],
+                                elsif_branches: Vec::new(),
+                                else_body: None,
+                            },
+                            span,
+                        });
+                    }
+                }
                 if self.ts.eat(&Token::RefAssign).is_some() {
                     // `r REF= x;` — the reference is bound to x's address. Lowered
                     // as an assignment of `__REF_OF(x)`, which codegen treats as
