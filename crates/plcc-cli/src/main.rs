@@ -21,10 +21,14 @@ enum Commands {
         #[arg(long)]
         dump_ast: bool,
     },
-    /// Parse and type-check a Structured Text file
+    /// Parse and type-check Structured Text files — exactly the check `compile`
+    /// runs before code generation
     Check {
-        /// Input .st file
-        input: PathBuf,
+        /// Input .st file(s)
+        inputs: Vec<PathBuf>,
+        /// Standard function block library to check against (as `compile` does)
+        #[arg(long, value_enum, default_value_t = StdlibOpt::BundledSt)]
+        stdlib: StdlibOpt,
     },
     /// Compile one or more Structured Text files
     Compile {
@@ -54,6 +58,10 @@ enum Commands {
         /// Interval of the implicit task when the source has no CONFIGURATION
         #[arg(long, value_name = "TIME", default_value = "T#20ms")]
         task_interval: String,
+        /// Skip the type checker (`plcc check`) that otherwise runs before code
+        /// generation and stops the build on a type error
+        #[arg(long)]
+        no_typecheck: bool,
     },
     /// Compile and JIT-run ST programs, optionally with Modbus TCP for SCADA
     Sim {
@@ -71,6 +79,9 @@ enum Commands {
         /// Standard function block library to compile alongside the program
         #[arg(long, value_enum, default_value_t = StdlibOpt::BundledSt)]
         stdlib: StdlibOpt,
+        /// Skip the type checker that otherwise runs before code generation
+        #[arg(long)]
+        no_typecheck: bool,
     },
 }
 
@@ -109,8 +120,26 @@ fn declaration_name(decl: &plcc_st::ast::Declaration) -> Option<String> {
     Some(name.to_uppercase())
 }
 
-fn parse_inputs(inputs: &[PathBuf], stdlib: StdlibOpt) -> Result<plcc_st::ast::CompilationUnit> {
+/// Where a declaration of the merged unit came from, for diagnostics: spans are
+/// offsets into that one file's source.
+#[derive(Clone)]
+struct Origin {
+    name: String,
+    source: std::rc::Rc<String>,
+    /// Part of the bundled standard library rather than the user's input.
+    prelude: bool,
+}
+
+/// The merged compilation unit of every input (plus the prelude), and the origin of
+/// each of its declarations, index for index.
+struct Parsed {
+    unit: plcc_st::ast::CompilationUnit,
+    origins: Vec<Origin>,
+}
+
+fn parse_inputs(inputs: &[PathBuf], stdlib: StdlibOpt) -> Result<Parsed> {
     let mut all_declarations = Vec::new();
+    let mut origins = Vec::new();
     for input in inputs {
         let source = read_source(input)?;
         let (unit, errors) = plcc_st::parse(&source);
@@ -123,6 +152,12 @@ fn parse_inputs(inputs: &[PathBuf], stdlib: StdlibOpt) -> Result<plcc_st::ast::C
             }
             std::process::exit(1);
         }
+        let origin = Origin {
+            name: input.display().to_string(),
+            source: std::rc::Rc::new(source),
+            prelude: false,
+        };
+        origins.extend(std::iter::repeat_n(origin, unit.declarations.len()));
         all_declarations.extend(unit.declarations);
     }
 
@@ -143,6 +178,7 @@ fn parse_inputs(inputs: &[PathBuf], stdlib: StdlibOpt) -> Result<plcc_st::ast::C
             .collect();
 
         let mut prelude = Vec::new();
+        let mut prelude_origins = Vec::new();
         for unit_src in plcc_stdlib::UNITS {
             let (unit, errors) = plcc_st::parse(unit_src.source);
             if !errors.is_empty() {
@@ -161,22 +197,66 @@ fn parse_inputs(inputs: &[PathBuf], stdlib: StdlibOpt) -> Result<plcc_st::ast::C
                 );
                 std::process::exit(1);
             }
+            let origin = Origin {
+                name: unit_src.name.to_string(),
+                source: std::rc::Rc::new(unit_src.source.to_string()),
+                prelude: true,
+            };
             for decl in unit.declarations {
                 let superseded = declaration_name(&decl).is_some_and(|n| user_names.contains(&n));
                 if !superseded {
                     prelude.push(decl);
+                    prelude_origins.push(origin.clone());
                 }
             }
         }
         // Prelude first: user code may instantiate a prelude FB, never the reverse.
         prelude.extend(all_declarations);
         all_declarations = prelude;
+        prelude_origins.extend(origins);
+        origins = prelude_origins;
     }
 
-    Ok(plcc_st::ast::CompilationUnit {
-        declarations: all_declarations,
-        span: plcc_st::span::Span::empty(),
+    Ok(Parsed {
+        unit: plcc_st::ast::CompilationUnit {
+            declarations: all_declarations,
+            span: plcc_st::span::Span::empty(),
+        },
+        origins,
     })
+}
+
+/// Run the HIR type checker over the merged unit and print its diagnostics against
+/// the file each came from. Returns whether any is an error (warnings do not stop
+/// a build). `plcc check` and `plcc compile` both call this, so they always agree.
+///
+/// CODESYS will not build a project with type errors; neither does `compile`,
+/// unless `--no-typecheck` is given.
+fn run_typecheck(parsed: &Parsed) -> bool {
+    let (_symbols, diagnostics) = plcc_hir::TypeChecker::new().check_located(&parsed.unit);
+    let mut errors = 0;
+    let mut warnings = 0;
+    for (index, diag) in diagnostics {
+        let Some(origin) = parsed.origins.get(index) else {
+            continue;
+        };
+        if diag.is_warning() {
+            // The bundled library is ours; its warnings are not the user's problem.
+            if origin.prelude {
+                continue;
+            }
+            warnings += 1;
+        } else {
+            errors += 1;
+        }
+        let report = miette::Report::new(diag)
+            .with_source_code(NamedSource::new(&origin.name, origin.source.as_str().to_owned()));
+        eprintln!("{report:?}");
+    }
+    if errors > 0 || warnings > 0 {
+        eprintln!("type check: {errors} error(s), {warnings} warning(s)");
+    }
+    errors > 0
 }
 
 fn main() -> Result<()> {
@@ -210,31 +290,17 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Commands::Check { input } => {
-            let source = read_source(&input)?;
-            let (unit, parse_errors) = plcc_st::parse(&source);
-            let file_name = input.display().to_string();
-
-            if !parse_errors.is_empty() {
-                for err in &parse_errors {
-                    let report = miette::Report::new(err.clone())
-                        .with_source_code(NamedSource::new(&file_name, source.clone()));
-                    eprintln!("{:?}", report);
-                }
+        Commands::Check { inputs, stdlib } => {
+            if inputs.is_empty() {
+                eprintln!("Error: at least one input file is required");
                 std::process::exit(1);
             }
-
-            let (_symbols, check_errors) = plcc_hir::check(&unit);
-            if !check_errors.is_empty() {
-                for err in &check_errors {
-                    let report = miette::Report::new(err.clone())
-                        .with_source_code(NamedSource::new(&file_name, source.clone()));
-                    eprintln!("{:?}", report);
-                }
+            let parsed = parse_inputs(&inputs, stdlib)?;
+            if run_typecheck(&parsed) {
                 std::process::exit(1);
             }
-
-            println!("OK: {} declaration(s) checked", unit.declarations.len());
+            let user_decls = parsed.origins.iter().filter(|o| !o.prelude).count();
+            println!("OK: {user_decls} declaration(s) checked");
             Ok(())
         }
         Commands::Compile {
@@ -246,13 +312,19 @@ fn main() -> Result<()> {
             emit_symbols,
             image_size,
             task_interval,
+            no_typecheck,
         } => {
             if inputs.is_empty() {
                 eprintln!("Error: at least one input file is required");
                 std::process::exit(1);
             }
 
-            let merged = parse_inputs(&inputs, stdlib)?;
+            let parsed = parse_inputs(&inputs, stdlib)?;
+            if !no_typecheck && run_typecheck(&parsed) {
+                eprintln!("not compiled: fix the type errors, or pass --no-typecheck");
+                std::process::exit(1);
+            }
+            let merged = parsed.unit;
             let context = inkwell::context::Context::create();
             let mut compiler =
                 plcc_codegen::Compiler::new(&context, &inputs[0].display().to_string());
@@ -309,13 +381,19 @@ fn main() -> Result<()> {
             interval_ms,
             modbus,
             stdlib,
+            no_typecheck,
         } => {
             if inputs.is_empty() {
                 eprintln!("Usage: plcc sim <program.st> [--scans 0] [--modbus 502]");
                 std::process::exit(1);
             }
 
-            let merged = parse_inputs(&inputs, stdlib)?;
+            let parsed = parse_inputs(&inputs, stdlib)?;
+            if !no_typecheck && run_typecheck(&parsed) {
+                eprintln!("not run: fix the type errors, or pass --no-typecheck");
+                std::process::exit(1);
+            }
+            let merged = parsed.unit;
             let context = inkwell::context::Context::create();
             let mut compiler = plcc_codegen::Compiler::new(&context, "sim");
             if let Err(e) = compiler.compile(&merged) {

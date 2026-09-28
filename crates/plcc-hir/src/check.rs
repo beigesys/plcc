@@ -52,6 +52,117 @@ pub enum CheckError {
         #[label("{message}")]
         span: miette::SourceSpan,
     },
+
+    /// A numeric conversion that may lose information or change sign, made
+    /// implicitly: `i := r`, `b := i`, `r := lr`. IEC 61131-3 only converts
+    /// implicitly when no information is lost; CODESYS compiles these and reports
+    /// "Implicit conversion from 'X' to 'Y': possible loss of information" (C0197) /
+    /// "possible change of sign" (C0195). plcc follows CODESYS: a warning, not an
+    /// error.
+    #[error("implicit conversion from {from} to {to}: possible loss of information or change of sign")]
+    #[diagnostic(severity(Warning))]
+    ImplicitConversion {
+        from: String,
+        to: String,
+        #[label("implicitly converted to {to}")]
+        span: miette::SourceSpan,
+    },
+}
+
+impl CheckError {
+    /// A diagnostic that does not stop compilation.
+    pub fn is_warning(&self) -> bool {
+        matches!(self, CheckError::ImplicitConversion { .. })
+    }
+}
+
+/// An untyped numeric literal, or a constant expression made only of them
+/// (`5`, `-1`, `2.0`, `(3 * 4)`). IEC 61131-3 gives such a literal no fixed type:
+/// it takes the type its context needs, so `r := 2.0 * r` is REAL arithmetic and
+/// `b := 5` stores into a BYTE. Typing literals eagerly as SINT/LREAL made the
+/// checker reject exactly that everyday code.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Literal {
+    Int(i128),
+    Real,
+}
+
+fn untyped_literal(expr: &Expression) -> Option<Literal> {
+    match &expr.kind {
+        ExpressionKind::IntegerLiteral(v) => Some(Literal::Int(*v)),
+        ExpressionKind::RealLiteral(_) => Some(Literal::Real),
+        ExpressionKind::Parenthesized(inner) => untyped_literal(inner),
+        ExpressionKind::UnaryOp {
+            op: UnaryOp::Neg,
+            operand,
+        } => match untyped_literal(operand)? {
+            Literal::Int(v) => Some(Literal::Int(-v)),
+            Literal::Real => Some(Literal::Real),
+        },
+        ExpressionKind::BinaryOp { op, left, right } => {
+            let (l, r) = (untyped_literal(left)?, untyped_literal(right)?);
+            match (l, r) {
+                // `**` is EXPT, whose result is always real.
+                _ if *op == BinaryOp::Power => Some(Literal::Real),
+                (Literal::Int(_), Literal::Int(_)) => {
+                    // Fold what we can; an unfoldable one is still an integer.
+                    let v = TypeChecker::const_int_expr(expr).unwrap_or(0);
+                    matches!(
+                        op,
+                        BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod
+                    )
+                    .then_some(Literal::Int(v as i128))
+                }
+                _ if matches!(
+                    op,
+                    BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
+                ) =>
+                {
+                    Some(Literal::Real)
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Can the untyped literal `lit` stand for a value of type `ty` without loss?
+fn literal_fits(lit: Literal, ty: &IecType) -> bool {
+    let ty = ty.base();
+    match lit {
+        Literal::Real => ty.is_any_real(),
+        Literal::Int(v) => {
+            if ty.is_any_real() {
+                return true;
+            }
+            // BOOL accepts 0 and 1 — `q := 0;` is common CODESYS/OSCAT code.
+            if *ty == IecType::Bool {
+                return v == 0 || v == 1;
+            }
+            let Some(bits) = ty.bit_size() else {
+                return false;
+            };
+            if ty.is_any_signed() {
+                let max = (1i128 << (bits - 1)) - 1;
+                (-max - 1..=max).contains(&v)
+            } else if ty.is_any_unsigned() || ty.is_any_bit() {
+                // A bit string also takes a negative literal of its width, as the
+                // two's-complement pattern (`w := -1` is 16#FFFF), as CODESYS does.
+                let max = (1i128 << bits) - 1;
+                (-(1i128 << (bits - 1))..=max).contains(&v)
+            } else {
+                false
+            }
+        }
+    }
+}
+
+/// Numeric in the loose sense CODESYS arithmetic uses: ANY_NUM plus the bit strings
+/// wider than BOOL (`BYTE + 1`, `DWORD * 2` are accepted and computed unsigned).
+fn is_arith(ty: &IecType) -> bool {
+    let ty = ty.base();
+    ty.is_any_num() || (ty.is_any_bit() && *ty != IecType::Bool)
 }
 
 pub struct TypeChecker {
@@ -69,18 +180,31 @@ impl TypeChecker {
         }
     }
 
-    pub fn check(mut self, unit: &CompilationUnit) -> (SymbolTable, Vec<CheckError>) {
+    pub fn check(self, unit: &CompilationUnit) -> (SymbolTable, Vec<CheckError>) {
+        let (symbols, located) = self.check_located(unit);
+        (symbols, located.into_iter().map(|(_, e)| e).collect())
+    }
+
+    /// Like [`Self::check`], but each diagnostic carries the index of the
+    /// declaration in `unit.declarations` it was found in, so a caller that merged
+    /// several files into one unit can say which file (and source) a span is in.
+    pub fn check_located(
+        mut self,
+        unit: &CompilationUnit,
+    ) -> (SymbolTable, Vec<(usize, CheckError)>) {
         // First pass: register all POUs and types
         for decl in &unit.declarations {
             self.register_declaration(decl);
         }
 
         // Second pass: type-check bodies
-        for decl in &unit.declarations {
+        let mut located = Vec::new();
+        for (i, decl) in unit.declarations.iter().enumerate() {
             self.check_declaration(decl);
+            located.extend(self.errors.drain(..).map(|e| (i, e)));
         }
 
-        (self.symbols, self.errors)
+        (self.symbols, located)
     }
 
     fn register_declaration(&mut self, decl: &Declaration) {
@@ -225,18 +349,7 @@ impl TypeChecker {
                     }
                 }
 
-                // Check type compatibility
-                if target_ty != IecType::Void
-                    && value_ty != IecType::Void
-                    && target_ty != value_ty
-                    && !value_ty.can_implicit_convert_to(&target_ty)
-                {
-                    self.errors.push(CheckError::TypeMismatch {
-                        expected: target_ty.to_string(),
-                        found: value_ty.to_string(),
-                        span: value.span.into(),
-                    });
-                }
+                self.check_assignable(&target_ty, &value_ty, value);
             }
             StatementKind::If {
                 condition,
@@ -275,9 +388,14 @@ impl TypeChecker {
                 by,
                 body,
             } => {
-                // Variable should be numeric
+                // Variable should be an integer; CODESYS also accepts a bit string
+                // (`FOR b := 0 TO 7` with `b : BYTE`).
                 if let Some(info) = scope.lookup(&variable.name) {
-                    if !info.ty.is_any_num() {
+                    if !(info.ty.base().is_any_int()
+                        || (info.ty.base().is_any_bit() && *info.ty.base() != IecType::Bool)
+                        || info.ty.base().is_any_real()
+                        || Self::unknown(&info.ty))
+                    {
                         self.errors.push(CheckError::TypeMismatch {
                             expected: "numeric type".into(),
                             found: info.ty.to_string(),
@@ -342,6 +460,73 @@ impl TypeChecker {
         }
     }
 
+    /// Can a value of `value_ty` (the expression `value`) be stored into `target_ty`?
+    /// Exact and lossless-implicit conversions pass; an untyped literal passes when it
+    /// fits; any other numeric conversion is a warning (as in CODESYS); everything
+    /// else is a type mismatch.
+    fn check_assignable(&mut self, target_ty: &IecType, value_ty: &IecType, value: &Expression) {
+        if Self::unknown(target_ty) || Self::unknown(value_ty) {
+            return;
+        }
+        let (t, v) = (target_ty.base(), value_ty.base());
+        if t == v || v.can_implicit_convert_to(t) {
+            return;
+        }
+        if untyped_literal(value).is_some_and(|lit| literal_fits(lit, t)) {
+            return;
+        }
+        // An integer literal stored into a TIME (`et := 0`): not IEC, and not
+        // confirmed for CODESYS either, so it is flagged but does not stop the build.
+        if t.is_any_duration() && matches!(untyped_literal(value), Some(Literal::Int(_))) {
+            self.errors.push(CheckError::ImplicitConversion {
+                from: "an integer literal".into(),
+                to: target_ty.to_string(),
+                span: value.span.into(),
+            });
+            return;
+        }
+        // Numbers, bit strings and addresses convert into one another in CODESYS,
+        // with a warning when information may be lost.
+        let numeric = |ty: &IecType| is_arith(ty) || matches!(ty, IecType::Pointer(_));
+        if numeric(t) && numeric(v) {
+            if !matches!((t, v), (IecType::Pointer(_), _) | (_, IecType::Pointer(_))) {
+                self.errors.push(CheckError::ImplicitConversion {
+                    from: value_ty.to_string(),
+                    to: target_ty.to_string(),
+                    span: value.span.into(),
+                });
+            }
+            return;
+        }
+        // STRING of one length into STRING of another: truncating copy, allowed.
+        if (t.is_any_string() && v.is_any_string())
+            && matches!(
+                (t, v),
+                (IecType::StringType { .. }, IecType::StringType { .. })
+                    | (IecType::WstringType { .. }, IecType::WstringType { .. })
+            )
+        {
+            return;
+        }
+        self.errors.push(CheckError::TypeMismatch {
+            expected: target_ty.to_string(),
+            found: value_ty.to_string(),
+            span: value.span.into(),
+        });
+    }
+
+    /// A type the checker does not model yet (member access, unknown call results,
+    /// enums, user types it could not resolve): no judgement is made on it.
+    fn unknown(ty: &IecType) -> bool {
+        matches!(
+            ty,
+            IecType::Void
+                | IecType::Unresolved(_)
+                | IecType::Enum { .. }
+                | IecType::FbInstance(_)
+        )
+    }
+
     fn check_expression(&mut self, expr: &Expression, scope: &Scope) -> IecType {
         match &expr.kind {
             ExpressionKind::IntegerLiteral(v) => {
@@ -385,13 +570,26 @@ impl TypeChecker {
             ExpressionKind::BinaryOp { op, left, right } => {
                 let left_ty = self.check_expression(left, scope);
                 let right_ty = self.check_expression(right, scope);
+                // An untyped literal operand takes the other operand's type:
+                // `2.0 * r` is REAL, `b AND 16#0F` is BYTE.
+                let left_lit = untyped_literal(left);
+                let right_lit = untyped_literal(right);
+                let left_ty = match (left_lit, right_lit) {
+                    (Some(l), None) if literal_fits(l, &right_ty) => right_ty.clone(),
+                    _ => left_ty,
+                };
+                let right_ty = match (left_lit, right_lit) {
+                    (None, Some(r)) if literal_fits(r, &left_ty) => left_ty.clone(),
+                    _ => right_ty,
+                };
                 self.check_binary_op(*op, &left_ty, &right_ty, expr.span)
             }
             ExpressionKind::UnaryOp { op, operand } => {
                 let ty = self.check_expression(operand, scope);
                 match op {
                     UnaryOp::Not => {
-                        if ty.is_any_bit() || ty == IecType::Bool || ty == IecType::Void {
+                        // NOT is bitwise on the integers too (CODESYS; codegen agrees).
+                        if ty.is_any_bit() || ty.is_any_int() || Self::unknown(&ty) {
                             ty
                         } else {
                             self.errors.push(CheckError::TypeMismatch {
@@ -403,7 +601,9 @@ impl TypeChecker {
                         }
                     }
                     UnaryOp::Neg => {
-                        if ty.is_any_num() || ty == IecType::Void {
+                        // Negating a bit string is accepted by CODESYS (OSCAT's
+                        // COUNT_BR writes `-step` for a BYTE step).
+                        if is_arith(&ty) || ty.is_any_duration() || Self::unknown(&ty) {
                             ty
                         } else {
                             self.errors.push(CheckError::TypeMismatch {
@@ -474,14 +674,54 @@ impl TypeChecker {
         right: &IecType,
         span: Span,
     ) -> IecType {
-        // Skip check if either side is void (unknown/error)
-        if *left == IecType::Void || *right == IecType::Void {
+        // Skip check if either side is unknown
+        if Self::unknown(left) || Self::unknown(right) {
             return IecType::Void;
         }
+        let (left, right) = (left.base(), right.base());
 
         match op {
+            // CODESYS pointer arithmetic: address ± integer, integer + address, and
+            // the byte distance between two addresses.
+            BinaryOp::Add | BinaryOp::Sub
+                if matches!(left, IecType::Pointer(_)) && is_arith(right) =>
+            {
+                left.clone()
+            }
+            BinaryOp::Add if is_arith(left) && matches!(right, IecType::Pointer(_)) => {
+                right.clone()
+            }
+            BinaryOp::Sub
+                if matches!(left, IecType::Pointer(_)) && matches!(right, IecType::Pointer(_)) =>
+            {
+                IecType::Dint
+            }
+            // TIME/DATE arithmetic: TIME ± TIME, TIME * / number, DATE-family ± TIME,
+            // DATE-family - DATE-family.
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
+                if left.is_any_duration() || left.is_any_date() || right.is_any_duration() =>
+            {
+                if (left.is_any_duration() || left.is_any_date())
+                    && (right.is_any_duration() || right.is_any_date() || is_arith(right))
+                {
+                    if left.is_any_date() && right.is_any_date() {
+                        IecType::Time
+                    } else {
+                        left.clone()
+                    }
+                } else if is_arith(left) && right.is_any_duration() {
+                    right.clone()
+                } else {
+                    self.errors.push(CheckError::TypeMismatch {
+                        expected: "ANY_MAGNITUDE".into(),
+                        found: format!("{left} and {right}"),
+                        span: span.into(),
+                    });
+                    IecType::Void
+                }
+            }
             BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
-                if left.is_any_num() && right.is_any_num() {
+                if is_arith(left) && is_arith(right) {
                     // Return the wider type
                     if left.is_any_real() || right.is_any_real() {
                         if matches!(left, IecType::Lreal) || matches!(right, IecType::Lreal) {
@@ -511,7 +751,7 @@ impl TypeChecker {
             // wider to LREAL (Table 11) — so the result is never an integer. This
             // matches codegen's `compile_expt`.
             BinaryOp::Power => {
-                if !(left.is_any_num() && right.is_any_num()) {
+                if !(is_arith(left) && is_arith(right)) {
                     self.errors.push(CheckError::TypeMismatch {
                         expected: "ANY_NUM ** ANY_NUM".into(),
                         found: format!("{left} and {right}"),
@@ -539,13 +779,16 @@ impl TypeChecker {
             | BinaryOp::Greater
             | BinaryOp::GreaterEqual => IecType::Bool,
             BinaryOp::And | BinaryOp::Or | BinaryOp::Xor => {
-                if (left.is_any_bit() || *left == IecType::Bool)
-                    && (right.is_any_bit() || *right == IecType::Bool)
-                {
+                // ANY_BIT, and the integers too — CODESYS accepts `i AND 16#FF`.
+                let bitwise = |t: &IecType| t.is_any_bit() || t.is_any_int();
+                let bool_mix = (*left == IecType::Bool) != (*right == IecType::Bool);
+                if bitwise(left) && bitwise(right) && !bool_mix {
                     if *left == IecType::Bool && *right == IecType::Bool {
                         IecType::Bool
-                    } else {
+                    } else if left.bit_size() >= right.bit_size() {
                         left.clone()
+                    } else {
+                        right.clone()
                     }
                 } else {
                     self.errors.push(CheckError::TypeMismatch {

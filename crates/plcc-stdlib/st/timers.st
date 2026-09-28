@@ -8,7 +8,8 @@
  * not drift with scan period. See docs/runtime-symbols.md.
  *
  * TIME and LTIME are laid out as signed 64-bit nanoseconds, which is what
- * MONOTONIC_NS() returns, so no conversion is needed anywhere below.
+ * MONOTONIC_NS() returns, so the clock readings are kept as TIME and no
+ * conversion is needed anywhere below.
  *)
 
 (* TON — on-delay timer.
@@ -26,9 +27,9 @@ VAR_OUTPUT
 END_VAR
 VAR
     RUNNING : BOOL := FALSE;
-    START_NS : LINT;
-    NOW_NS : LINT;
-    ELAPSED : LINT;
+    START_NS : TIME;
+    NOW_NS : TIME;
+    ELAPSED : TIME;
 END_VAR
     NOW_NS := MONOTONIC_NS();
     IF IN THEN
@@ -68,9 +69,9 @@ END_VAR
 VAR
     PREV_IN : BOOL := FALSE;
     RUNNING : BOOL := FALSE;
-    START_NS : LINT;
-    NOW_NS : LINT;
-    ELAPSED : LINT;
+    START_NS : TIME;
+    NOW_NS : TIME;
+    ELAPSED : TIME;
 END_VAR
     NOW_NS := MONOTONIC_NS();
     IF IN THEN
@@ -114,9 +115,9 @@ END_VAR
 VAR
     PREV_IN : BOOL := FALSE;
     RUNNING : BOOL := FALSE;
-    START_NS : LINT;
-    NOW_NS : LINT;
-    ELAPSED : LINT;
+    START_NS : TIME;
+    NOW_NS : TIME;
+    ELAPSED : TIME;
     IN_EDGE : BOOL;
 END_VAR
     NOW_NS := MONOTONIC_NS();

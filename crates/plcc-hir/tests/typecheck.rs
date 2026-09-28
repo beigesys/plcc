@@ -343,8 +343,8 @@ fn power_result_is_real_per_expt() {
     assert!(
         check_src(into_int)
             .iter()
-            .any(|e| matches!(e, CheckError::TypeMismatch { .. })),
-        "INT := INT ** INT assigns a REAL to an INT"
+            .any(|e| matches!(e, CheckError::ImplicitConversion { .. })),
+        "INT := INT ** INT assigns a REAL to an INT (a CODESYS-style warning)"
     );
 
     let on_bool = r#"

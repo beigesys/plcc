@@ -146,6 +146,17 @@ impl IecType {
         self.is_any_magnitude() || self.is_any_bit() || self.is_any_date() || self.is_any_chars()
     }
 
+    /// The underlying type of a subrange or alias (recursively); the type itself
+    /// otherwise.
+    pub fn base(&self) -> &IecType {
+        match self {
+            IecType::Subrange { base_type, .. } | IecType::Alias { base_type, .. } => {
+                base_type.base()
+            }
+            other => other,
+        }
+    }
+
     /// Get the size in bits for numeric types.
     pub fn bit_size(&self) -> Option<u32> {
         match self {
@@ -160,25 +171,48 @@ impl IecType {
 
     /// Check if this type can be implicitly converted to another.
     pub fn can_implicit_convert_to(&self, target: &IecType) -> bool {
-        if self == target {
+        // Lossless conversions only (IEC 61131-3 Table 11 "implicit"): every value
+        // of the source is exactly a value of the target. A bit string counts as an
+        // unsigned integer of its width for this purpose, as CODESYS treats it.
+        let (src, dst) = (self.base(), target.base());
+        if src == dst {
             return true;
         }
-        // Integer widening
-        if self.is_any_int() && target.is_any_int() {
-            if let (Some(s), Some(t)) = (self.bit_size(), target.bit_size()) {
-                return s <= t
-                    && (self.is_any_signed() == target.is_any_signed() || target.is_any_signed());
+        let unsigned_like =
+            |t: &IecType| t.is_any_unsigned() || (t.is_any_bit() && *t != IecType::Bool);
+        let integral = |t: &IecType| t.is_any_int() || t.is_any_bit();
+        if integral(src) && integral(dst) {
+            let (Some(s), Some(t)) = (src.bit_size(), dst.bit_size()) else {
+                return false;
+            };
+            if *src == IecType::Bool {
+                // BOOL widens to any bit string or integer.
+                return true;
             }
+            if *dst == IecType::Bool {
+                return false;
+            }
+            return if src.is_any_signed() {
+                dst.is_any_signed() && s <= t
+            } else if dst.is_any_signed() {
+                debug_assert!(unsigned_like(src));
+                s < t
+            } else {
+                s <= t
+            };
         }
-        // Int to Real
-        if self.is_any_int() && target.is_any_real() {
-            return true;
+        // Integer to real: exact while the integer fits the mantissa (24 bits for
+        // REAL, 53 for LREAL). DINT → REAL is the conversion CODESYS flags as
+        // "possible loss of information" (C0197).
+        if integral(src) && *src != IecType::Bool && dst.is_any_real() {
+            let bits = src.bit_size().unwrap_or(64);
+            return match dst {
+                IecType::Real => bits <= 16,
+                _ => bits <= 32,
+            };
         }
         // REAL to LREAL
-        if matches!(self, IecType::Real) && matches!(target, IecType::Lreal) {
-            return true;
-        }
-        false
+        matches!(src, IecType::Real) && matches!(dst, IecType::Lreal)
     }
 }
 

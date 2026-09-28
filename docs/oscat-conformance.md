@@ -64,8 +64,11 @@ Found and **not** fixed (semantics decisions, not one-liners):
   (`crates/plcc-codegen/tests/float_to_int.rs`; decision in codesys-compatibility.md).
 - ~~Float-to-integer conversion uses a plain `fptosi`, which is LLVM *poison* for an
   out-of-range value.~~ Fixed: it saturates, NaN → 0 (`llvm.fpto[su]i.sat`).
-- `plcc compile` never runs the HIR type checker; `plcc check` does. The checker types a
-  REAL literal as LREAL, so `x : REAL; x := 2.0 * x;` fails `plcc check` but compiles.
+- ~~`plcc compile` never runs the HIR type checker; `plcc check` does.~~ Fixed:
+  `compile` runs the same check first (`--no-typecheck` skips it), after its false
+  positives were fixed — untyped literals now take their context's type, so
+  `x := 2.0 * x` on a REAL is clean. Checking all 559 files individually: 0 rejected,
+  0 warnings. See codesys-compatibility.md.
 
 
 The sections below are the history of the earlier measurements.

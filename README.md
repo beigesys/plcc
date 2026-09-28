@@ -5,9 +5,11 @@ IEC 61131-3 Structured Text compiler written in Rust. Compiles ST to native code
 ## Quick Start
 
 ```bash
-# Parse and check
+# Parse and check (the same type check `compile` runs first; warnings do not
+# stop a build, errors do — `compile --no-typecheck` skips it)
 plcc parse program.st --dump-ast
 plcc check program.st
+plcc check main.st motor.st utils.st
 
 # Compile to LLVM IR
 plcc compile program.st -o program.ll
@@ -104,7 +106,7 @@ Complete IEC 61131-3:2013 (3rd edition) Structured Text:
 | CONFIGURATION, RESOURCE, TASK, program instances (`PROGRAM p WITH t : Main (in := g, out => h)`) | Full -- compiled to a task table; INTERVAL, PRIORITY, SINGLE |
 | Direct representation (%I, %Q, %M), `AT` | Full -- CODESYS addressing (`%IW1` = bytes 2..3), bit/byte/word/dword/lword, in declarations and statements; partial `%I*` / VAR_CONFIG not yet |
 | Typed literals (INT#5, REAL#3.14) | Full |
-| Exponentiation `**` / EXPT | Full — per IEC Table 23/29 the result is ANY_REAL even for integer operands: an integer base converts to REAL (8/16-bit) or LREAL (32/64-bit, and bare literals), so `2 ** -1` is 0.5, `0 ** 0` is 1.0, `0 ** -1` is +inf; `plcc compile` converts the result back when it is assigned to an integer variable (exact up to 2**53), while `plcc check` reports that as the REAL-into-integer mismatch it is |
+| Exponentiation `**` / EXPT | Full — per IEC Table 23/29 the result is ANY_REAL even for integer operands: an integer base converts to REAL (8/16-bit) or LREAL (32/64-bit, and bare literals), so `2 ** -1` is 0.5, `0 ** 0` is 1.0, `0 ** -1` is +inf; the result is converted back (rounded) when it is assigned to an integer variable (exact up to 2**53), and the type checker warns about that REAL-into-integer conversion, as CODESYS does |
 | POINTER TO, dereference (^), ADR, SIZEOF | Full — `pt^` as a value and a target, `pt^[i]`, `pt^.f`; CODESYS byte-addressed pointer arithmetic (`pt := pt + 1`) |
 | Pragmas, block/line comments | Full |
 

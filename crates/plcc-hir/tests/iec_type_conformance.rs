@@ -121,9 +121,9 @@ fn iec_implicit_int_to_real_allowed() {
     );
 }
 
-// 5. No implicit narrowing: DINT -> INT should error
+// 5. Implicit narrowing: DINT -> INT is diagnosed (a warning, as in CODESYS)
 #[test]
-fn iec_no_implicit_narrowing() {
+fn iec_implicit_narrowing_is_diagnosed() {
     let src = r#"
         PROGRAM test
         VAR
@@ -133,23 +133,21 @@ fn iec_no_implicit_narrowing() {
             i := d;
         END_PROGRAM
     "#;
+    // IEC forbids it; CODESYS compiles it with a "possible loss of information"
+    // warning, and plcc follows CODESYS (docs/codesys-compatibility.md).
     let errors = check_src(src);
     assert!(
-        !errors.is_empty(),
-        "DINT -> INT narrowing should produce an error"
+        errors
+            .iter()
+            .any(|e| matches!(e, CheckError::ImplicitConversion { .. }) && e.is_warning()),
+        "expected an ImplicitConversion warning for DINT -> INT narrowing, got: {errors:?}"
     );
-    let has_type_mismatch = errors
-        .iter()
-        .any(|e| matches!(e, CheckError::TypeMismatch { .. }));
-    assert!(
-        has_type_mismatch,
-        "expected TypeMismatch for DINT -> INT narrowing, got: {errors:?}"
-    );
+    assert!(errors.iter().all(CheckError::is_warning), "{errors:?}");
 }
 
-// 6. No implicit REAL to INT
+// 6. Implicit REAL to INT is diagnosed (a warning, as in CODESYS)
 #[test]
-fn iec_no_implicit_real_to_int() {
+fn iec_implicit_real_to_int_is_diagnosed() {
     let src = r#"
         PROGRAM test
         VAR
@@ -161,16 +159,12 @@ fn iec_no_implicit_real_to_int() {
     "#;
     let errors = check_src(src);
     assert!(
-        !errors.is_empty(),
-        "REAL -> INT should produce an error (no implicit narrowing)"
+        errors
+            .iter()
+            .any(|e| matches!(e, CheckError::ImplicitConversion { .. }) && e.is_warning()),
+        "expected an ImplicitConversion warning for REAL -> INT, got: {errors:?}"
     );
-    let has_type_mismatch = errors
-        .iter()
-        .any(|e| matches!(e, CheckError::TypeMismatch { .. }));
-    assert!(
-        has_type_mismatch,
-        "expected TypeMismatch for REAL -> INT, got: {errors:?}"
-    );
+    assert!(errors.iter().all(CheckError::is_warning), "{errors:?}");
 }
 
 // 7. IF condition must be BOOL
