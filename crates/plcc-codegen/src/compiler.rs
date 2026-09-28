@@ -7691,7 +7691,7 @@ impl<'ctx> Compiler<'ctx> {
                 BinaryOp::NotEqual => {
                     return Ok(self
                         .builder
-                        .build_float_compare(FloatPredicate::ONE, l, r, "fne")
+                        .build_float_compare(FloatPredicate::UNE, l, r, "fne")
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?
                         .into());
                 }
