@@ -101,7 +101,7 @@ Complete IEC 61131-3:2013 (3rd edition) Structured Text:
 | CONFIGURATION, RESOURCE, TASK | Parsed |
 | Direct representation (%I, %Q, %M) | Parsed |
 | Typed literals (INT#5, REAL#3.14) | Full |
-| POINTER TO, dereference (^) | Reads only — `pt^ := x` is not yet an lvalue |
+| POINTER TO, dereference (^), ADR, SIZEOF | Full — `pt^` as a value and a target, `pt^[i]`, `pt^.f`; CODESYS byte-addressed pointer arithmetic (`pt := pt + 1`) |
 | Pragmas, block/line comments | Full |
 
 ## Standard Library
@@ -114,6 +114,7 @@ Complete IEC 61131-3:2013 (3rd edition) Structured Text:
 | Rounding | TRUNC, FLOOR, CEIL, ROUND |
 | Selection | MIN, MAX, LIMIT, SEL |
 | Bit ops | SHL, SHR, ROL, ROR |
+| Memory | ADR, SIZEOF |
 | String | LEN, CONCAT, LEFT, RIGHT, MID, FIND, REPLACE |
 | Time | ADD_TIME, SUB_TIME, MUL_TIME, DIV_TIME |
 | Type conversion | 60+ variants: INT_TO_REAL, REAL_TO_INT, BYTE_TO_WORD, BOOL_TO_DINT, REAL_TO_DWORD, DWORD_TO_REAL, etc. |

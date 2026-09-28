@@ -5081,6 +5081,12 @@ impl<'ctx> Compiler<'ctx> {
                         .builder
                         .build_alloca(llvm_ty, &decl.name.name)
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    // IEC: a FUNCTION/METHOD local starts every call at its type's
+                    // initial value (0 unless declared otherwise). An alloca left
+                    // uninitialized made `F := SHL(F, 1) OR 1` accumulate garbage.
+                    self.builder
+                        .build_store(alloca, llvm_ty.const_zero())
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
 
                     // Declared STRUCT field defaults, then the variable's own
                     // initializer, so an explicit initializer wins.
@@ -5101,6 +5107,10 @@ impl<'ctx> Compiler<'ctx> {
             let ret_alloca = self
                 .builder
                 .build_alloca(ret_llvm, &func.name.name)
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+            // The result starts at 0, as a METHOD's already does.
+            self.builder
+                .build_store(ret_alloca, ret_llvm.const_zero())
                 .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
             self.variables.insert(
                 func.name.name.to_uppercase(),
@@ -5464,6 +5474,12 @@ impl<'ctx> Compiler<'ctx> {
                     let alloca = self
                         .builder
                         .build_alloca(llvm_ty, &decl.name.name)
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    // IEC: a FUNCTION/METHOD local starts every call at its type's
+                    // initial value (0 unless declared otherwise). An alloca left
+                    // uninitialized made `F := SHL(F, 1) OR 1` accumulate garbage.
+                    self.builder
+                        .build_store(alloca, llvm_ty.const_zero())
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                     self.emit_field_inits(alloca, &decl.type_spec, function)?;
                     if let Some(init) = &decl.initializer {
@@ -6432,6 +6448,12 @@ impl<'ctx> Compiler<'ctx> {
                     .find(|f| f.name.eq_ignore_ascii_case(&member.name))
                     .map(|f| f.declared.clone())
             }
+            // `pt^` denotes the pointee, so `pt^[i]`, `pt^.f` and `pt^ := x` all
+            // resolve through the pointer's declared base type.
+            ExpressionKind::Dereference(inner) => match self.rvalue_iec_type(inner)? {
+                IecType::Pointer(base) => Some(*base),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -6480,7 +6502,8 @@ impl<'ctx> Compiler<'ctx> {
         match &expr.kind {
             ExpressionKind::Identifier(_)
             | ExpressionKind::ArrayIndex { .. }
-            | ExpressionKind::MemberAccess { .. } => self.lvalue_iec_type(expr),
+            | ExpressionKind::MemberAccess { .. }
+            | ExpressionKind::Dereference(_) => self.lvalue_iec_type(expr),
             ExpressionKind::Parenthesized(inner) => self.rvalue_iec_type(inner),
             // `DWORD#1` is a DWORD: unsigned, whatever the digits look like.
             ExpressionKind::TypedLiteral { type_name, .. } => {
@@ -6527,6 +6550,14 @@ impl<'ctx> Compiler<'ctx> {
                     // ABS never changes its argument's type.
                     "ABS" => arg_ty(0),
                     "TRUNC" => Some(IecType::Dint),
+                    // The address of the argument, typed as a pointer to it.
+                    "ADR" if self.module.get_function("adr").is_none() => args
+                        .first()
+                        .and_then(|a| self.lvalue_iec_type(&a.value))
+                        .map(|t| IecType::Pointer(Box::new(t))),
+                    "SIZEOF" if self.module.get_function("sizeof").is_none() => {
+                        Some(IecType::Udint)
+                    }
                     // MIN/MAX return one of their operands, so the result type is the
                     // one the comparison was performed in.
                     "MIN" | "MAX" => Self::arith_result_type(arg_ty(0), arg_ty(1)),
@@ -6708,10 +6739,13 @@ impl<'ctx> Compiler<'ctx> {
             ExpressionKind::DirectVariable(addr) => Some(format!(
                 "direct variable `%{addr}` is not supported in expressions"
             )),
-            ExpressionKind::Dereference(_) => Some(format!(
-                "pointer dereference `{}` is not supported as a value",
-                Self::describe_lvalue(expr)
-            )),
+            ExpressionKind::Dereference(inner) => self.unknown_root(expr).or_else(|| {
+                Some(format!(
+                    "`{}` is not a POINTER of known base type, so `{}` has no type to load",
+                    Self::describe_lvalue(inner),
+                    Self::describe_lvalue(expr)
+                ))
+            }),
             ExpressionKind::TypedLiteral { .. } => Some(format!(
                 "typed literal `{}` is not supported in this position",
                 Self::describe_lvalue(expr)
@@ -6952,6 +6986,39 @@ impl<'ctx> Compiler<'ctx> {
                 }
                 Ok(Some(field_ptr))
             }
+            // `pt^`: the address is the pointer's value. A pointer held in an
+            // integer (CODESYS lets an address live in a DWORD) is converted.
+            ExpressionKind::Dereference(inner) => {
+                let function = function.ok_or_else(|| {
+                    CodegenError::LlvmError("pointer dereference requires function context".into())
+                })?;
+                let Some(v) = self.compile_expression(inner, function)? else {
+                    return Err(self.no_value_error(
+                        format!("the pointer dereferenced in `{}`", Self::describe_lvalue(expr)),
+                        inner,
+                    ));
+                };
+                match v {
+                    BasicValueEnum::PointerValue(p) => Ok(Some(p)),
+                    BasicValueEnum::IntValue(iv) => {
+                        let iv = self.resize_int(iv, self.addr_int_type(), false)?;
+                        let p = self
+                            .builder
+                            .build_int_to_ptr(
+                                iv,
+                                self.context.ptr_type(AddressSpace::default()),
+                                "deref_addr",
+                            )
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                        Ok(Some(p))
+                    }
+                    _ => Err(CodegenError::UnsupportedType(format!(
+                        "`{}` dereferences `{}`, which is not a POINTER",
+                        Self::describe_lvalue(expr),
+                        Self::describe_lvalue(inner)
+                    ))),
+                }
+            }
             // Literals, calls, and direct representation (%IX0.0) have no address.
             // This is the one arm where `None` is the honest answer, and the string
             // builtins depend on it to accept a literal where a variable would also
@@ -7013,6 +7080,16 @@ impl<'ctx> Compiler<'ctx> {
             ExpressionKind::Parenthesized(inner) => self.compile_expression(inner, function),
             ExpressionKind::FunctionCall { callee, args } => {
                 if let ExpressionKind::Identifier(ident) = &callee.kind {
+                    // ADR and SIZEOF take their argument as a *location* or a type,
+                    // not a value, so they cannot go through the value-evaluating
+                    // builtin path. A FUNCTION of the same name in the unit wins.
+                    let lname = ident.name.to_lowercase();
+                    if lname == "adr" && self.module.get_function("adr").is_none() {
+                        return self.compile_adr(args, function).map(Some);
+                    }
+                    if lname == "sizeof" && self.module.get_function("sizeof").is_none() {
+                        return self.compile_sizeof(args).map(Some);
+                    }
                     // Try standard library functions first (case-insensitive)
                     if let Some(result) = self.compile_stdlib_call(&ident.name, args, function)? {
                         return Ok(Some(result));
@@ -7144,6 +7221,22 @@ impl<'ctx> Compiler<'ctx> {
             ExpressionKind::TypedLiteral { type_name, value } => {
                 self.compile_typed_literal(expr, &type_name.name, value, function)
             }
+            ExpressionKind::Dereference(_) => {
+                // `pt^` as a value: load the pointee at the pointer's declared base
+                // type. Without a known base type there is no width to load.
+                let Some(pointee) = self.lvalue_iec_type(expr) else {
+                    return self.no_value_here(expr);
+                };
+                let Some(addr) = self.compile_lvalue_with_fn(expr, function)? else {
+                    return self.no_value_here(expr);
+                };
+                let llvm_ty = self.iec_to_llvm_type(&pointee);
+                let val = self
+                    .builder
+                    .build_load(llvm_ty, addr, "deref")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(Some(val))
+            }
             _ => self.no_value_here(expr),
         }
     }
@@ -7198,6 +7291,55 @@ impl<'ctx> Compiler<'ctx> {
             (BasicTypeEnum::FloatType(ft), Err(r)) => Some(ft.const_float(r).into()),
             _ => None,
         }
+    }
+
+    /// `ADR(x)`: the address of the location `x` — a variable, a STRUCT field, an
+    /// array element, `pt^`. The result is a POINTER; used as a number it is the
+    /// address (see [`Self::compile_pointer_binary_op`]), so the CODESYS idioms
+    /// `ADR(str) + pos - 1` and `dw := ADR(x)` both work.
+    fn compile_adr(
+        &mut self,
+        args: &[CallArg],
+        function: FunctionValue<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let [arg] = args else {
+            return Err(CodegenError::UnsupportedType(format!(
+                "ADR takes exactly one argument, got {}",
+                args.len()
+            )));
+        };
+        match self.compile_lvalue_with_fn(&arg.value, function)? {
+            Some(ptr) => Ok(ptr.into()),
+            None => Err(CodegenError::UnsupportedType(format!(
+                "ADR needs a variable or other addressable location, but `{}` has no address",
+                Self::describe_lvalue(&arg.value)
+            ))),
+        }
+    }
+
+    /// `SIZEOF(x)`: the storage size in bytes of variable `x`, or of the type `x`
+    /// names, as a UDINT.
+    fn compile_sizeof(&mut self, args: &[CallArg]) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let [arg] = args else {
+            return Err(CodegenError::UnsupportedType(format!(
+                "SIZEOF takes exactly one argument, got {}",
+                args.len()
+            )));
+        };
+        let ty = self.lvalue_iec_type(&arg.value).or_else(|| match &arg.value.kind {
+            ExpressionKind::Identifier(ident) => plcc_hir::types::resolve_type_name(&ident.name),
+            _ => None,
+        });
+        let Some(ty) = ty else {
+            return Err(CodegenError::UnsupportedType(format!(
+                "SIZEOF: cannot determine the type of `{}`",
+                Self::describe_lvalue(&arg.value)
+            )));
+        };
+        let size = self.iec_to_llvm_type(&ty).size_of().ok_or_else(|| {
+            CodegenError::UnsupportedType(format!("SIZEOF: {ty} has no fixed size"))
+        })?;
+        Ok(self.resize_int(size, self.context.i32_type(), false)?.into())
     }
 
     /// `TYPE#value` — a literal of an explicit elementary type (`DWORD#1`,
