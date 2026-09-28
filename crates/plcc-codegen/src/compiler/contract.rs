@@ -134,7 +134,7 @@ fn llvm(e: impl std::fmt::Display) -> CodegenError {
     CodegenError::LlvmError(e.to_string())
 }
 
-fn c_ident(s: &str) -> String {
+pub(super) fn c_ident(s: &str) -> String {
     s.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
         .collect()
@@ -390,10 +390,21 @@ impl<'ctx> Compiler<'ctx> {
         let mut instances = Vec::new();
         for (name, pidx, sym, connections, tidx) in planned {
             let st = programs[pidx].struct_type;
-            let g = self.module.add_global(st, None, &sym);
-            g.set_initializer(&st.const_zero());
-            g.set_alignment(8);
-            tasks[tidx].instances.push(instances.len());
+            // A program another POU calls already has its instance (see
+            // `layout_callable_programs`); it runs when called, not as a task.
+            let called = self.called_programs.contains(&name.to_uppercase());
+            let g = match self.module.get_global(&sym) {
+                Some(g) => g,
+                None => {
+                    let g = self.module.add_global(st, None, &sym);
+                    g.set_initializer(&st.const_zero());
+                    g.set_alignment(8);
+                    g
+                }
+            };
+            if !called {
+                tasks[tidx].instances.push(instances.len());
+            }
             instances.push(InstanceRec {
                 name,
                 program: pidx,

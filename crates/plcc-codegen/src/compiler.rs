@@ -485,6 +485,11 @@ pub struct Compiler<'ctx> {
     enums: enums::EnumTable,
     /// `EXTENDS`: bases and inherited-method origins (see `oop.rs`).
     hierarchy: oop::Hierarchy,
+    /// Without a CONFIGURATION: each PROGRAM's single instance, by uppercase name,
+    /// so another POU can call it (`Sub();`) and read it (`Sub.out`).
+    program_instances: HashMap<String, GlobalValue<'ctx>>,
+    /// Programs some POU calls: they run when called, not on their own.
+    called_programs: std::collections::HashSet<String>,
     /// INTERFACE method tables and IMPLEMENTS sets (see `interfaces.rs`).
     interfaces: interfaces::InterfaceTable,
     /// (uppercase FB/CLASS, uppercase input) for every `REFERENCE TO` input: a
@@ -522,6 +527,8 @@ impl<'ctx> Compiler<'ctx> {
             rt: image::ContractState::default(),
             enums: enums::EnumTable::default(),
             hierarchy: oop::Hierarchy::default(),
+            program_instances: HashMap::new(),
+            called_programs: std::collections::HashSet::new(),
             interfaces: interfaces::InterfaceTable::default(),
             reference_inputs: std::collections::HashSet::new(),
             current_pou: None,
@@ -2796,6 +2803,7 @@ impl<'ctx> Compiler<'ctx> {
         // Record every METHOD signature up front for the same reason: a method call
         // resolves through the owner's recorded `methods` map.
         self.layout_pou_methods(unit);
+        self.layout_callable_programs(unit);
         self.layout_interfaces(unit);
 
         // And every FUNCTION signature, for the same reason one level over: a call site
@@ -3373,6 +3381,39 @@ impl<'ctx> Compiler<'ctx> {
                 break;
             }
             pending = deferred;
+        }
+    }
+
+    /// Without a CONFIGURATION, give every PROGRAM its instance now and lay it out
+    /// like an FB, so another POU can call it — `Sub();`, `Sub(k := 1, o => x);` —
+    /// and read its variables — `Sub.o` — as CODESYS allows. A called program
+    /// then runs only when called (see `finish_runtime_contract`): the implicit
+    /// task would otherwise run it a second time. With a CONFIGURATION a program
+    /// type may have several instances, and calling it by name is not supported.
+    fn layout_callable_programs(&mut self, unit: &CompilationUnit) {
+        if unit
+            .declarations
+            .iter()
+            .any(|d| matches!(d, Declaration::Configuration(_)))
+        {
+            return;
+        }
+        for d in &unit.declarations {
+            let Declaration::Program(p) = d else {
+                continue;
+            };
+            let key = p.name.name.to_uppercase();
+            if self.compiled_fbs.contains_key(&key) {
+                continue; // an FB of the same name; not callable as a program
+            }
+            let fields = self.resolve_pou_fields(&p.var_blocks);
+            self.record_pou_layout(&p.name.name, fields);
+            let st = self.compiled_fbs[&key].struct_type;
+            let sym = format!("plcc_inst_{}", contract::c_ident(&p.name.name));
+            let g = self.module.add_global(st, None, &sym);
+            g.set_initializer(&st.const_zero());
+            g.set_alignment(8);
+            self.program_instances.insert(key, g);
         }
     }
 
@@ -4466,6 +4507,13 @@ impl<'ctx> Compiler<'ctx> {
                     .insert(name.to_uppercase(), (ptr, iec_ty.clone()));
             }
         }
+        // PROGRAM instances, callable like FB instances (implicit task only).
+        for (name, g) in self.program_instances.clone() {
+            if !self.variables.contains_key(&name) {
+                self.variables
+                    .insert(name.clone(), (g.as_pointer_value(), IecType::FbInstance(name)));
+            }
+        }
         // AT globals are the image location, not their (unused) struct slot.
         for (name, addr, ty, _) in self.rt.global_at.clone() {
             if !own.contains(&name.to_uppercase()) {
@@ -4788,7 +4836,15 @@ impl<'ctx> Compiler<'ctx> {
             .context
             .void_type()
             .fn_type(&[state_ptr_type.into()], false);
-        let function = self.module.add_function(&fn_name, fn_type, None);
+        let _ = fn_type;
+        // Declared up front when another POU may call this program.
+        let function = self.declare_state_fn(&fn_name);
+        if function.count_basic_blocks() > 0 {
+            return Err(CodegenError::LlvmError(format!(
+                "duplicate PROGRAM definition '{}'",
+                prog.name.name
+            )));
+        }
 
         let entry = self.context.append_basic_block(function, "entry");
         self.builder.position_at_end(entry);
@@ -5828,6 +5884,9 @@ impl<'ctx> Compiler<'ctx> {
             Some(IecType::FbInstance(t)) => t,
             _ => instance_name.clone(),
         };
+        if self.program_instances.contains_key(&type_name.to_uppercase()) {
+            self.called_programs.insert(type_name.to_uppercase());
+        }
 
         self.emit_fb_call(
             fb_ptr,
