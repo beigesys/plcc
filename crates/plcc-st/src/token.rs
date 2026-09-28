@@ -384,7 +384,8 @@ pub enum Token {
     DtLiteral,
 
     // ── Direct representation ──
-    #[regex(r"%[IiQqMm][XxBbWwDdLl]?[0-9]+(\.[0-9]+)*")]
+    // `%I*` / `%QX*` is IEC's partially specified address (completed by VAR_CONFIG).
+    #[regex(r"%[IiQqMm][XxBbWwDdLl]?([0-9]+(\.[0-9]+)*|\*)")]
     DirectVariable,
 
     // ── Pragmas ──

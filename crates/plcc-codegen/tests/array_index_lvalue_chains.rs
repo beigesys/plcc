@@ -252,20 +252,21 @@ END_PROGRAM
 
 #[test]
 fn an_unassignable_target_is_a_diagnostic() {
-    // Direct representation has no codegen support. Silently dropping the store
-    // produced a program that ran and did nothing.
+    // A target with no address (here a call result). Silently dropping the store
+    // produced a program that ran and did nothing. (This used to use `%QX0.0`,
+    // before direct representation was compiled — see tests/process_image.rs.)
     let err = compile(
         r#"
 PROGRAM P
 VAR
-    x : BOOL;
+    x : INT;
 END_VAR
-    %QX0.0 := TRUE;
-    x := TRUE;
+    ABS(x) := 1;
+    x := 2;
 END_PROGRAM
 "#,
     )
-    .expect_err("assigning to %QX0.0 must not compile to nothing");
+    .expect_err("assigning to a call result must not compile to nothing");
     assert!(
         err.contains("assignable"),
         "the diagnostic must say the target is not assignable: {err}"

@@ -712,6 +712,13 @@ impl<'s> Parser<'s> {
                 let repr = self.ts.slice(self.source, &span).to_string();
                 Some(DirectVariable { repr, span })
             } else {
+                // Dropping the AT silently would turn an I/O point into an ordinary
+                // variable that never sees the hardware.
+                self.errors.push(ParseError::General {
+                    message: "expected a direct address (`%IX0.0`, `%QW1`, `%M*`, ...) after AT"
+                        .to_string(),
+                    span: self.ts.peek_span().into(),
+                });
                 None
             }
         } else {
@@ -2067,15 +2074,36 @@ impl<'s> Parser<'s> {
 
         let mut global_vars = Vec::new();
         let mut resources = Vec::new();
+        // IEC 61131-3 allows a single-resource configuration to declare its TASKs and
+        // program instances directly, without a RESOURCE block.
+        let mut tasks = Vec::new();
+        let mut program_configs = Vec::new();
 
         loop {
             match self.ts.peek() {
                 Some(Token::EndConfiguration) | None => break,
+                Some(Token::Task) => tasks.push(self.parse_task()),
+                Some(Token::Program) => program_configs.push(self.parse_program_config()),
                 Some(Token::VarGlobal) => {
                     global_vars.push(self.parse_var_block());
                 }
                 Some(Token::Resource) => {
                     resources.push(self.parse_resource());
+                }
+                Some(Token::VarConfig) | Some(Token::VarAccess) => {
+                    // Skipping these token by token (the old behaviour) dropped every
+                    // I/O assignment in them without a word.
+                    let span = self.ts.peek_span();
+                    self.errors.push(ParseError::General {
+                        message: "VAR_CONFIG / VAR_ACCESS are not yet supported \
+                                  (use a fully specified AT address on the variable)"
+                            .to_string(),
+                        span: span.into(),
+                    });
+                    while !matches!(self.ts.peek(), Some(Token::EndVar) | None) {
+                        self.ts.advance();
+                    }
+                    self.ts.eat(&Token::EndVar);
                 }
                 _ => {
                     self.ts.advance();
@@ -2088,6 +2116,17 @@ impl<'s> Parser<'s> {
             .expect(&Token::EndConfiguration, &mut self.errors)
             .unwrap_or(self.ts.peek_span());
         self.ts.eat(&Token::Semicolon);
+
+        if !tasks.is_empty() || !program_configs.is_empty() {
+            resources.push(ResourceDecl {
+                name: name.clone(),
+                on: None,
+                global_vars: Vec::new(),
+                tasks,
+                program_configs,
+                span: start.merge(end),
+            });
+        }
 
         ConfigurationDecl {
             name,
@@ -2182,12 +2221,18 @@ impl<'s> Parser<'s> {
 
         self.ts.expect(&Token::Colon, &mut self.errors);
         let program_type = self.expect_ident();
+        let mut connections = Vec::new();
+        if self.ts.eat(&Token::LParen).is_some() {
+            connections = self.parse_call_args();
+            self.ts.expect(&Token::RParen, &mut self.errors);
+        }
         self.ts.eat(&Token::Semicolon);
 
         ProgramConfig {
             name,
             task,
             program_type,
+            connections,
             span: start,
         }
     }

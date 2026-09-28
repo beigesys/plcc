@@ -423,6 +423,10 @@ pub struct ProgramConfig {
     pub name: Ident,
     pub task: Option<Ident>,
     pub program_type: Ident,
+    /// `PROGRAM p WITH t : Main (inp := g_a, outp => g_b);` — input connections
+    /// (`:=`) are copied in before each scan, output connections (`=>`) out after.
+    #[serde(default)]
+    pub connections: Vec<CallArg>,
     pub span: Span,
 }
 

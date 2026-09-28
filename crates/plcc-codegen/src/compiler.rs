@@ -17,6 +17,10 @@ use std::collections::HashMap;
 use std::path::Path;
 use thiserror::Error;
 
+pub mod contract;
+mod image;
+pub use contract::{RuntimeContract, TaskOptions};
+
 /// Name of the generated function that initializes VAR_GLOBAL FB instances.
 const GLOBALS_INIT_FN: &str = "plcc_globals_init";
 
@@ -341,6 +345,13 @@ pub enum CodegenError {
     /// verifier runs at the end of every `compile()`, not just before object emission.
     #[error("generated LLVM module failed verification: {0}")]
     InvalidModule(String),
+    /// A diagnostic tied to a source location (a bad direct address, an AT on an
+    /// incompatible type, a CONFIGURATION error). See [`CodegenError::span`].
+    #[error("{message}")]
+    Located {
+        message: String,
+        span: plcc_st::span::Span,
+    },
 }
 
 /// A declared formal parameter of a FUNCTION or METHOD.
@@ -376,6 +387,9 @@ struct PouField {
     /// IEC 61131-3 defines VAR_IN_OUT as pass-by-reference.
     stored: IecType,
     is_in_out: bool,
+    /// `AT %..`: the variable lives at this process-image location. Its slot in the
+    /// state struct is kept (so field indices do not shift) but never used.
+    at: Option<crate::direct_address::DirectAddress>,
 }
 
 impl PouField {
@@ -386,6 +400,7 @@ impl PouField {
             declared: ty.clone(),
             stored: ty,
             is_in_out: false,
+            at: None,
         }
     }
 }
@@ -472,6 +487,9 @@ pub struct Compiler<'ctx> {
     /// (see [`Self::no_value_error`]) so it can name the innermost culprit instead of
     /// itself.
     no_value_cause: Option<(plcc_st::span::Span, String)>,
+    /// Process image, AT bindings, tasks: the runtime contract (see `image.rs`,
+    /// `contract.rs`).
+    rt: image::ContractState<'ctx>,
 }
 
 impl<'ctx> Compiler<'ctx> {
@@ -497,6 +515,7 @@ impl<'ctx> Compiler<'ctx> {
             current_struct_type: None,
             current_state_ptr: None,
             no_value_cause: None,
+            rt: image::ContractState::default(),
         }
     }
 
@@ -3584,6 +3603,9 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     pub fn compile(&mut self, unit: &CompilationUnit) -> Result<(), CodegenError> {
+        // CONFIGURATION / RESOURCE VAR_GLOBAL blocks become ordinary VAR_GLOBALs.
+        let hoisted = contract::hoist_configuration_globals(unit);
+        let unit = hoisted.as_ref().unwrap_or(unit);
         self.register_standard_functions();
 
         // Register types and POUs
@@ -3652,6 +3674,10 @@ impl<'ctx> Compiler<'ctx> {
         // other without regard to declaration order.
         self.declare_init_prototypes(unit);
 
+        // Validate every AT address and record the process-image bindings before any
+        // body refers to them.
+        self.plan_process_image(unit)?;
+
         // Scan for VAR_GLOBAL declarations and create a global struct
         let mut global_fields = Vec::new();
         let mut global_names = Vec::new();
@@ -3714,6 +3740,10 @@ impl<'ctx> Compiler<'ctx> {
                 self.compile_program(p)?;
             }
         }
+
+        // Program instances, task table, `plcc_init`/`plcc_run_task`, and the sized
+        // process image: the runtime contract (docs/process-image.md).
+        self.finish_runtime_contract(unit)?;
 
         // Structurally malformed IR must never escape this function. `emit_object`
         // runs LLVM at OptimizationLevel::Default; the execution tests JIT at
@@ -4006,11 +4036,18 @@ impl<'ctx> Compiler<'ctx> {
                 } else {
                     declared.clone()
                 };
+                // Validated up front by `plan_process_image`; a partial or bad
+                // address never reaches here.
+                let at = decl
+                    .at_address
+                    .as_ref()
+                    .and_then(|a| Self::parse_located_address(&a.repr, a.span).ok());
                 fields.push(PouField {
                     name: decl.name.name.clone(),
                     declared,
                     stored,
                     is_in_out,
+                    at,
                 });
             }
         }
@@ -4751,12 +4788,28 @@ impl<'ctx> Compiler<'ctx> {
                     .build_call(f, &[], "")
                     .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
             }
+            if let Some(f) = self.module.get_function(image::IMAGE_INIT_FN) {
+                self.builder
+                    .build_call(f, &[], "")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+            }
         }
 
         let mut field_idx = 0u32;
         for block in var_blocks {
             for decl in &block.declarations {
                 let iec_ty = self.resolve_type_spec(&decl.type_spec);
+                // An AT variable is its process-image location: initialize and bind
+                // that, not the unused struct slot.
+                if let Some(at) = &decl.at_address {
+                    let addr = Self::parse_located_address(&at.repr, at.span)?;
+                    if let Some(init_expr) = &decl.initializer {
+                        self.emit_at_initializer(&addr, &iec_ty, init_expr, init_fn)?;
+                    }
+                    self.bind_at(&decl.name.name, &addr, &iec_ty);
+                    field_idx += 1;
+                    continue;
+                }
                 let ptr = self
                     .builder
                     .build_struct_gep(struct_type, state_ptr, field_idx, &decl.name.name)
@@ -5113,6 +5166,8 @@ impl<'ctx> Compiler<'ctx> {
                     .insert(name.to_uppercase(), (ptr, iec_ty.clone()));
             }
         }
+        // AT globals are the image location, not their (unused) struct slot.
+        self.bind_global_at();
         Ok(())
     }
 
@@ -5395,6 +5450,10 @@ impl<'ctx> Compiler<'ctx> {
     ) -> Result<(), CodegenError> {
         let ptr_ty = self.context.ptr_type(AddressSpace::default());
         for (i, field) in fields.iter().enumerate() {
+            if let Some(addr) = &field.at {
+                self.bind_at(&field.name, addr, &field.declared);
+                continue;
+            }
             let slot = self
                 .builder
                 .build_struct_gep(struct_type, state_ptr, i as u32, &field.name)
@@ -6013,6 +6072,11 @@ impl<'ctx> Compiler<'ctx> {
     ) -> Result<(), CodegenError> {
         match &stmt.kind {
             StatementKind::Assignment { target, value } => {
+                // A bit-addressed variable or a literal `%QX0.1` target is written
+                // with a read-modify-write of its image byte.
+                if self.try_compile_image_assignment(target, value, function)? {
+                    return Ok(());
+                }
                 // `s := 'abc';` stores the literal's bytes into the STRING buffer.
                 if let (Some(text), Some(ty)) =
                     (Self::string_literal_text(value), self.lvalue_iec_type(target))
@@ -6963,6 +7027,7 @@ impl<'ctx> Compiler<'ctx> {
                 .get(&ident.name.to_uppercase())
                 .map(|(_, t)| t.clone()),
             ExpressionKind::Parenthesized(inner) => self.lvalue_iec_type(inner),
+            ExpressionKind::DirectVariable(repr) => Self::direct_variable_type(repr),
             ExpressionKind::ArrayIndex { array, .. } => match self.lvalue_iec_type(array)? {
                 IecType::Array { element_type, .. } => Some(*element_type),
                 _ => None,
@@ -7033,6 +7098,7 @@ impl<'ctx> Compiler<'ctx> {
             ExpressionKind::Identifier(_)
             | ExpressionKind::ArrayIndex { .. }
             | ExpressionKind::MemberAccess { .. }
+            | ExpressionKind::DirectVariable(_)
             | ExpressionKind::Dereference(_) => self.lvalue_iec_type(expr),
             ExpressionKind::Parenthesized(inner) => self.rvalue_iec_type(inner),
             ExpressionKind::BoolLiteral(_) => Some(IecType::Bool),
@@ -7343,10 +7409,13 @@ impl<'ctx> Compiler<'ctx> {
         function: Option<FunctionValue<'ctx>>,
     ) -> Result<Option<PointerValue<'ctx>>, CodegenError> {
         match &expr.kind {
-            ExpressionKind::Identifier(ident) => Ok(self
-                .variables
-                .get(&ident.name.to_uppercase())
-                .map(|(ptr, _)| *ptr)),
+            ExpressionKind::Identifier(ident) => {
+                let key = ident.name.to_uppercase();
+                if self.bit_binding(&key).is_some() {
+                    return Err(self.bit_address_error(&ident.name));
+                }
+                Ok(self.variables.get(&key).map(|(ptr, _)| *ptr))
+            }
             ExpressionKind::Parenthesized(inner) => self.compile_lvalue_inner(inner, function),
             ExpressionKind::ArrayIndex { array, indices } => {
                 // The indexed thing is resolved as an lvalue in its own right, so an
@@ -7514,6 +7583,13 @@ impl<'ctx> Compiler<'ctx> {
                         Self::describe_lvalue(expr)
                     )));
                 };
+                if let Some(addr) = fields[field_idx].at {
+                    // An AT member is the image location, shared by every instance.
+                    if addr.bit.is_some() {
+                        return Err(self.bit_address_error(&Self::describe_lvalue(expr)));
+                    }
+                    return Ok(Some(self.image_ptr(&addr)));
+                }
                 let struct_llvm_ty = self.iec_to_llvm_type(&obj_ty);
                 let field_ptr = self
                     .builder
@@ -7592,6 +7668,9 @@ impl<'ctx> Compiler<'ctx> {
                 self.context.i8_type().const_int(*v as u64, false).into(),
             )),
             ExpressionKind::Identifier(ident) => {
+                if let Some((ptr, bit)) = self.bit_binding(&ident.name.to_uppercase()) {
+                    return self.load_bit(ptr, bit).map(Some);
+                }
                 if let Some((ptr, ty)) = self.variables.get(&ident.name.to_uppercase()).cloned() {
                     let llvm_ty = self.iec_to_llvm_type(&ty);
                     let val = self
@@ -7744,9 +7823,8 @@ impl<'ctx> Compiler<'ctx> {
                 // String literals — not yet supported in codegen
                 self.no_value_here(expr)
             }
-            ExpressionKind::DirectVariable(_) => {
-                // Direct variables (%I, %Q, %M) resolved at link time
-                self.no_value_here(expr)
+            ExpressionKind::DirectVariable(repr) => {
+                self.compile_direct_variable_load(repr, expr)
             }
             ExpressionKind::ArrayIndex { .. } => {
                 // Element pointer via the lvalue path, then load. The element type
