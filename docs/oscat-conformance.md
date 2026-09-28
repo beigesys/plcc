@@ -1,15 +1,59 @@
 # What blocks OSCAT
 
-Measured against `main` (560 tests), compiling each of the 559 `tests/external/oscat/*.EXP`
-files individually with the default `--stdlib`, 20s timeout, 4 GiB cap.
+Measured with the debug `plcc` (599 workspace tests passing), compiling each of the 559
+`tests/external/oscat/*.EXP` files individually with the default `--stdlib`, 20s timeout,
+4 GiB cap, sequentially.
 
 ```
 parse:    559 / 559   (100%)
-compile:  246 / 559   (44%)
+compile:  241 / 559   (43%)   no panics (exit 101): 0, was 13
 ```
 
-Parsing has been solved for a while. Compilation is the real number, and nobody had
-measured it.
+Parsing has been solved for a while. Compilation is the real number.
+
+## Current state: 241, and why it is lower than the 268 below
+
+The earlier **268 was inflated**. An assignment whose right-hand side produced no value
+skipped the store *silently*, so a file like `BIN_TO_BYTE` "compiled" with
+`pt := ADR(bin);` emitting nothing at all — `ADR` did not exist. Making that a diagnostic
+(it is the same silent-drop class as the argument diagnostic below) took the honest count
+to **194**. The three fixes since then brought it to 241:
+
+| Change | Effect |
+|---|---|
+| Non-integer operands lowered or reported instead of `into_int_value()` panics: CODESYS byte-addressed pointer arithmetic (`pt := pt + 1`), TRUNC → DINT, `X_TO_REAL` of a REAL | 13 panics → 0 |
+| Typed literals (`DWORD#1`, `BYTE#255`, `INT#-5`) in every value position | 9 of the 11 affected files compile; the other 2 now stop on `DATE_TO_UDINT` |
+| `pt^` as value and target, `pt^[i]`, `ADR()`, `SIZEOF()`; FUNCTION locals and result zeroed per call | the pointer bucket (50) and the `ADR` bucket (49) are gone |
+
+Remaining failures, by the **first** error in each of the 318 files:
+
+| Files | Cause | Classification |
+|---:|---|---|
+| 155 | unknown function — **122 are OSCAT siblings** (`T_PLC_MS` 47, `INC1` 7, `T_PLC_US` 5, `DAY_OF_YEAR` 5, `TO_UPPER` 4, `YEAR_OF_DATE`, `INC`, `CHR_TO_STRING`, …); **33 are missing conversions**: the DATE/TOD/DT family (`DATE_TO_DWORD` 6, `DT_TO_DWORD` 5, `TOD_TO_DWORD` 3, `DWORD_TO_DATE` 3, `DATE_TO_UDINT` 3, `DWORD_TO_TOD` 2, `DT_TO_DATE` 2, `DT_TO_UDINT` 1), plus `UINT_TO_DWORD` 2, `DWORD_TO_WORD`, `DINT_TO_WORD`, `BYTE_TO_REAL`, `DWORD_TO_STRING`, and the CODESYS `TIME()` 2 | mostly cross-file; 33 real |
+| 83 | unknown type in a declaration (`complex` 24, `Vector_3` 14, `INTEGRATE` 5, `esr_data` 4, …) | cross-file |
+| 36 | unknown identifier — OSCAT globals `math` 11, `LANGUAGE` 7, `LIST_LENGTH` 7, `setup` 6, `STRING_LENGTH` 3, `phys` 2 | cross-file |
+| 27 | member access: CODESYS bit access on a scalar (`in.0`, `cnt.0`, `SX[i].0`; ~18), a field of a cross-file STRUCT/global (`math.FACTS`, `setup.DECADES`, `complex.re`; ~9) | vendor extension / cross-file |
+| 17 | STRING in a scalar position: string literal as a value (9), `MID`/`RIGHT`/`REPLACE` nested in an expression (8) | **real gap** |
+
+So of the 318, roughly 250 are this measurement's artifact (one file at a time, where
+OSCAT is a library of siblings and globals), and the real compiler gaps left are the
+DATE/TOD/DT conversions (needs a units decision), STRING values in expressions, and the
+CODESYS bit-access dialect question.
+
+Found along the way and **not** fixed here (each is a silent wrong result, not a
+diagnostic):
+
+- `RETURN` compiles to nothing (`compile_statement` has it as a TODO), though the README
+  lists it as Full. Code after `RETURN` runs.
+- `NOT` on any 8-bit value is *boolean* NOT, so `NOT BYTE#16#0F` is 0, not 16#F0 — codegen
+  cannot tell BOOL from BYTE by LLVM width alone.
+- Integer `**` returns its left operand unchanged; REAL `**` is rejected.
+- A STRING initializer on a PROGRAM variable (`s : STRING := 'abc';`) is not applied.
+- Non-standard builtins (`FLOOR`, `CEIL`, `ROUND`) return REAL and shadow OSCAT's own
+  `FLOOR : DINT` when both are compiled together, because builtins are tried before
+  user FUNCTIONs.
+
+The sections below are the history of the earlier measurements.
 
 ## The diagnostic lies, and it cost me an hour
 
@@ -107,9 +151,10 @@ Semantics (tests in `crates/plcc-codegen/tests/oscat_conversions.rs`):
   variable, and its string arguments must be variables or literals — a nested call
   (`REPLACE(s, MID(..), ..)`, in `REPLACE_CHARS`) is not supported.
 
-Effect: **268 / 559** compile individually (was 246). Most remaining
+Effect: **268 / 559** compile individually (was 246) — an overcount, see the top: the
+silent store drop let files with an unknown right-hand side pass. Most remaining
 `DWORD_TO_TIME` argument failures (30 files) are `DWORD_TO_TIME(T_PLC_MS())`, where
-`T_PLC_MS` is defined nowhere in the corpus — a cross-file/vendor artifact, not a
+`T_PLC_MS` lives in the sibling `T_PLC_MS.EXP` — a cross-file artifact, not a
 missing conversion.
 
 Still absent from the dispatch, and next in line by OSCAT usage: the DATE/TOD/DT
@@ -123,8 +168,9 @@ pre-existing code that calls `into_int_value()` on a value that is not an intege
 11 in `compile_binary_op`'s integer path (`BIN_TO_BYTE`, `HEX_TO_DWORD`,
 `_BUFFER_INIT`, …), and 2 in older conversion arms (`INT_TO_REAL` in `CMP`, the
 narrowing arm in `RANGE_TO_BYTE`) handed a float. Crashes, not missing functions.
+**Fixed** — see the top.
 
-## Build order, by measured impact
+## Build order, by measured impact (as of 268; items 1–3 are done)
 
 1. **Fix the argument diagnostic.** Cheap, and every number above is unreliable until it
    lands. It is also the same silent-drop class that has produced most of this project's
@@ -135,8 +181,12 @@ narrowing arm in `RANGE_TO_BYTE`) handed a float. Crashes, not missing functions
    is already claimed as "Full" in the README.
 4. **Re-measure**, then classify the `failed to compile condition` bucket, which should be
    readable once (1) lands.
-5. **Decide on CODESYS bit access** (`X.0 := A0`). 13 files. A dialect question, not a bug
+5. **Decide on CODESYS bit access** (`X.0 := A0`). ~18 files now. A dialect question, not a bug
    — see `docs/codesys-compatibility.md`.
+
+Next, from the 241 measurement: the DATE/TOD/DT conversions (33 files once the units
+are decided), STRING values in expressions (17), then bit access. Everything else in
+the remaining table resolves only by compiling OSCAT as the library it is.
 
 ## Method note
 
