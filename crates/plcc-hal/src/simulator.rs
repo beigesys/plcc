@@ -147,6 +147,18 @@ impl ProcessImage for SimProcessImage {
     fn marker_size(&self) -> u32 {
         self.marker.len() as u32
     }
+
+    fn read_inputs(&self, dst: &mut [u8]) -> usize {
+        let n = dst.len().min(self.input.len());
+        dst[..n].copy_from_slice(&self.input[..n]);
+        n
+    }
+
+    fn write_outputs(&mut self, src: &[u8]) -> usize {
+        let n = src.len().min(self.output.len());
+        self.output[..n].copy_from_slice(&src[..n]);
+        n
+    }
 }
 
 // ---------------------------------------------------------------------------

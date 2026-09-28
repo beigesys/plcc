@@ -429,7 +429,9 @@ dependencies = [
  "clap",
  "inkwell",
  "plcc-codegen",
+ "plcc-runtime",
  "plcc-st",
+ "plcc-stdlib",
  "thiserror",
 ]
 

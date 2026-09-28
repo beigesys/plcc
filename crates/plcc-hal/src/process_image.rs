@@ -51,6 +51,27 @@ pub trait ProcessImage {
 
     /// Size of the marker image in bytes.
     fn marker_size(&self) -> u32;
+
+    /// Copy the input image into `dst` (the program's `%I` area) — the *latch*
+    /// at the start of a scan cycle. Copies `min(dst.len(), input_size)` bytes and
+    /// returns that count. Override with a bulk copy where one is available.
+    fn read_inputs(&self, dst: &mut [u8]) -> usize {
+        let n = dst.len().min(self.input_size() as usize);
+        for (i, b) in dst[..n].iter_mut().enumerate() {
+            *b = self.read_input(i as u32).unwrap_or(0);
+        }
+        n
+    }
+
+    /// Copy `src` (the program's `%Q` area) into the output image — the *flush*
+    /// at the end of a scan cycle. Returns the number of bytes copied.
+    fn write_outputs(&mut self, src: &[u8]) -> usize {
+        let n = src.len().min(self.output_size() as usize);
+        for (i, b) in src[..n].iter().enumerate() {
+            self.write_output(i as u32, *b);
+        }
+        n
+    }
 }
 
 // Safety: ProcessImageLayout contains raw pointers but is only used for FFI

@@ -11,8 +11,10 @@ pub struct TaskConfig {
     pub name: [u8; 64],
     /// Cycle interval in nanoseconds. 0 means free-running.
     pub interval_ns: u64,
-    /// Priority (0 = lowest, 255 = highest).
-    pub priority: u8,
+    /// Priority, IEC 61131-3 convention: 0 is the highest; larger numbers are
+    /// less urgent. (Compiled task tables use this convention; the implicit
+    /// background task has `u32::MAX`.)
+    pub priority: u32,
     /// Watchdog timeout in nanoseconds. 0 means no watchdog.
     pub watchdog_ns: u64,
 }
