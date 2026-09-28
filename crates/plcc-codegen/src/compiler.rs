@@ -133,6 +133,20 @@ pub enum CodegenError {
         var_name: String,
         type_name: String,
     },
+    /// An expression that must produce a value (a builtin's argument, an IF
+    /// condition, a FOR bound, an array index, ...) produced none.
+    ///
+    /// This used to be reported as `failed to compile argument for MIN`, which blamed
+    /// the enclosing builtin for what was really an unknown identifier or an undefined
+    /// nested function inside the argument. `what` names the slot, `expr` the
+    /// expression in it, and `reason` the leaf that actually failed.
+    #[error("{what} (`{expr}`) produced no value: {reason} (source offset {offset})")]
+    NoValue {
+        what: String,
+        expr: String,
+        reason: String,
+        offset: usize,
+    },
     /// A `TYPE` declaration never becomes layout-complete: a cycle, or a name that
     /// resolves to nothing.
     #[error(
@@ -286,6 +300,12 @@ pub struct Compiler<'ctx> {
     current_struct_type: Option<StructType<'ctx>>,
     /// The state pointer for the current POU being compiled.
     current_state_ptr: Option<PointerValue<'ctx>>,
+    /// Why the most recent `compile_expression` leaf returned `Ok(None)`, and the
+    /// span of that leaf. `Ok(None)` propagates outward through operators and calls
+    /// carrying no information; the site that finally needs a value reads this back
+    /// (see [`Self::no_value_error`]) so it can name the innermost culprit instead of
+    /// itself.
+    no_value_cause: Option<(plcc_st::span::Span, String)>,
 }
 
 impl<'ctx> Compiler<'ctx> {
@@ -307,6 +327,7 @@ impl<'ctx> Compiler<'ctx> {
             fn_signatures: HashMap::new(),
             current_struct_type: None,
             current_state_ptr: None,
+            no_value_cause: None,
         }
     }
 
@@ -398,13 +419,17 @@ impl<'ctx> Compiler<'ctx> {
             .collect();
 
         let mut arg_vals: Vec<BasicValueEnum<'ctx>> = Vec::new();
-        for arg in args {
+        for (i, arg) in args.iter().enumerate() {
             if let Some(val) = self.compile_expression(&arg.value, function)? {
                 arg_vals.push(val);
             } else {
-                return Err(CodegenError::LlvmError(format!(
-                    "failed to compile argument for {uname}"
-                )));
+                // Blame the argument, not the builtin: `MIN(x, LANGUAGE.LMAX)` fails
+                // because `LANGUAGE` is unknown, not because MIN is missing.
+                let slot = match &arg.name {
+                    Some(n) => format!("argument `{}` of `{uname}`", n.name),
+                    None => format!("argument {} of `{uname}`", i + 1),
+                };
+                return Err(self.no_value_error(slot, &arg.value));
             }
         }
 
@@ -2569,7 +2594,7 @@ impl<'ctx> Compiler<'ctx> {
                     })?;
                 let n_val = self
                     .compile_expression(&args[1].value, function)?
-                    .ok_or_else(|| CodegenError::LlvmError("LEFT: failed to compile n".into()))?;
+                    .ok_or_else(|| self.no_value_error("argument 2 of `LEFT`", &args[1].value))?;
                 let n_i32 = if n_val.is_int_value() {
                     let iv = n_val.into_int_value();
                     if iv.get_type().get_bit_width() < 32 {
@@ -2608,7 +2633,7 @@ impl<'ctx> Compiler<'ctx> {
                     })?;
                 let n_val = self
                     .compile_expression(&args[1].value, function)?
-                    .ok_or_else(|| CodegenError::LlvmError("RIGHT: failed to compile n".into()))?;
+                    .ok_or_else(|| self.no_value_error("argument 2 of `RIGHT`", &args[1].value))?;
                 let n_i32 = if n_val.is_int_value() {
                     let iv = n_val.into_int_value();
                     if iv.get_type().get_bit_width() < 32 {
@@ -2649,10 +2674,10 @@ impl<'ctx> Compiler<'ctx> {
                     })?;
                 let len_val = self
                     .compile_expression(&args[1].value, function)?
-                    .ok_or_else(|| CodegenError::LlvmError("MID: failed to compile len".into()))?;
+                    .ok_or_else(|| self.no_value_error("argument 2 of `MID`", &args[1].value))?;
                 let pos_val = self
                     .compile_expression(&args[2].value, function)?
-                    .ok_or_else(|| CodegenError::LlvmError("MID: failed to compile pos".into()))?;
+                    .ok_or_else(|| self.no_value_error("argument 3 of `MID`", &args[2].value))?;
                 let len_i32 = if len_val.is_int_value() {
                     let iv = len_val.into_int_value();
                     if iv.get_type().get_bit_width() < 32 {
@@ -5323,7 +5348,7 @@ impl<'ctx> Compiler<'ctx> {
     ) -> Result<(), CodegenError> {
         let cond_val = self
             .compile_expression(condition, function)?
-            .ok_or_else(|| CodegenError::LlvmError("failed to compile condition".into()))?;
+            .ok_or_else(|| self.no_value_error("IF condition", condition))?;
 
         let then_bb = self.context.append_basic_block(function, "then");
         let merge_bb = self.context.append_basic_block(function, "merge");
@@ -5356,9 +5381,7 @@ impl<'ctx> Compiler<'ctx> {
                 for (i, branch) in elsif_branches.iter().enumerate() {
                     let elsif_cond = self
                         .compile_expression(&branch.condition, function)?
-                        .ok_or_else(|| {
-                            CodegenError::LlvmError("failed to compile elsif condition".into())
-                        })?;
+                        .ok_or_else(|| self.no_value_error("ELSIF condition", &branch.condition))?;
 
                     let elsif_then = self.context.append_basic_block(function, "elsif_then");
                     // Always a fresh block, never `merge_bb` itself. Aliasing the last
@@ -5415,10 +5438,10 @@ impl<'ctx> Compiler<'ctx> {
 
         let from_val = self
             .compile_expression(from, function)?
-            .ok_or_else(|| CodegenError::LlvmError("failed to compile from".into()))?;
+            .ok_or_else(|| self.no_value_error("FOR start value", from))?;
         let to_val = self
             .compile_expression(to, function)?
-            .ok_or_else(|| CodegenError::LlvmError("failed to compile to".into()))?;
+            .ok_or_else(|| self.no_value_error("FOR end value", to))?;
         let to_ty = self.rvalue_iec_type(to);
 
         // Store the initial value at the control variable's own width. A raw store
@@ -5441,7 +5464,7 @@ impl<'ctx> Compiler<'ctx> {
             Some(by_expr) => {
                 let val = self
                     .compile_expression(by_expr, function)?
-                    .ok_or_else(|| CodegenError::LlvmError("failed to compile step".into()))?;
+                    .ok_or_else(|| self.no_value_error("FOR step (BY)", by_expr))?;
                 (val.into_int_value(), self.rvalue_iec_type(by_expr))
             }
             None => (
@@ -5603,7 +5626,7 @@ impl<'ctx> Compiler<'ctx> {
         self.builder.position_at_end(cond_bb);
         let cond_val = self
             .compile_expression(condition, function)?
-            .ok_or_else(|| CodegenError::LlvmError("failed to compile condition".into()))?;
+            .ok_or_else(|| self.no_value_error("WHILE condition", condition))?;
         // BOOL is an i8 in this ABI; a branch condition must be i1.
         let cond_bool = self.to_i1(cond_val.into_int_value())?;
         self.builder
@@ -5656,7 +5679,7 @@ impl<'ctx> Compiler<'ctx> {
         self.builder.position_at_end(cond_bb);
         let cond_val = self
             .compile_expression(until, function)?
-            .ok_or_else(|| CodegenError::LlvmError("failed to compile UNTIL condition".into()))?;
+            .ok_or_else(|| self.no_value_error("UNTIL condition", until))?;
         let cond_bool = self.to_i1(cond_val.into_int_value())?;
         // UNTIL means: exit when true, loop when false
         self.builder
@@ -5678,7 +5701,7 @@ impl<'ctx> Compiler<'ctx> {
     ) -> Result<(), CodegenError> {
         let sel_val = self
             .compile_expression(selector, function)?
-            .ok_or_else(|| CodegenError::LlvmError("failed to compile selector".into()))?;
+            .ok_or_else(|| self.no_value_error("CASE selector", selector))?;
 
         let end_bb = self.context.append_basic_block(function, "case_end");
         let else_bb = if else_body.is_some() {
@@ -5936,6 +5959,159 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
+    /// The diagnostic for an expression that `compile_expression` returned `Ok(None)`
+    /// for, in a position that needs a value. `what` names the position ("argument 2
+    /// of `MIN`", "IF condition").
+    ///
+    /// The reason comes from the leaf that `compile_expression` recorded when it
+    /// returned `Ok(None)`, provided that leaf lies inside `expr` — so a stale cause
+    /// from some earlier, tolerated `None` is never attached to an unrelated
+    /// expression. Failing that, it is reconstructed from the expression's shape.
+    fn no_value_error(&mut self, what: impl Into<String>, expr: &Expression) -> CodegenError {
+        let recorded = self.no_value_cause.take().and_then(|(span, reason)| {
+            (span.start >= expr.span.start && span.end <= expr.span.end).then_some(reason)
+        });
+        let reason = recorded
+            .or_else(|| self.no_value_reason(expr))
+            .unwrap_or_else(|| "codegen does not lower this expression to a value".to_string());
+        CodegenError::NoValue {
+            what: what.into(),
+            expr: Self::describe_lvalue(expr),
+            reason,
+            offset: expr.span.start,
+        }
+    }
+
+    /// Return `Ok(None)` from a `compile_expression` leaf, recording why.
+    fn no_value(
+        &mut self,
+        expr: &Expression,
+        reason: String,
+    ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
+        self.no_value_cause = Some((expr.span, reason));
+        Ok(None)
+    }
+
+    /// `no_value` with the reason reconstructed from `expr`'s shape.
+    fn no_value_here(
+        &mut self,
+        expr: &Expression,
+    ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
+        let reason = self
+            .no_value_reason(expr)
+            .unwrap_or_else(|| "codegen does not lower this expression to a value".to_string());
+        self.no_value(expr, reason)
+    }
+
+    /// Why `expr` yields no value, from its shape alone. This mirrors the `Ok(None)`
+    /// exits of `compile_expression` without emitting any code; `None` means no
+    /// specific cause was identified here.
+    ///
+    /// Exact at a leaf (where `compile_expression` already knows the leaf itself is
+    /// at fault). On a composite tree it is only a fallback: it cannot tell a builtin
+    /// call that compiled from an unknown function, since builtins have no module
+    /// declaration — which is why the leaf's recorded cause is preferred.
+    fn no_value_reason(&self, expr: &Expression) -> Option<String> {
+        match &expr.kind {
+            ExpressionKind::IntegerLiteral(_)
+            | ExpressionKind::RealLiteral(_)
+            | ExpressionKind::BoolLiteral(_)
+            | ExpressionKind::TimeLiteral(_)
+            | ExpressionKind::DateLiteral(_)
+            | ExpressionKind::TodLiteral(_)
+            | ExpressionKind::DtLiteral(_) => None,
+            ExpressionKind::Identifier(_) => self.unknown_root(expr),
+            ExpressionKind::Parenthesized(inner) => self.no_value_reason(inner),
+            ExpressionKind::BinaryOp { left, right, .. } => self
+                .no_value_reason(left)
+                .or_else(|| self.no_value_reason(right)),
+            ExpressionKind::UnaryOp { operand, .. } => self.no_value_reason(operand),
+            ExpressionKind::FunctionCall { callee, .. } => match &callee.kind {
+                ExpressionKind::Identifier(ident) => {
+                    let uname = ident.name.to_uppercase();
+                    if matches!(uname.as_str(), "CONCAT" | "LEFT" | "RIGHT" | "MID") {
+                        return Some(format!(
+                            "`{uname}` returns a STRING, which is only supported as the \
+                             whole right-hand side of an assignment"
+                        ));
+                    }
+                    match self.module.get_function(&ident.name.to_lowercase()) {
+                        None => Some(format!(
+                            "unknown function `{}` (no builtin and no FUNCTION of that \
+                             name in this compilation unit)",
+                            ident.name
+                        )),
+                        Some(f) if f.get_type().get_return_type().is_none() => {
+                            Some(format!("function `{}` returns no value", ident.name))
+                        }
+                        Some(_) => None,
+                    }
+                }
+                ExpressionKind::MemberAccess { object, member } => {
+                    self.unknown_root(object).or_else(|| {
+                        Some(format!(
+                            "`{}` is not a FUNCTION_BLOCK or CLASS instance, so `.{}(..)` \
+                             is not a method call",
+                            Self::describe_lvalue(object),
+                            member.name
+                        ))
+                    })
+                }
+                _ => Some(format!(
+                    "`{}` is not callable",
+                    Self::describe_lvalue(callee)
+                )),
+            },
+            ExpressionKind::MemberAccess { .. } | ExpressionKind::ArrayIndex { .. } => {
+                self.unknown_root(expr).or_else(|| {
+                    self.lvalue_iec_type(expr).is_none().then(|| {
+                        format!(
+                            "`{}` does not resolve to a field or element of known type",
+                            Self::describe_lvalue(expr)
+                        )
+                    })
+                })
+            }
+            ExpressionKind::StringLiteral(_) | ExpressionKind::WstringLiteral(_) => {
+                Some("a string literal has no scalar value in this position".to_string())
+            }
+            ExpressionKind::DirectVariable(addr) => Some(format!(
+                "direct variable `%{addr}` is not supported in expressions"
+            )),
+            ExpressionKind::Dereference(_) => Some(format!(
+                "pointer dereference `{}` is not supported as a value",
+                Self::describe_lvalue(expr)
+            )),
+            ExpressionKind::TypedLiteral { .. } => Some(format!(
+                "typed literal `{}` is not supported in this position",
+                Self::describe_lvalue(expr)
+            )),
+            ExpressionKind::ArrayInitializer(_) => {
+                Some("an array initializer is not a scalar value".to_string())
+            }
+        }
+    }
+
+    /// For an access chain (`a.b[i].c`, `p^.x`), report its root identifier when that
+    /// identifier is not a variable in scope.
+    fn unknown_root(&self, expr: &Expression) -> Option<String> {
+        match &expr.kind {
+            ExpressionKind::Identifier(ident) => {
+                if self.variables.contains_key(&ident.name.to_uppercase()) {
+                    None
+                } else {
+                    Some(format!("unknown identifier `{}`", ident.name))
+                }
+            }
+            ExpressionKind::MemberAccess { object, .. } => self.unknown_root(object),
+            ExpressionKind::ArrayIndex { array, .. } => self.unknown_root(array),
+            ExpressionKind::Parenthesized(inner) | ExpressionKind::Dereference(inner) => {
+                self.unknown_root(inner)
+            }
+            _ => None,
+        }
+    }
+
     /// Pointer to an assignable location.
     ///
     /// `Ok(None)` means "this expression has no address", and callers that *ask*
@@ -5995,7 +6171,10 @@ impl<'ctx> Compiler<'ctx> {
                     let idx_val =
                         self.compile_expression(&indices[0], function)?
                             .ok_or_else(|| {
-                                CodegenError::LlvmError("failed to compile array index".into())
+                                self.no_value_error(
+                                    format!("index of `{}`", Self::describe_lvalue(expr)),
+                                    &indices[0],
+                                )
                             })?;
 
                     let lo = ranges[0].0;
@@ -6032,7 +6211,14 @@ impl<'ctx> Compiler<'ctx> {
                         let idx_val =
                             self.compile_expression(idx_expr, function)?
                                 .ok_or_else(|| {
-                                    CodegenError::LlvmError("failed to compile array index".into())
+                                    self.no_value_error(
+                                        format!(
+                                            "index {} of `{}`",
+                                            dim + 1,
+                                            Self::describe_lvalue(expr)
+                                        ),
+                                        idx_expr,
+                                    )
                                 })?;
 
                         let lo = ranges[dim].0;
@@ -6167,7 +6353,7 @@ impl<'ctx> Compiler<'ctx> {
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                     Ok(Some(val))
                 } else {
-                    Ok(None)
+                    self.no_value_here(expr)
                 }
             }
             ExpressionKind::BinaryOp { op, left, right } => {
@@ -6248,12 +6434,12 @@ impl<'ctx> Compiler<'ctx> {
                             .builder
                             .build_call(fn_val, &compiled_args, "call")
                             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                        Ok(match call.try_as_basic_value() {
-                            inkwell::values::ValueKind::Basic(v) => Some(v),
-                            inkwell::values::ValueKind::Instruction(_) => None,
-                        })
+                        match call.try_as_basic_value() {
+                            inkwell::values::ValueKind::Basic(v) => Ok(Some(v)),
+                            inkwell::values::ValueKind::Instruction(_) => self.no_value_here(expr),
+                        }
                     } else {
-                        Ok(None)
+                        self.no_value_here(expr)
                     }
                 } else if let ExpressionKind::MemberAccess { object, member } = &callee.kind {
                     // Method call: obj.Method(args), where `obj` is any addressable
@@ -6264,9 +6450,9 @@ impl<'ctx> Compiler<'ctx> {
                     // `fb_layout_of` above resolves the instance by type from any
                     // addressable expression — `a[1].Bump(5)`, `s.parts[2].Reset()` —
                     // so there is no separate indirect path to fall through to.
-                    Ok(None)
+                    self.no_value_here(expr)
                 } else {
-                    Ok(None)
+                    self.no_value_here(expr)
                 }
             }
             ExpressionKind::TimeLiteral(s) => {
@@ -6283,11 +6469,11 @@ impl<'ctx> Compiler<'ctx> {
             }
             ExpressionKind::StringLiteral(_) | ExpressionKind::WstringLiteral(_) => {
                 // String literals — not yet supported in codegen
-                Ok(None)
+                self.no_value_here(expr)
             }
             ExpressionKind::DirectVariable(_) => {
                 // Direct variables (%I, %Q, %M) resolved at link time
-                Ok(None)
+                self.no_value_here(expr)
             }
             ExpressionKind::ArrayIndex { .. } => {
                 // Element pointer via the lvalue path, then load. The element type
@@ -6296,10 +6482,10 @@ impl<'ctx> Compiler<'ctx> {
                 // nothing — matching only a bare identifier here meant `n := o[1][2].a;`
                 // emitted no code at all.
                 let Some(elem_ptr) = self.compile_lvalue_with_fn(expr, function)? else {
-                    return Ok(None);
+                    return self.no_value_here(expr);
                 };
                 let Some(elem_ty) = self.lvalue_iec_type(expr) else {
-                    return Ok(None);
+                    return self.no_value_here(expr);
                 };
                 let elem_llvm_ty = self.iec_to_llvm_type(&elem_ty);
                 let val = self
@@ -6313,10 +6499,10 @@ impl<'ctx> Compiler<'ctx> {
                 // the same walk the lvalue path uses, so `o := s.i.v;` and
                 // `n := x.f.o;` load instead of silently producing nothing.
                 let Some(field_ty) = self.lvalue_iec_type(expr) else {
-                    return Ok(None);
+                    return self.no_value_here(expr);
                 };
                 let Some(field_ptr) = self.compile_lvalue_with_fn(expr, function)? else {
-                    return Ok(None);
+                    return self.no_value_here(expr);
                 };
                 let field_llvm_ty = self.iec_to_llvm_type(&field_ty);
                 let val = self
@@ -6325,7 +6511,7 @@ impl<'ctx> Compiler<'ctx> {
                     .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                 Ok(Some(val))
             }
-            _ => Ok(None),
+            _ => self.no_value_here(expr),
         }
     }
 
