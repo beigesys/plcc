@@ -4304,7 +4304,7 @@ impl<'ctx> Compiler<'ctx> {
     fn string_literal_const(&self, ty: &IecType, text: &str) -> Option<BasicValueEnum<'ctx>> {
         match ty {
             IecType::StringType { max_len } => {
-                let cap = max_len.unwrap_or(256) as usize;
+                let cap = max_len.unwrap_or(plcc_hir::types::DEFAULT_STRING_LEN) as usize;
                 let i8_ty = self.context.i8_type();
                 let mut vals: Vec<_> = decode_iec_string(text, false)
                     .into_iter()
@@ -4315,7 +4315,7 @@ impl<'ctx> Compiler<'ctx> {
                 Some(i8_ty.const_array(&vals).into())
             }
             IecType::WstringType { max_len } => {
-                let cap = max_len.unwrap_or(256) as usize;
+                let cap = max_len.unwrap_or(plcc_hir::types::DEFAULT_STRING_LEN) as usize;
                 let i16_ty = self.context.i16_type();
                 let mut vals: Vec<_> = decode_iec_string(text, true)
                     .into_iter()
@@ -4703,11 +4703,11 @@ impl<'ctx> Compiler<'ctx> {
             | IecType::Ldt => self.context.i64_type().into(),
             // STRING stored as fixed-size byte array (default 256 bytes)
             IecType::StringType { max_len } => {
-                let len = max_len.unwrap_or(256) + 1; // +1 for null terminator
+                let len = max_len.unwrap_or(plcc_hir::types::DEFAULT_STRING_LEN) + 1; // +1 for null terminator
                 self.context.i8_type().array_type(len as u32).into()
             }
             IecType::WstringType { max_len } => {
-                let len = max_len.unwrap_or(256) + 1;
+                let len = max_len.unwrap_or(plcc_hir::types::DEFAULT_STRING_LEN) + 1;
                 self.context.i16_type().array_type(len as u32).into()
             }
             IecType::Char => self.context.i8_type().into(),

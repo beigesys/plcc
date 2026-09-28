@@ -161,9 +161,9 @@ impl<'ctx> Compiler<'ctx> {
     /// layout is taken from LLVM when the header is generated.
     pub(crate) fn natural_size_align(&self, ty: &IecType) -> Option<(u64, u64)> {
         match ty {
-            IecType::StringType { max_len } => Some((max_len.unwrap_or(256) as u64 + 1, 1)),
+            IecType::StringType { max_len } => Some((max_len.unwrap_or(plcc_hir::types::DEFAULT_STRING_LEN) as u64 + 1, 1)),
             IecType::WstringType { max_len } => {
-                Some((2 * (max_len.unwrap_or(256) as u64 + 1), 2))
+                Some((2 * (max_len.unwrap_or(plcc_hir::types::DEFAULT_STRING_LEN) as u64 + 1), 2))
             }
             IecType::Array {
                 ranges,

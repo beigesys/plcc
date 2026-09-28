@@ -187,12 +187,12 @@ END_PROGRAM
     );
 
     // JIT execute: s is zeroed, so LEN(s) should be 0
-    // STRING default is 256+1 = 257 bytes, then len_result is 2 bytes (i16)
-    // State struct: [257 x i8] for s, [2 bytes] for len_result
+    // STRING default is 80+1 = 81 bytes (CODESYS), then len_result is 2 bytes (i16)
+    // State struct: [81 x i8] for s, [2 bytes] for len_result
     // But alignment may add padding. Let's use a large enough buffer.
-    let state_size = 260; // 257 for string + padding + 2 for INT
+    let state_size = 260; // 81 for string + padding + 2 for INT
     let _state = compile_and_run(source, "strlen_scan", state_size, 1);
-    // len_result is after the string array (257 bytes). With alignment it may be at offset 258.
+    // len_result is after the string array (81 bytes). With alignment it may be at offset 82.
     // Since the string is all zeros, LEN should return 0.
     // The exact offset depends on LLVM struct layout. Let's read the last 2 bytes as a simpler check.
     // Actually, let's just check the IR compiles and runs without crashing. The LEN=0 for empty string
@@ -226,7 +226,7 @@ END_PROGRAM
         .create_jit_execution_engine(OptimizationLevel::None)
         .expect("failed to create JIT execution engine");
 
-    // State struct: [257 x i8] for s, then i16 for len_result
+    // State struct: [81 x i8] for s (default STRING = 80 characters), then i16
     // We'll manually write "Hello" (5 bytes + null) into the string field
     let state_size = 260;
     let mut state = vec![0u8; state_size];
@@ -247,14 +247,11 @@ END_PROGRAM
     let scan: extern "C" fn(*mut u8) = unsafe { std::mem::transmute(fn_ptr) };
     scan(state_ptr);
 
-    // len_result is at offset 257 (after [257 x i8] string array), but may be aligned.
-    // LLVM typically packs i8 arrays tightly, so len_result should be at offset 257.
-    // However, i16 may be aligned to 2-byte boundary, so offset could be 258.
-    // Let's check both possible offsets.
-    let len_at_257 = i16::from_ne_bytes([state[257], state[258]]);
-    let len_at_258 = i16::from_ne_bytes([state[258], state[259]]);
+    // len_result follows the [81 x i8] string array, at 81 or (2-aligned) 82.
+    let len_at_81 = i16::from_ne_bytes([state[81], state[82]]);
+    let len_at_82 = i16::from_ne_bytes([state[82], state[83]]);
     assert!(
-        len_at_257 == 5 || len_at_258 == 5,
-        "LEN('Hello') should be 5, got len@257={len_at_257}, len@258={len_at_258}"
+        len_at_81 == 5 || len_at_82 == 5,
+        "LEN('Hello') should be 5, got len@81={len_at_81}, len@82={len_at_82}"
     );
 }

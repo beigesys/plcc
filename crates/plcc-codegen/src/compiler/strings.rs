@@ -18,7 +18,7 @@
 use super::*;
 
 /// Capacity, in bytes including the terminator, of a `STRING` with no length.
-pub(super) const DEFAULT_STRING_BYTES: u32 = 256;
+pub(super) const DEFAULT_STRING_BYTES: u32 = plcc_hir::types::DEFAULT_STRING_LEN as u32 + 1;
 
 impl<'ctx> Compiler<'ctx> {
     /// The string builtins that produce a STRING.

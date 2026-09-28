@@ -636,7 +636,7 @@ END_PROGRAM
     assert_eq!(cstr(&state, 0), "abc");
     assert_eq!(cstr(&state, 11), "tru", "truncated to the declared length");
     assert_eq!(cstr(&state, 15), "default len");
-    assert_eq!(cstr(&state, 15 + 257), "");
+    assert_eq!(cstr(&state, 15 + 81), "", "after an 80-character default STRING");
 }
 
 #[test]

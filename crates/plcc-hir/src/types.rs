@@ -3,6 +3,11 @@
 use std::collections::HashMap;
 use std::fmt;
 
+/// Characters of a `STRING` / `WSTRING` declared without a length. CODESYS (and
+/// TwinCAT) use 80; IEC 61131-3 leaves it implementation-defined. plcc used 256,
+/// so a longer value that CODESYS truncates at 80 characters was kept whole.
+pub const DEFAULT_STRING_LEN: usize = 80;
+
 /// IEC 61131-3 type hierarchy.
 #[derive(Debug, Clone, PartialEq)]
 pub enum IecType {

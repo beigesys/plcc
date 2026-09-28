@@ -1160,11 +1160,11 @@ impl<'ctx> Compiler<'ctx> {
         };
         match ty {
             IecType::StringType { max_len } => {
-                CType::Array(Box::new(CType::Scalar("char".into())), max_len.unwrap_or(256) as u64 + 1)
+                CType::Array(Box::new(CType::Scalar("char".into())), max_len.unwrap_or(plcc_hir::types::DEFAULT_STRING_LEN) as u64 + 1)
             }
             IecType::WstringType { max_len } => CType::Array(
                 Box::new(CType::Scalar("uint16_t".into())),
-                max_len.unwrap_or(256) as u64 + 1,
+                max_len.unwrap_or(plcc_hir::types::DEFAULT_STRING_LEN) as u64 + 1,
             ),
             IecType::Array {
                 ranges,
