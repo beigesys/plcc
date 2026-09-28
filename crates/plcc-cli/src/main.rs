@@ -39,6 +39,21 @@ enum Commands {
         /// Standard function block library to compile alongside the program
         #[arg(long, value_enum, default_value_t = StdlibOpt::BundledSt)]
         stdlib: StdlibOpt,
+        /// Write a C header describing the runtime contract (process image, task
+        /// table, entry points, state structs with layout asserts, AT bindings)
+        #[arg(long, value_name = "FILE")]
+        emit_header: Option<PathBuf>,
+        /// Write a JSON symbol table (AT bindings, tasks, instances, and every
+        /// program variable with its offset) for HMI / Modbus mapping tools
+        #[arg(long, value_name = "FILE")]
+        emit_symbols: Option<PathBuf>,
+        /// Fix a process-image area's size in bytes instead of deriving it from the
+        /// highest address used, e.g. `--image-size I=64 --image-size Q=64`
+        #[arg(long, value_name = "AREA=BYTES")]
+        image_size: Vec<String>,
+        /// Interval of the implicit task when the source has no CONFIGURATION
+        #[arg(long, value_name = "TIME", default_value = "T#20ms")]
+        task_interval: String,
     },
     /// Compile and JIT-run ST programs, optionally with Modbus TCP for SCADA
     Sim {
@@ -227,6 +242,10 @@ fn main() -> Result<()> {
             output,
             target,
             stdlib,
+            emit_header,
+            emit_symbols,
+            image_size,
+            task_interval,
         } => {
             if inputs.is_empty() {
                 eprintln!("Error: at least one input file is required");
@@ -237,10 +256,37 @@ fn main() -> Result<()> {
             let context = inkwell::context::Context::create();
             let mut compiler =
                 plcc_codegen::Compiler::new(&context, &inputs[0].display().to_string());
+            for spec in &image_size {
+                let (area, bytes) = parse_image_size(spec)?;
+                compiler.set_image_size(area, bytes);
+            }
+            let interval = plcc_codegen::compiler::contract::parse_duration_ns(&task_interval)
+                .ok_or_else(|| miette::miette!("--task-interval: `{task_interval}` is not a TIME"))?;
+            compiler.set_task_options(plcc_codegen::TaskOptions {
+                default_interval_ns: interval,
+            });
 
             if let Err(e) = compiler.compile(&merged) {
-                eprintln!("Codegen error: {e}");
+                report_codegen_error(&e, &inputs);
                 std::process::exit(1);
+            }
+
+            if emit_header.is_some() || emit_symbols.is_some() {
+                let contract = compiler
+                    .runtime_contract(&target)
+                    .map_err(|e| miette::miette!("{e}"))?;
+                if let Some(path) = &emit_header {
+                    let guard = format!(
+                        "PLCC_{}_H",
+                        path.file_stem().and_then(|s| s.to_str()).unwrap_or("program")
+                    );
+                    std::fs::write(path, plcc_codegen::header::c_header(&contract, &guard))
+                        .into_diagnostic()?;
+                }
+                if let Some(path) = &emit_symbols {
+                    std::fs::write(path, plcc_codegen::header::symbols_json(&contract))
+                        .into_diagnostic()?;
+                }
             }
 
             let out_str = output.display().to_string();
@@ -419,6 +465,46 @@ fn main() -> Result<()> {
             eprintln!("\n{prog_name} done.");
             Ok(())
         }
+    }
+}
+
+/// `I=64` / `q=16` / `M=256`.
+fn parse_image_size(spec: &str) -> Result<(plcc_codegen::direct_address::Area, u32)> {
+    use plcc_codegen::direct_address::Area;
+    let (a, n) = spec
+        .split_once('=')
+        .ok_or_else(|| miette::miette!("--image-size expects AREA=BYTES, got `{spec}`"))?;
+    let area = match a.trim().to_ascii_uppercase().as_str() {
+        "I" => Area::Input,
+        "Q" => Area::Output,
+        "M" => Area::Memory,
+        other => return Err(miette::miette!("--image-size: unknown area `{other}` (I, Q or M)")),
+    };
+    let bytes = n
+        .trim()
+        .parse()
+        .map_err(|_| miette::miette!("--image-size: `{n}` is not a byte count"))?;
+    Ok((area, bytes))
+}
+
+/// Print a codegen error, with its source excerpt when it carries a span and the
+/// span can be attributed to a file (a single input).
+fn report_codegen_error(e: &plcc_codegen::compiler::CodegenError, inputs: &[PathBuf]) {
+    if let (Some(span), [input]) = (e.span(), inputs)
+        && let Ok(source) = read_source(input)
+        && span.end <= source.len()
+    {
+        let report = miette::miette!(
+            labels = vec![miette::LabeledSpan::at(span.start..span.end, "here")],
+            "{e}"
+        )
+        .with_source_code(NamedSource::new(input.display().to_string(), source));
+        eprintln!("{report:?}");
+        return;
+    }
+    match e.span() {
+        Some(span) => eprintln!("Codegen error: {e} (source offset {})", span.start),
+        None => eprintln!("Codegen error: {e}"),
     }
 }
 

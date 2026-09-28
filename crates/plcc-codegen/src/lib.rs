@@ -3,5 +3,6 @@
 
 pub mod compiler;
 pub mod direct_address;
+pub mod header;
 
 pub use compiler::{Compiler, RuntimeContract, TaskOptions};
