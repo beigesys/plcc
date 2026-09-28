@@ -1,0 +1,167 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!--
+  Coil and contact variants, one rung each (no configuration: plcc's implicit
+  task runs the single program):
+
+  1: SetBtn   ==| |==(S Latch )
+  2: ResetBtn ==| |==(R Latch )
+  3: Latch    ==| |==(/ NotLatch)          negated coil
+  4: In       ==|P|==( RisePulse )          rising-edge contact
+  5: In       ==|N|==( FallPulse )          falling-edge contact
+  6: In       ==| |==(P PulseCoil)          rising-edge coil
+  7: In       ==| |==(N DropCoil)           falling-edge coil
+  8: RisePulse ==| |== EN[ADD Rises, 1]ENO => Rises   function with EN
+-->
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <fileHeader companyName="plcc" productName="plcc tests" productVersion="1" creationDateTime="2026-09-27T00:00:00"/>
+  <contentHeader name="coils_edges">
+    <coordinateInfo>
+      <fbd><scaling x="1" y="1"/></fbd>
+      <ld><scaling x="1" y="1"/></ld>
+      <sfc><scaling x="1" y="1"/></sfc>
+    </coordinateInfo>
+  </contentHeader>
+  <types>
+    <dataTypes/>
+    <pous>
+      <pou name="Coils" pouType="program">
+        <interface>
+          <localVars>
+            <variable name="SetBtn"><type><BOOL/></type></variable>
+            <variable name="ResetBtn"><type><BOOL/></type></variable>
+            <variable name="Latch"><type><BOOL/></type></variable>
+            <variable name="NotLatch"><type><BOOL/></type></variable>
+            <variable name="In"><type><BOOL/></type></variable>
+            <variable name="RisePulse"><type><BOOL/></type></variable>
+            <variable name="FallPulse"><type><BOOL/></type></variable>
+            <variable name="PulseCoil"><type><BOOL/></type></variable>
+            <variable name="DropCoil"><type><BOOL/></type></variable>
+            <variable name="Rises"><type><INT/></type></variable>
+          </localVars>
+        </interface>
+        <body>
+          <LD>
+            <leftPowerRail localId="1" width="3" height="400">
+              <position x="10" y="0"/>
+              <connectionPointOut formalParameter=""/>
+            </leftPowerRail>
+            <rightPowerRail localId="2" width="3" height="400">
+              <position x="400" y="0"/>
+              <connectionPointIn><connection refLocalId="11"/></connectionPointIn>
+            </rightPowerRail>
+
+            <contact localId="10" width="21" height="20">
+              <position x="50" y="10"/>
+              <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+              <variable>SetBtn</variable>
+            </contact>
+            <coil localId="11" storage="set" width="21" height="20">
+              <position x="300" y="10"/>
+              <connectionPointIn><connection refLocalId="10"/></connectionPointIn>
+              <variable>Latch</variable>
+            </coil>
+
+            <contact localId="20" width="21" height="20">
+              <position x="50" y="50"/>
+              <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+              <variable>ResetBtn</variable>
+            </contact>
+            <coil localId="21" storage="reset" width="21" height="20">
+              <position x="300" y="50"/>
+              <connectionPointIn><connection refLocalId="20"/></connectionPointIn>
+              <variable>Latch</variable>
+            </coil>
+
+            <contact localId="30" width="21" height="20">
+              <position x="50" y="90"/>
+              <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+              <variable>Latch</variable>
+            </contact>
+            <coil localId="31" negated="true" width="21" height="20">
+              <position x="300" y="90"/>
+              <connectionPointIn><connection refLocalId="30"/></connectionPointIn>
+              <variable>NotLatch</variable>
+            </coil>
+
+            <contact localId="40" edge="rising" width="21" height="20">
+              <position x="50" y="130"/>
+              <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+              <variable>In</variable>
+            </contact>
+            <coil localId="41" width="21" height="20">
+              <position x="300" y="130"/>
+              <connectionPointIn><connection refLocalId="40"/></connectionPointIn>
+              <variable>RisePulse</variable>
+            </coil>
+
+            <contact localId="50" edge="falling" width="21" height="20">
+              <position x="50" y="170"/>
+              <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+              <variable>In</variable>
+            </contact>
+            <coil localId="51" width="21" height="20">
+              <position x="300" y="170"/>
+              <connectionPointIn><connection refLocalId="50"/></connectionPointIn>
+              <variable>FallPulse</variable>
+            </coil>
+
+            <contact localId="60" width="21" height="20">
+              <position x="50" y="210"/>
+              <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+              <variable>In</variable>
+            </contact>
+            <coil localId="61" edge="rising" width="21" height="20">
+              <position x="300" y="210"/>
+              <connectionPointIn><connection refLocalId="60"/></connectionPointIn>
+              <variable>PulseCoil</variable>
+            </coil>
+
+            <contact localId="70" width="21" height="20">
+              <position x="50" y="250"/>
+              <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+              <variable>In</variable>
+            </contact>
+            <coil localId="71" edge="falling" width="21" height="20">
+              <position x="300" y="250"/>
+              <connectionPointIn><connection refLocalId="70"/></connectionPointIn>
+              <variable>DropCoil</variable>
+            </coil>
+
+            <contact localId="80" width="21" height="20">
+              <position x="50" y="290"/>
+              <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+              <variable>RisePulse</variable>
+            </contact>
+            <inVariable localId="81" width="40" height="20">
+              <position x="100" y="320"/>
+              <expression>Rises</expression>
+            </inVariable>
+            <inVariable localId="82" width="40" height="20">
+              <position x="100" y="350"/>
+              <expression>1</expression>
+            </inVariable>
+            <block localId="83" typeName="ADD" width="60" height="80">
+              <position x="180" y="290"/>
+              <inputVariables>
+                <variable formalParameter="EN"><connectionPointIn><connection refLocalId="80"/></connectionPointIn></variable>
+                <variable formalParameter="IN1"><connectionPointIn><connection refLocalId="81"/></connectionPointIn></variable>
+                <variable formalParameter="IN2"><connectionPointIn><connection refLocalId="82"/></connectionPointIn></variable>
+              </inputVariables>
+              <inOutVariables/>
+              <outputVariables>
+                <variable formalParameter="ENO"><connectionPointOut/></variable>
+                <variable formalParameter="OUT"><connectionPointOut/></variable>
+              </outputVariables>
+            </block>
+            <outVariable localId="84" width="40" height="20">
+              <position x="300" y="320"/>
+              <connectionPointIn><connection refLocalId="83" formalParameter="OUT"/></connectionPointIn>
+              <expression>Rises</expression>
+            </outVariable>
+          </LD>
+        </body>
+      </pou>
+    </pous>
+  </types>
+</project>
