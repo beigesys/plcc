@@ -232,7 +232,7 @@ END_PROGRAM
 "#;
     let state = compile_and_run(source, "realtointtest_scan", 2, 1);
     let result = read_i16(&state, 0);
-    assert_eq!(result, 3, "REAL_TO_INT(3.7) should be 3, got {result}");
+    assert_eq!(result, 4, "REAL_TO_INT(3.7) rounds to 4, got {result}");
 }
 
 #[test]

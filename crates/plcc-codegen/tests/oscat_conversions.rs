@@ -212,17 +212,18 @@ fn run_real(r_in: f32, lr_in: f64, d_in: u32, w_in: u16) -> Vec<u8> {
 }
 
 #[test]
-fn real_to_dword_truncates_like_real_to_dint() {
-    let s = run_real(2.7, 9.99, 0, 0);
-    assert_eq!(u32_at(&s, RD_OUT), 2);
-    assert_eq!(u32_at(&s, U_OUT), 2);
+fn real_to_dword_rounds_like_real_to_dint() {
+    // Round to nearest, as CODESYS does (see float_to_int.rs).
+    let s = run_real(2.7, 9.49, 0, 0);
+    assert_eq!(u32_at(&s, RD_OUT), 3);
+    assert_eq!(u32_at(&s, U_OUT), 3);
     assert_eq!(u32_at(&s, LD_OUT), 9);
 }
 
 #[test]
 fn real_to_dword_above_2_31() {
     // 3e9 is exact in f32; an fptosi to i32 would be poison here.
-    let s = run_real(3.0e9, 4_000_000_000.9, 0, 0);
+    let s = run_real(3.0e9, 4_000_000_000.4, 0, 0);
     assert_eq!(u32_at(&s, RD_OUT), 3_000_000_000);
     assert_eq!(u32_at(&s, LD_OUT), 4_000_000_000);
     assert_eq!(

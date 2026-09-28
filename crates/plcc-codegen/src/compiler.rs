@@ -1058,31 +1058,16 @@ impl<'ctx> Compiler<'ctx> {
                 let result = self.to_float_of(arg_vals[0], self.context.f64_type(), false, &uname)?;
                 Ok(Some(result.into()))
             }
-            "REAL_TO_INT" => {
+            // --- REAL/LREAL to any integer or bit-string type ---
+            // One lowering for the whole family, rounding to nearest (halves away
+            // from zero) as CODESYS does; see `float_to_int`.
+            n if Self::float_to_int_target(n).is_some() => {
+                let target = Self::float_to_int_target(n).expect("guarded");
                 if arg_vals.len() != 1 {
-                    return Err(CodegenError::LlvmError(
-                        "REAL_TO_INT expects 1 argument".into(),
-                    ));
+                    return Err(CodegenError::LlvmError(format!("{uname} expects 1 argument")));
                 }
-                let fv = self.ensure_float(arg_vals[0], arg_tys.get(0).and_then(Option::as_ref))?;
-                let result = self
-                    .builder
-                    .build_float_to_signed_int(fv, self.context.i16_type(), "real_to_int")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                Ok(Some(result.into()))
-            }
-            "REAL_TO_DINT" => {
-                if arg_vals.len() != 1 {
-                    return Err(CodegenError::LlvmError(
-                        "REAL_TO_DINT expects 1 argument".into(),
-                    ));
-                }
-                let fv = self.ensure_float(arg_vals[0], arg_tys.get(0).and_then(Option::as_ref))?;
-                let result = self
-                    .builder
-                    .build_float_to_signed_int(fv, self.context.i32_type(), "real_to_dint")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                Ok(Some(result.into()))
+                let fv = self.ensure_float(arg_vals[0], arg_tys.first().and_then(Option::as_ref))?;
+                Ok(Some(self.float_to_int(fv, &target, true)?.into()))
             }
             "INT_TO_DINT" => {
                 if arg_vals.len() != 1 {
@@ -1124,10 +1109,7 @@ impl<'ctx> Compiler<'ctx> {
                     return Err(CodegenError::LlvmError("TRUNC expects 1 argument".into()));
                 }
                 let fv = self.ensure_float(arg_vals[0], arg_tys.get(0).and_then(Option::as_ref))?;
-                let result = self
-                    .builder
-                    .build_float_to_signed_int(fv, self.context.i32_type(), "trunc")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                let result = self.float_to_int(fv, &IecType::Dint, false)?;
                 Ok(Some(result.into()))
             }
 
@@ -1419,27 +1401,6 @@ impl<'ctx> Compiler<'ctx> {
                 Ok(Some(result.into()))
             }
 
-            // --- Float to signed int ---
-            "REAL_TO_LINT" | "LREAL_TO_INT" | "LREAL_TO_DINT" | "LREAL_TO_LINT" => {
-                if arg_vals.len() != 1 {
-                    return Err(CodegenError::LlvmError(format!(
-                        "{uname} expects 1 argument"
-                    )));
-                }
-                let fv = self.ensure_float(arg_vals[0], arg_tys.get(0).and_then(Option::as_ref))?;
-                let target = match uname.as_str() {
-                    "LREAL_TO_INT" => self.context.i16_type(),
-                    "LREAL_TO_DINT" => self.context.i32_type(),
-                    "REAL_TO_LINT" | "LREAL_TO_LINT" => self.context.i64_type(),
-                    _ => unreachable!(),
-                };
-                let result = self
-                    .builder
-                    .build_float_to_signed_int(fv, target, &uname.to_lowercase())
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                Ok(Some(result.into()))
-            }
-
             // --- Signed int to float ---
             "LINT_TO_REAL" => {
                 if arg_vals.len() != 1 {
@@ -1695,25 +1656,9 @@ impl<'ctx> Compiler<'ctx> {
                     .builder
                     .build_float_mul(f, f64_ty.const_float(NS_PER_MS as f64), "ns_f")
                     .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                let ns = self
-                    .builder
-                    .build_float_to_signed_int(ns, self.context.i64_type(), "ns")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                // Nearest nanosecond: `0.1 * 1e6` is not exactly 100000.
+                let ns = self.float_to_int(ns, &IecType::Lint, true)?;
                 Ok(Some(ns.into()))
-            }
-
-            // --- Float to 32-bit unsigned ---
-            // Truncates toward zero like REAL_TO_DINT. Goes through i64 so the whole
-            // unsigned range survives (`fptosi` to i32 would be poison above 2^31,
-            // `fptoui` poison below zero); a negative input wraps modulo 2^32.
-            "REAL_TO_DWORD" | "REAL_TO_UDINT" | "LREAL_TO_DWORD" | "LREAL_TO_UDINT" => {
-                let f = self.single_float_arg(&uname, &arg_vals)?;
-                let wide = self
-                    .builder
-                    .build_float_to_signed_int(f, self.context.i64_type(), "f_to_i64")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                let v = self.resize_int(wide, self.context.i32_type(), true)?;
-                Ok(Some(v.into()))
             }
 
             // --- Unsigned int to float ---
@@ -3385,6 +3330,89 @@ impl<'ctx> Compiler<'ctx> {
     /// A math builtin's operand as floating point. An integer converts to REAL by
     /// its own signedness: `SQRT(b)` with `b : BYTE := 200` is SQRT(200.0), where a
     /// signed conversion made it SQRT(-56.0) = NaN.
+    /// `REAL_TO_<t>` / `LREAL_TO_<t>` for an integer or bit-string `<t>`: the target
+    /// type, or `None` when `name` is not one of them.
+    fn float_to_int_target(name: &str) -> Option<IecType> {
+        let rest = name
+            .strip_prefix("LREAL_TO_")
+            .or_else(|| name.strip_prefix("REAL_TO_"))?;
+        let ty = plcc_hir::types::resolve_type_name(rest)?;
+        matches!(
+            ty,
+            IecType::Sint
+                | IecType::Int
+                | IecType::Dint
+                | IecType::Lint
+                | IecType::Usint
+                | IecType::Uint
+                | IecType::Udint
+                | IecType::Ulint
+                | IecType::Byte
+                | IecType::Word
+                | IecType::Dword
+                | IecType::Lword
+        )
+        .then_some(ty)
+    }
+
+    /// The one REAL/LREAL → integer conversion. Every `REAL_TO_<int>`,
+    /// `LREAL_TO_<int>`, `TRUNC` and implicit REAL → integer store lowers here.
+    ///
+    /// `round`: round to nearest, halves away from zero (`llvm.round`), which is what
+    /// CODESYS documents for REAL_TO_<type> — "for 1 to 4 after the decimal point,
+    /// the number is rounded down; for 5 to 9 it is rounded up", with
+    /// `REAL_TO_INT(-1.5) = -2`. IEC 61131-3 (Table 22) also requires round-to-nearest
+    /// but, by reference to IEC 60559, breaks ties to even (2.5 → 2); CODESYS and
+    /// TwinCAT give 3. plcc follows CODESYS here — see docs/codesys-compatibility.md.
+    /// Switching is `llvm.roundeven`. Without `round` the value is truncated toward
+    /// zero, which is TRUNC.
+    fn float_to_int(
+        &self,
+        fv: inkwell::values::FloatValue<'ctx>,
+        target: &IecType,
+        round: bool,
+    ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+        let llvm_err = |e: inkwell::builder::BuilderError| CodegenError::LlvmError(e.to_string());
+        let fv = if round {
+            let intr = Intrinsic::find("llvm.round")
+                .ok_or_else(|| CodegenError::LlvmError("intrinsic llvm.round not found".into()))?;
+            let decl = intr
+                .get_declaration(&self.module, &[fv.get_type().into()])
+                .ok_or_else(|| CodegenError::LlvmError("llvm.round declaration".into()))?;
+            match self
+                .builder
+                .build_call(decl, &[fv.into()], "round")
+                .map_err(llvm_err)?
+                .try_as_basic_value()
+            {
+                inkwell::values::ValueKind::Basic(v) => v.into_float_value(),
+                inkwell::values::ValueKind::Instruction(_) => {
+                    return Err(CodegenError::LlvmError("llvm.round returned no value".into()));
+                }
+            }
+        } else {
+            fv
+        };
+        let it = self.iec_to_llvm_type(target).into_int_type();
+        let unsigned = Self::widens_unsigned(target);
+        if it.get_bit_width() < 64 {
+            // Through i64, so the whole unsigned 32-bit range survives.
+            let wide = self
+                .builder
+                .build_float_to_signed_int(fv, self.context.i64_type(), "f_to_i64")
+                .map_err(llvm_err)?;
+            self.resize_int(wide, it, true)
+        } else if unsigned {
+            self.builder
+                .build_float_to_unsigned_int(fv, it, "f_to_u")
+                .map_err(llvm_err)
+        } else {
+            self.builder
+                .build_float_to_signed_int(fv, it, "f_to_i")
+                .map_err(llvm_err)
+        }
+    }
+
     fn ensure_float(
         &self,
         val: BasicValueEnum<'ctx>,
@@ -4557,11 +4585,9 @@ impl<'ctx> Compiler<'ctx> {
                     Ok(c.into())
                 }
             }
-            (BasicValueEnum::FloatValue(fv), BasicTypeEnum::IntType(it)) => {
-                let i = self
-                    .builder
-                    .build_float_to_signed_int(fv, it, "initfptosi")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+            // An implicit REAL → integer store rounds like REAL_TO_<type>.
+            (BasicValueEnum::FloatValue(fv), BasicTypeEnum::IntType(_)) => {
+                let i = self.float_to_int(fv, ty, true)?;
                 Ok(i.into())
             }
             // An address held in an integer (`pt := ADR(x) + INT_TO_DWORD(n)`, or a
@@ -7365,6 +7391,7 @@ impl<'ctx> Compiler<'ctx> {
                         Self::arith_result_type(arg_ty(0), arg_ty(1)),
                         arg_ty(2),
                     ),
+                    n if Self::float_to_int_target(n).is_some() => Self::float_to_int_target(n),
                     n if TYPED_CONVERSIONS.contains(&n) => n
                         .rsplit("_TO_")
                         .next()

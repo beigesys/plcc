@@ -59,9 +59,9 @@ escapes were not decoded; a call statement to an unknown function compiled to no
 
 Found and **not** fixed (semantics decisions, not one-liners):
 
-- `REAL_TO_INT` / `REAL_TO_DINT` / `LREAL_TO_*` / assignment of a REAL to an integer
-  **truncate**. IEC 61131-3 (and CODESYS, which OSCAT targets) **round** to nearest:
-  `REAL_TO_INT(2.7)` is 3, plcc gives 2. `TRUNC` is the truncating function.
+- ~~`REAL_TO_INT` / `REAL_TO_DINT` / `LREAL_TO_*` / assignment of a REAL to an integer
+  **truncate**.~~ Fixed: they round to nearest, halves away from zero, as CODESYS does
+  (`crates/plcc-codegen/tests/float_to_int.rs`; decision in codesys-compatibility.md).
 - Float-to-integer conversion uses a plain `fptosi`, which is LLVM *poison* for an
   out-of-range value (`REAL_TO_INT(1.0E6)`), not a wrap or a saturation. Under
   optimization that is undefined behaviour. `llvm.fptosi.sat` would pin it down.
@@ -157,9 +157,8 @@ Semantics (tests in `crates/plcc-codegen/tests/oscat_conversions.rs`):
   truncates sub-millisecond parts toward zero.
 - DWORD/UDINT sources are unsigned: `DWORD_TO_TIME(16#FFFFFFFF)` is ~49.7 days, not
   -1 ms, and `DWORD_TO_REAL` is `uitofp`.
-- `REAL_TO_DWORD` truncates toward zero, the same as the existing `REAL_TO_DINT`
-  (IEC says round; that is a separate, pre-existing discrepancy for the whole
-  float→int family). It goes through i64 so values above 2^31 survive.
+- `REAL_TO_DWORD` rounds to nearest like every REAL → integer conversion (it
+  truncated when this was written). It goes through i64 so values above 2^31 survive.
 - `REPLACE(IN1, IN2, L, P)` clamps P into `1..LEN(IN1)+1` and L to what remains,
   truncates to the destination's length, and is safe when the destination is also
   IN1 (`s := REPLACE(s, '', 1, pos)`, the OSCAT idiom). Like CONCAT/LEFT/RIGHT/MID,
