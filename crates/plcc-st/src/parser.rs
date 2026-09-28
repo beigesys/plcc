@@ -1803,22 +1803,24 @@ impl<'s> Parser<'s> {
     }
 
     fn parse_power(&mut self) -> Expression {
-        let base = self.parse_unary();
-        if self.ts.at(&Token::Power) {
+        // `a ** b ** c` is `(a ** b) ** c`: IEC 61131-3 applies operators of equal
+        // precedence left to right (§7.3.2). Only one `**` used to be parsed, so a
+        // second one was a syntax error.
+        let mut base = self.parse_unary();
+        while self.ts.at(&Token::Power) {
             self.ts.advance();
-            let exp = self.parse_unary(); // right-associative
+            let exp = self.parse_unary();
             let span = base.span.merge(exp.span);
-            Expression {
+            base = Expression {
                 kind: ExpressionKind::BinaryOp {
                     op: BinaryOp::Power,
                     left: Box::new(base),
                     right: Box::new(exp),
                 },
                 span,
-            }
-        } else {
-            base
+            };
         }
+        base
     }
 
     fn parse_unary(&mut self) -> Expression {
