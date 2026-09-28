@@ -1015,3 +1015,33 @@ END_PROGRAM
     assert_eq!(i64_at(&state, 5), 19_724 * DAY + (12 * 3600 + 30 * 60) * SEC);
     assert_eq!(state[48], 1, "D#2024-01-02 > D#2024-01-01");
 }
+
+// ---------------------------------------------------------------------------
+// IEC `$` escapes in string literals
+// ---------------------------------------------------------------------------
+
+#[test]
+fn string_literal_dollar_escapes() {
+    let src = r#"
+PROGRAM p
+VAR
+    a : STRING[20] := 'It$'s $$5';
+    b : STRING[20] := 'x$Ny$Tz$R$L';
+    c : STRING[20] := '$41$42$7e';
+    d : STRING[20] := 'C:\dir\';
+    e : CHAR := '$0A';
+    w : WSTRING[4] := "$0041$"q";
+END_VAR
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(cstr(&state, 0), "It's $5");
+    assert_eq!(cstr(&state, 21), "x\ny\tz\r\n");
+    assert_eq!(cstr(&state, 42), "AB~");
+    assert_eq!(cstr(&state, 63), "C:\\dir\\", "backslash is an ordinary character");
+    assert_eq!(state[84], b'\n');
+    let w: Vec<u16> = (0..3)
+        .map(|i| u16::from_ne_bytes([state[86 + 2 * i], state[87 + 2 * i]]))
+        .collect();
+    assert_eq!(String::from_utf16(&w).unwrap(), "A\"q");
+}

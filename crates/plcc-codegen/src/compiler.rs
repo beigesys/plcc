@@ -75,6 +75,63 @@ const TYPED_CONVERSIONS: &[&str] = &[
 ];
 
 /// Parse a TIME literal string (e.g., "T#100ms", "T#1s500ms", "T#1h30m") into nanoseconds.
+/// The characters of a STRING (`wide == false`) or WSTRING literal body, with the
+/// IEC 61131-3 `$` escapes (Table 6) decoded: `$$`, `$'`, `$"`, `$L`/`$N` (line
+/// feed), `$P` (form feed), `$R` (carriage return), `$T` (tab), and `$hh` (STRING)
+/// or `$hhhh` (WSTRING) character codes in hex. A STRING's other characters are
+/// its UTF-8 bytes; a WSTRING's are UTF-16 code units. An unrecognized escape is
+/// kept as written.
+fn decode_iec_string(raw: &str, wide: bool) -> Vec<u32> {
+    let mut out = Vec::with_capacity(raw.len());
+    let push_str = |out: &mut Vec<u32>, c: char| {
+        if wide {
+            let mut buf = [0u16; 2];
+            out.extend(c.encode_utf16(&mut buf).iter().map(|&u| u as u32));
+        } else {
+            let mut buf = [0u8; 4];
+            out.extend(c.encode_utf8(&mut buf).bytes().map(u32::from));
+        }
+    };
+    let hex_len = if wide { 4 } else { 2 };
+    let chars: Vec<char> = raw.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c != '$' || i + 1 >= chars.len() {
+            push_str(&mut out, c);
+            i += 1;
+            continue;
+        }
+        let e = chars[i + 1];
+        let simple = match e.to_ascii_uppercase() {
+            '$' => Some(0x24),
+            '\'' => Some(0x27),
+            '"' => Some(0x22),
+            'L' | 'N' => Some(0x0A),
+            'P' => Some(0x0C),
+            'R' => Some(0x0D),
+            'T' => Some(0x09),
+            _ => None,
+        };
+        if let Some(code) = simple {
+            out.push(code);
+            i += 2;
+            continue;
+        }
+        let hex: String = chars[i + 1..].iter().take(hex_len).collect();
+        if hex.len() == hex_len && hex.chars().all(|h| h.is_ascii_hexdigit()) {
+            if let Ok(code) = u32::from_str_radix(&hex, 16) {
+                out.push(code);
+                i += 1 + hex_len;
+                continue;
+            }
+        }
+        push_str(&mut out, c);
+        i += 1;
+    }
+    out
+}
+
 /// Days from 1970-01-01 to the proleptic-Gregorian date `y-m-d` (Howard Hinnant's
 /// `days_from_civil`).
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
@@ -1736,7 +1793,10 @@ impl<'ctx> Compiler<'ctx> {
         let str_ptr = match &arg_expr.kind {
             ExpressionKind::StringLiteral(s) | ExpressionKind::WstringLiteral(s) => {
                 // Create a global constant string and get a pointer to it
-                let bytes = s.as_bytes();
+                let bytes: Vec<u8> = decode_iec_string(s, false)
+                    .into_iter()
+                    .map(|c| c as u8)
+                    .collect();
                 let i8_ty = self.context.i8_type();
                 let arr_ty = i8_ty.array_type((bytes.len() + 1) as u32);
                 let mut vals: Vec<inkwell::values::IntValue> = bytes
@@ -2762,10 +2822,15 @@ impl<'ctx> Compiler<'ctx> {
         func_name: &str,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
         if let ExpressionKind::StringLiteral(s) = &expr.kind {
-            let g = self
-                .builder
-                .build_global_string_ptr(s, "strlit")
-                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+            let bytes: Vec<u8> = decode_iec_string(s, false)
+                .into_iter()
+                .map(|c| c as u8)
+                .collect();
+            let init = self.context.const_string(&bytes, true);
+            let g = self.module.add_global(init.get_type(), None, "strlit");
+            g.set_initializer(&init);
+            g.set_constant(true);
+            g.set_linkage(inkwell::module::Linkage::Private);
             return Ok(g.as_pointer_value());
         }
         self.compile_lvalue_with_fn(expr, function)?.ok_or_else(|| {
@@ -4851,8 +4916,8 @@ impl<'ctx> Compiler<'ctx> {
             IecType::StringType { max_len } => {
                 let cap = max_len.unwrap_or(256) as usize;
                 let i8_ty = self.context.i8_type();
-                let mut vals: Vec<_> = text
-                    .bytes()
+                let mut vals: Vec<_> = decode_iec_string(text, false)
+                    .into_iter()
                     .take(cap)
                     .map(|b| i8_ty.const_int(b as u64, false))
                     .collect();
@@ -4862,8 +4927,8 @@ impl<'ctx> Compiler<'ctx> {
             IecType::WstringType { max_len } => {
                 let cap = max_len.unwrap_or(256) as usize;
                 let i16_ty = self.context.i16_type();
-                let mut vals: Vec<_> = text
-                    .encode_utf16()
+                let mut vals: Vec<_> = decode_iec_string(text, true)
+                    .into_iter()
                     .take(cap)
                     .map(|u| i16_ty.const_int(u as u64, false))
                     .collect();
@@ -4871,18 +4936,14 @@ impl<'ctx> Compiler<'ctx> {
                 Some(i16_ty.const_array(&vals).into())
             }
             // `c : CHAR := 'A';` — a one-character literal.
-            IecType::Char if text.len() == 1 => Some(
-                self.context
-                    .i8_type()
-                    .const_int(text.as_bytes()[0] as u64, false)
-                    .into(),
-            ),
-            IecType::Wchar if text.encode_utf16().count() == 1 => Some(
-                self.context
-                    .i16_type()
-                    .const_int(text.encode_utf16().next()? as u64, false)
-                    .into(),
-            ),
+            IecType::Char => match decode_iec_string(text, false).as_slice() {
+                [c] => Some(self.context.i8_type().const_int(*c as u64, false).into()),
+                _ => None,
+            },
+            IecType::Wchar => match decode_iec_string(text, true).as_slice() {
+                [c] => Some(self.context.i16_type().const_int(*c as u64, false).into()),
+                _ => None,
+            },
             _ => None,
         }
     }

@@ -336,10 +336,12 @@ pub enum Token {
     )]
     RealLiteral(f64),
 
-    #[regex(r"'([^'\\]|\\.)*'")]
+    // IEC 61131-3 escapes with `$` (`'It$'s'`, `'a$Nb'`, `'$41'`), not backslash:
+    // a backslash is an ordinary character, so `'C:\'` is a complete literal.
+    #[regex(r"'([^'$]|\$[^\n])*'")]
     StringLiteral,
 
-    #[regex(r#""([^"\\]|\\.)*""#)]
+    #[regex(r#""([^"$]|\$[^\n])*""#)]
     WstringLiteral,
 
     // ── Time / date literals ──
