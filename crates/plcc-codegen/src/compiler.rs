@@ -6911,107 +6911,81 @@ impl<'ctx> Compiler<'ctx> {
                 };
                 let arr_llvm_ty = self.iec_to_llvm_type(&iec_ty);
 
-                if indices.len() == 1 {
-                    let idx_val =
-                        self.compile_expression(&indices[0], function)?
-                            .ok_or_else(|| {
-                                self.no_value_error(
-                                    format!("index of `{}`", Self::describe_lvalue(expr)),
-                                    &indices[0],
-                                )
-                            })?;
-
-                    let lo = ranges[0].0;
-                    let idx_int = self.int_operand(idx_val, "an array index")?;
-                    let adjusted = if lo != 0 {
-                        let lo_val = idx_int.get_type().const_int(lo as u64, true);
-                        self.builder
-                            .build_int_sub(idx_int, lo_val, "adj_idx")
-                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                    } else {
-                        idx_int
-                    };
-
-                    let idx_i32 = if adjusted.get_type().get_bit_width() < 32 {
-                        self.builder
-                            .build_int_s_extend(adjusted, self.context.i32_type(), "idx_ext")
-                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                    } else {
-                        adjusted
-                    };
-
-                    let zero = self.context.i32_type().const_zero();
-                    let elem_ptr = unsafe {
-                        self.builder
-                            .build_in_bounds_gep(arr_llvm_ty, arr_ptr, &[zero, idx_i32], "arr_elem")
-                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                    };
-                    Ok(Some(elem_ptr))
-                } else {
-                    // Multi-dimensional: flatten to linear index
-                    let mut linear_idx = self.context.i32_type().const_zero();
-
-                    for (dim, idx_expr) in indices.iter().enumerate() {
-                        let idx_val =
-                            self.compile_expression(idx_expr, function)?
-                                .ok_or_else(|| {
-                                    self.no_value_error(
-                                        format!(
-                                            "index {} of `{}`",
-                                            dim + 1,
-                                            Self::describe_lvalue(expr)
-                                        ),
-                                        idx_expr,
-                                    )
-                                })?;
-
-                        let lo = ranges[dim].0;
-                        let idx_int = self.int_operand(idx_val, "an array index")?;
-                        let idx_i32 = if idx_int.get_type().get_bit_width() < 32 {
-                            self.builder
-                                .build_int_s_extend(idx_int, self.context.i32_type(), "idx_ext")
-                                .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                        } else {
-                            idx_int
-                        };
-
-                        let adjusted = if lo != 0 {
-                            let lo_val = self.context.i32_type().const_int(lo as u64, true);
-                            self.builder
-                                .build_int_sub(idx_i32, lo_val, "adj_idx")
-                                .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                        } else {
-                            idx_i32
-                        };
-
-                        let mut stride = 1i64;
-                        for d in (dim + 1)..ranges.len() {
-                            stride *= ranges[d].1 - ranges[d].0 + 1;
-                        }
-                        let stride_val = self.context.i32_type().const_int(stride as u64, false);
-                        let component = self
-                            .builder
-                            .build_int_mul(adjusted, stride_val, "dim_component")
-                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                        linear_idx = self
-                            .builder
-                            .build_int_add(linear_idx, component, "linear_idx")
-                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                    }
-
-                    let zero = self.context.i32_type().const_zero();
-                    let elem_ptr = unsafe {
-                        self.builder
-                            .build_in_bounds_gep(
-                                arr_llvm_ty,
-                                arr_ptr,
-                                &[zero, linear_idx],
-                                "arr_elem",
-                            )
-                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                    };
-                    Ok(Some(elem_ptr))
+                if indices.len() != ranges.len() {
+                    return Err(CodegenError::UnsupportedType(format!(
+                        "`{}` has {} dimension(s) but is indexed with {}",
+                        Self::describe_lvalue(array),
+                        ranges.len(),
+                        indices.len()
+                    )));
                 }
+                // Row-major linear index, in i64. Each subscript widens by its
+                // *own* signedness (a BYTE index of 200 is 200, not -56 — which
+                // wrote 56 elements before the array) and is clamped into its
+                // dimension's bounds, so an out-of-range subscript can never
+                // address memory outside the array (an out-of-bounds `inbounds`
+                // GEP is also undefined behaviour to the optimizer).
+                let i64t = self.context.i64_type();
+                let err = |e: inkwell::builder::BuilderError| CodegenError::LlvmError(e.to_string());
+                let mut linear_idx = i64t.const_zero();
+                for (dim, idx_expr) in indices.iter().enumerate() {
+                    let idx_val = self.compile_expression(idx_expr, function)?.ok_or_else(|| {
+                        self.no_value_error(
+                            format!("index {} of `{}`", dim + 1, Self::describe_lvalue(expr)),
+                            idx_expr,
+                        )
+                    })?;
+                    let idx_int = self.int_operand(idx_val, "an array index")?;
+                    let idx_ty = self.rvalue_iec_type(idx_expr);
+                    let idx = self.widen_to(idx_int, Self::signedness_of(idx_ty.as_ref()), i64t)?;
+                    let (lo, hi) = ranges[dim];
+                    let adjusted = self
+                        .builder
+                        .build_int_sub(idx, i64t.const_int(lo as u64, true), "adj_idx")
+                        .map_err(err)?;
+                    let last = i64t.const_int((hi - lo).max(0) as u64, true);
+                    let below = self
+                        .builder
+                        .build_int_compare(IntPredicate::SLT, adjusted, i64t.const_zero(), "idx_lo")
+                        .map_err(err)?;
+                    let above = self
+                        .builder
+                        .build_int_compare(IntPredicate::SGT, adjusted, last, "idx_hi")
+                        .map_err(err)?;
+                    let clamped = self
+                        .builder
+                        .build_select(below, i64t.const_zero(), adjusted, "idx_clamp_lo")
+                        .map_err(err)?
+                        .into_int_value();
+                    let clamped = self
+                        .builder
+                        .build_select(above, last, clamped, "idx_clamp")
+                        .map_err(err)?
+                        .into_int_value();
+                    let stride: i64 = ranges[dim + 1..]
+                        .iter()
+                        .map(|(l, h)| (h - l + 1).max(0))
+                        .product();
+                    let component = self
+                        .builder
+                        .build_int_mul(clamped, i64t.const_int(stride as u64, true), "dim_component")
+                        .map_err(err)?;
+                    linear_idx = self
+                        .builder
+                        .build_int_add(linear_idx, component, "linear_idx")
+                        .map_err(err)?;
+                }
+                let elem_ptr = unsafe {
+                    self.builder
+                        .build_in_bounds_gep(
+                            arr_llvm_ty,
+                            arr_ptr,
+                            &[i64t.const_zero(), linear_idx],
+                            "arr_elem",
+                        )
+                        .map_err(err)?
+                };
+                Ok(Some(elem_ptr))
             }
             ExpressionKind::MemberAccess { object, member } => {
                 // STRUCT field or FB-instance field, at any depth. The object is
