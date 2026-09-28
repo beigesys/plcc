@@ -357,6 +357,18 @@ pub enum ExpressionKind {
     /// Only ever appears as a variable/field initializer — it has no address and no
     /// scalar value, so it is not a general expression.
     ArrayInitializer(Vec<ArrayInitElement>),
+    /// A structure initializer: `(x := 1, y := (a := 2))` (IEC 61131-3 §6.4.4.6,
+    /// `struct_init`). Fields not named keep their declared default. Like
+    /// `ArrayInitializer`, only ever an initial value.
+    StructInitializer(Vec<StructInitField>),
+}
+
+/// One `name := value` of a structure initializer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StructInitField {
+    pub name: Ident,
+    pub value: Expression,
+    pub span: Span,
 }
 
 /// One entry of an array aggregate initializer.

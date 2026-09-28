@@ -748,6 +748,12 @@ impl TypeChecker {
             // An aggregate only ever appears as a declaration's initial value, where
             // the declared type governs; it has no type of its own. Its entries are
             // still checked so a bad expression inside one is still reported.
+            ExpressionKind::StructInitializer(fields) => {
+                for f in fields {
+                    self.check_expression(&f.value, scope);
+                }
+                IecType::Void
+            }
             ExpressionKind::ArrayInitializer(elements) => {
                 for elem in elements {
                     self.check_expression(&elem.value, scope);

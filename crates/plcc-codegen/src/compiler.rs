@@ -3771,8 +3771,11 @@ impl<'ctx> Compiler<'ctx> {
                 FieldInit::Store(expr, ty) => {
                     if let Some(text) = Self::string_literal_text(&expr) {
                         self.store_string_literal(ptr, &ty, &expr, text)?;
-                    } else if let ExpressionKind::ArrayInitializer(elements) = &expr.kind {
-                        self.emit_array_aggregate_store(ptr, &ty, elements, function)?;
+                    } else if matches!(
+                        expr.kind,
+                        ExpressionKind::ArrayInitializer(_) | ExpressionKind::StructInitializer(_)
+                    ) {
+                        self.emit_decl_initializer(ptr, &ty, &expr, function)?;
                     } else {
                         let Some(val) = self.compile_expression(&expr, function)? else {
                             return Err(self.no_value_error("STRUCT field default", &expr));
@@ -4006,6 +4009,46 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
+    /// Store a structure initializer `(x := 1, y := 2)` into the STRUCT at `ptr`.
+    /// Fields it does not name keep the value they already have (their declared
+    /// default, applied before this).
+    fn emit_struct_initializer(
+        &mut self,
+        ptr: PointerValue<'ctx>,
+        iec_ty: &IecType,
+        fields: &[StructInitField],
+        function: FunctionValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let IecType::Struct {
+            fields: members, ..
+        } = iec_ty.base()
+        else {
+            return Err(CodegenError::UnsupportedType(format!(
+                "a structure initializer cannot initialize {iec_ty}"
+            )));
+        };
+        let members = members.clone();
+        let struct_ty = self.iec_to_llvm_type(iec_ty.base()).into_struct_type();
+        for f in fields {
+            let Some(idx) = members
+                .iter()
+                .position(|(n, _)| n.eq_ignore_ascii_case(&f.name.name))
+            else {
+                return Err(CodegenError::UndefinedVariable(format!(
+                    "structure initializer: {iec_ty} has no field `{}`",
+                    f.name.name
+                )));
+            };
+            let field_ptr = self
+                .builder
+                .build_struct_gep(struct_ty, ptr, idx as u32, &f.name.name)
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+            let field_ty = members[idx].1.clone();
+            self.emit_decl_initializer(field_ptr, &field_ty, &f.value, function)?;
+        }
+        Ok(())
+    }
+
     /// The text of a STRING/WSTRING literal, looking through parentheses.
     fn string_literal_text(expr: &Expression) -> Option<&str> {
         match &expr.kind {
@@ -4088,6 +4131,9 @@ impl<'ctx> Compiler<'ctx> {
     ) -> Result<(), CodegenError> {
         if let ExpressionKind::ArrayInitializer(elements) = &init.kind {
             return self.emit_array_aggregate_store(ptr, iec_ty, elements, function);
+        }
+        if let ExpressionKind::StructInitializer(fields) = &init.kind {
+            return self.emit_struct_initializer(ptr, iec_ty, fields, function);
         }
         if let Some(text) = Self::string_literal_text(init) {
             return self.store_string_literal(ptr, iec_ty, init, text);
@@ -6537,6 +6583,7 @@ impl<'ctx> Compiler<'ctx> {
                 "an arithmetic expression".into()
             }
             ExpressionKind::ArrayInitializer(_) => "an array initializer".into(),
+            ExpressionKind::StructInitializer(_) => "a structure initializer".into(),
         }
     }
 
@@ -6670,8 +6717,8 @@ impl<'ctx> Compiler<'ctx> {
                 "typed literal `{}` is not supported in this position",
                 Self::describe_lvalue(expr)
             )),
-            ExpressionKind::ArrayInitializer(_) => {
-                Some("an array initializer is not a scalar value".to_string())
+            ExpressionKind::ArrayInitializer(_) | ExpressionKind::StructInitializer(_) => {
+                Some("an array or structure initializer is only an initial value".to_string())
             }
         }
     }

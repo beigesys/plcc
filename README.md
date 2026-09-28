@@ -107,7 +107,7 @@ Complete IEC 61131-3:2013 (3rd edition) Structured Text:
 | All elementary types (BOOL through LREAL, STRING, WSTRING, TIME, DATE) | Full — every TIME/date type is i64 nanoseconds (since 1970-01-01 for DATE and DT, since midnight for TOD); converted to/from numbers in CODESYS units (see Standard Library) |
 | ARRAY (1D, multi-dimensional, negative and non-zero lower bounds) | Full |
 | ARRAY aggregate initializers (`[10, 20, 30]`, `[3(0)]`) | Full |
-| STRUCT (incl. field default initializers), ENUM, UNION, subranges, alias types | Full |
+| STRUCT (incl. field default initializers and `(a := 1, b := 2)` structure initializers), ENUM (bare, `E#V` and `E.V` enumerators), UNION, subranges, alias types | Full |
 | IF/ELSIF/ELSE, CASE, FOR/TO/BY, WHILE, REPEAT/UNTIL | Full |
 | EXIT, CONTINUE, RETURN | Full |
 | CONFIGURATION, RESOURCE, TASK, program instances (`PROGRAM p WITH t : Main (in := g, out => h)`) | Full -- compiled to a task table; INTERVAL, PRIORITY, SINGLE |

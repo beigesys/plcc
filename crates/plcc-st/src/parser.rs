@@ -1457,7 +1457,50 @@ impl<'s> Parser<'s> {
     ///
     /// A single un-repeated value keeps its plain scalar expression, so nothing about
     /// ordinary `x : INT := 5;` changes shape.
+    /// `(name := init, ...)`, when the tokens here start one: `(`, a name, `:=`.
+    /// A parenthesized expression never has `:=` after its first name.
+    fn try_parse_struct_initializer(&mut self) -> Option<Expression> {
+        let at = |i: usize| self.ts.tokens.get(self.ts.pos + i).map(|(t, _)| t);
+        if !(matches!(at(0), Some(Token::LParen))
+            && at(1).is_some_and(Self::is_ident_like)
+            && matches!(at(2), Some(Token::Assign)))
+        {
+            return None;
+        }
+        let start = self.ts.advance().unwrap().1; // consume '('
+        let mut fields = Vec::new();
+        loop {
+            let pos_before = self.ts.pos;
+            let name = self.expect_ident();
+            self.ts.expect(&Token::Assign, &mut self.errors);
+            // A nested structure or `[..]` array initializer, or an expression —
+            // not the bare `a, b, c` aggregate, whose commas separate fields here.
+            let value = if self.ts.at(&Token::LBracket) {
+                self.parse_initializer()
+            } else {
+                self.try_parse_struct_initializer()
+                    .unwrap_or_else(|| self.parse_expression())
+            };
+            let span = name.span.merge(value.span);
+            fields.push(StructInitField { name, value, span });
+            if self.ts.eat(&Token::Comma).is_none() || self.ts.pos == pos_before {
+                break;
+            }
+        }
+        let end = self
+            .ts
+            .expect(&Token::RParen, &mut self.errors)
+            .unwrap_or(self.ts.peek_span());
+        Some(Expression {
+            kind: ExpressionKind::StructInitializer(fields),
+            span: start.merge(end),
+        })
+    }
+
     fn parse_initializer(&mut self) -> Expression {
+        if let Some(e) = self.try_parse_struct_initializer() {
+            return e;
+        }
         if self.ts.at(&Token::LBracket) {
             let start = self.ts.advance().unwrap().1; // consume '['
             let mut elements = Vec::new();
@@ -1511,7 +1554,9 @@ impl<'s> Parser<'s> {
                 unreachable!()
             };
             self.ts.advance(); // consume '('
-            let value = self.parse_expression();
+            let value = self
+                .try_parse_struct_initializer()
+                .unwrap_or_else(|| self.parse_expression());
             let end = self
                 .ts
                 .expect(&Token::RParen, &mut self.errors)
@@ -1525,7 +1570,9 @@ impl<'s> Parser<'s> {
                 span: start.merge(end),
             };
         }
-        let value = self.parse_expression();
+        let value = self
+            .try_parse_struct_initializer()
+            .unwrap_or_else(|| self.parse_expression());
         let span = value.span;
         ArrayInitElement {
             repeat: None,
