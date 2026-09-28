@@ -7705,6 +7705,28 @@ impl<'ctx> Compiler<'ctx> {
                 right.into_int_value(),
                 right_ty,
             )?;
+            // CODESYS computes temporary results "always with the native size that
+            // is defined by the target device" — at least 32 bits — so `dw := w + 1`
+            // with `w : WORD := 65535` is 65536, not 0, and `d := b + b` with
+            // `b : BYTE := 255` is 510. The narrow type only applies when the result
+            // is stored. (Help: "Operators", note on temporary results.) Without
+            // this the answer depended on the literal's default width: `us * 2` was
+            // 510 on a USINT but `ui * 2` wrapped to 65534 on a UINT.
+            let (l, r) = if matches!(
+                op,
+                BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod
+            ) && l.get_type().get_bit_width() < 32
+            {
+                let i32t = self.context.i32_type();
+                let s = if unsigned {
+                    Signedness::Unsigned
+                } else {
+                    Signedness::Signed
+                };
+                (self.widen_to(l, s, i32t)?, self.widen_to(r, s, i32t)?)
+            } else {
+                (l, r)
+            };
 
             let result = match op {
                 BinaryOp::Add => self
