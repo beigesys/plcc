@@ -136,7 +136,9 @@ fn program(decls: &str, body: &str) -> String {
 }
 
 /// Every one of these used to panic in `into_int_value()`. REAL is not implicitly
-/// an integer in IEC 61131-3, so each is a diagnostic that says so.
+/// an integer in IEC 61131-3, so each is a diagnostic that says so. (A REAL passed
+/// to a conversion such as `DINT_TO_INT(r)` is converted to DINT first, rounding,
+/// as CODESYS does for any lossy implicit conversion.)
 #[test]
 fn real_where_an_integer_belongs_is_reported_not_a_panic() {
     let decls = "    r : REAL;\n    i : INT;\n    a : ARRAY[0..3] OF INT;\n    w : WORD;";
@@ -147,7 +149,6 @@ fn real_where_an_integer_belongs_is_reported_not_a_panic() {
         "    a[r] := 1;",
         "    CASE r OF 1: i := 1; END_CASE;",
         "    w := NOT r;",
-        "    i := DINT_TO_INT(r);",
         "    w := SHL(r, 1);",
         "    i := SEL(r, 1, 2);",
     ] {

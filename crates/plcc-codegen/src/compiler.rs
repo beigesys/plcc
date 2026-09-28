@@ -5,7 +5,7 @@ use inkwell::context::Context;
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::Module;
 use inkwell::targets::{
-    CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
+    CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetTriple,
 };
 use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, StructType};
 use inkwell::values::{BasicValue, BasicValueEnum, FunctionValue, GlobalValue, PointerValue};
@@ -18,6 +18,7 @@ use std::path::Path;
 use thiserror::Error;
 
 pub mod contract;
+mod convert;
 mod image;
 pub use contract::{RuntimeContract, TaskOptions};
 
@@ -45,38 +46,6 @@ enum StepDir<'ctx> {
     Down,
     Runtime(inkwell::values::IntValue<'ctx>),
 }
-
-/// TIME is stored in nanoseconds; its numeric conversions speak milliseconds.
-const NS_PER_MS: u64 = 1_000_000;
-
-/// Conversion builtins whose result type codegen names, so the value widens by the
-/// right signedness when it lands somewhere wider: `TIME_TO_DWORD` of 3e9 ms stored
-/// into a LINT is 3e9, not a negative number.
-const TYPED_CONVERSIONS: &[&str] = &[
-    "TIME_TO_DWORD",
-    "TIME_TO_UDINT",
-    "TIME_TO_DINT",
-    "TIME_TO_REAL",
-    "TIME_TO_LREAL",
-    "DWORD_TO_TIME",
-    "UDINT_TO_TIME",
-    "DINT_TO_TIME",
-    "REAL_TO_TIME",
-    "LREAL_TO_TIME",
-    "REAL_TO_DWORD",
-    "REAL_TO_UDINT",
-    "LREAL_TO_DWORD",
-    "LREAL_TO_UDINT",
-    "DWORD_TO_REAL",
-    "WORD_TO_REAL",
-    "DWORD_TO_LREAL",
-    "UDINT_TO_LREAL",
-    "INT_TO_DWORD",
-    "INT_TO_UDINT",
-    "UINT_TO_INT",
-    "DWORD_TO_BYTE",
-    "BOOL_TO_DWORD",
-];
 
 /// Parse a TIME literal string (e.g., "T#100ms", "T#1s500ms", "T#1h30m") into nanoseconds.
 /// The characters of a STRING (`wide == false`) or WSTRING literal body, with the
@@ -615,6 +584,11 @@ impl<'ctx> Compiler<'ctx> {
     ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
         let uname = name.to_uppercase();
 
+        // `<SRC>_TO_<DST>` / `TO_<DST>` between any two elementary types.
+        if Self::parse_conversion(&uname).is_some() {
+            return self.compile_conversion_call(&uname, args, function);
+        }
+
         // The arguments' static IEC types, for the builtins whose lowering depends on
         // signedness (the shift and rotate family).
         let arg_tys: Vec<Option<IecType>> = args
@@ -1040,65 +1014,6 @@ impl<'ctx> Compiler<'ctx> {
                 Ok(Some(result))
             }
 
-            "INT_TO_REAL" | "DINT_TO_REAL" => {
-                if arg_vals.len() != 1 {
-                    return Err(CodegenError::LlvmError(format!(
-                        "{uname} expects 1 argument"
-                    )));
-                }
-                let result = self.to_float_of(arg_vals[0], self.context.f32_type(), false, &uname)?;
-                Ok(Some(result.into()))
-            }
-            "INT_TO_LREAL" | "DINT_TO_LREAL" => {
-                if arg_vals.len() != 1 {
-                    return Err(CodegenError::LlvmError(format!(
-                        "{uname} expects 1 argument"
-                    )));
-                }
-                let result = self.to_float_of(arg_vals[0], self.context.f64_type(), false, &uname)?;
-                Ok(Some(result.into()))
-            }
-            // --- REAL/LREAL to any integer or bit-string type ---
-            // One lowering for the whole family, rounding to nearest (halves away
-            // from zero) as CODESYS does; see `float_to_int`.
-            n if Self::float_to_int_target(n).is_some() => {
-                let target = Self::float_to_int_target(n).expect("guarded");
-                if arg_vals.len() != 1 {
-                    return Err(CodegenError::LlvmError(format!("{uname} expects 1 argument")));
-                }
-                let fv = self.ensure_float(arg_vals[0], arg_tys.first().and_then(Option::as_ref))?;
-                Ok(Some(self.float_to_int(fv, &target, true)?.into()))
-            }
-            "INT_TO_DINT" => {
-                if arg_vals.len() != 1 {
-                    return Err(CodegenError::LlvmError(
-                        "INT_TO_DINT expects 1 argument".into(),
-                    ));
-                }
-                let iv = self.int_operand(arg_vals[0], &uname)?;
-                let result = self.resize_int(iv, self.context.i32_type(), true)?;
-                Ok(Some(result.into()))
-            }
-            "DINT_TO_INT" => {
-                if arg_vals.len() != 1 {
-                    return Err(CodegenError::LlvmError(
-                        "DINT_TO_INT expects 1 argument".into(),
-                    ));
-                }
-                let iv = self.int_operand(arg_vals[0], &uname)?;
-                let result = self.resize_int(iv, self.context.i16_type(), true)?;
-                Ok(Some(result.into()))
-            }
-            "BOOL_TO_INT" => {
-                if arg_vals.len() != 1 {
-                    return Err(CodegenError::LlvmError(
-                        "BOOL_TO_INT expects 1 argument".into(),
-                    ));
-                }
-                let iv = self.int_operand(arg_vals[0], &uname)?;
-                let result = self.resize_int(iv, self.context.i16_type(), false)?;
-                Ok(Some(result.into()))
-            }
             // IEC 61131-3 TRUNC: ANY_REAL -> ANY_INT, truncating toward zero. The
             // result is a DINT, as in CODESYS; OSCAT's RANGE_TO_BYTE writes
             // `INT_TO_BYTE(TRUNC(x))`. It was lowered to `llvm.trunc`, which yields a
@@ -1291,176 +1206,6 @@ impl<'ctx> Compiler<'ctx> {
                 Ok(Some(result))
             }
 
-            // --- Integer widening (sign-extend) ---
-            "SINT_TO_INT" | "SINT_TO_DINT" | "SINT_TO_LINT" | "INT_TO_LINT" | "DINT_TO_LINT" => {
-                if arg_vals.len() != 1 {
-                    return Err(CodegenError::LlvmError(format!(
-                        "{uname} expects 1 argument"
-                    )));
-                }
-                let iv = self.int_operand(arg_vals[0], &uname)?;
-                let target = match uname.as_str() {
-                    "SINT_TO_INT" => self.context.i16_type(),
-                    "SINT_TO_DINT" => self.context.i32_type(),
-                    "SINT_TO_LINT" | "INT_TO_LINT" | "DINT_TO_LINT" => self.context.i64_type(),
-                    _ => unreachable!(),
-                };
-                let result = self.resize_int(iv, target, true)?;
-                Ok(Some(result.into()))
-            }
-
-            // --- Integer widening (zero-extend) ---
-            "USINT_TO_UINT" | "USINT_TO_UDINT" | "USINT_TO_ULINT" | "UINT_TO_UDINT"
-            | "UINT_TO_ULINT" | "UDINT_TO_ULINT" | "BYTE_TO_WORD" | "BYTE_TO_DWORD"
-            | "BYTE_TO_INT" | "WORD_TO_DWORD" | "WORD_TO_DINT" | "DWORD_TO_LINT" => {
-                if arg_vals.len() != 1 {
-                    return Err(CodegenError::LlvmError(format!(
-                        "{uname} expects 1 argument"
-                    )));
-                }
-                let iv = self.int_operand(arg_vals[0], &uname)?;
-                let target = match uname.as_str() {
-                    "USINT_TO_UINT" | "BYTE_TO_WORD" | "BYTE_TO_INT" => self.context.i16_type(),
-                    "USINT_TO_UDINT" | "UINT_TO_UDINT" | "BYTE_TO_DWORD" | "WORD_TO_DWORD"
-                    | "WORD_TO_DINT" => self.context.i32_type(),
-                    "USINT_TO_ULINT" | "UINT_TO_ULINT" | "UDINT_TO_ULINT" | "DWORD_TO_LINT" => {
-                        self.context.i64_type()
-                    }
-                    _ => unreachable!(),
-                };
-                let result = self.resize_int(iv, target, false)?;
-                Ok(Some(result.into()))
-            }
-
-            // --- Same-size reinterpret (noop / bitcast for same-width int types) ---
-            "WORD_TO_INT" | "DWORD_TO_DINT" => {
-                if arg_vals.len() != 1 {
-                    return Err(CodegenError::LlvmError(format!(
-                        "{uname} expects 1 argument"
-                    )));
-                }
-                // A same-width reinterpretation — but resized all the same, so a
-                // narrower argument (a BYTE handed to WORD_TO_INT) still yields the
-                // declared result width.
-                let iv = self.int_operand(arg_vals[0], &uname)?;
-                let target = if uname == "WORD_TO_INT" {
-                    self.context.i16_type()
-                } else {
-                    self.context.i32_type()
-                };
-                Ok(Some(self.resize_int(iv, target, false)?.into()))
-            }
-
-            // --- Integer narrowing (truncate) ---
-            "LINT_TO_INT" | "LINT_TO_DINT" | "UDINT_TO_UINT" | "ULINT_TO_UINT"
-            | "ULINT_TO_UDINT" | "DWORD_TO_INT" | "INT_TO_BYTE" | "DINT_TO_BYTE"
-            | "INT_TO_SINT" => {
-                if arg_vals.len() != 1 {
-                    return Err(CodegenError::LlvmError(format!(
-                        "{uname} expects 1 argument"
-                    )));
-                }
-                let iv = self.int_operand(arg_vals[0], &uname)?;
-                let target = match uname.as_str() {
-                    "INT_TO_BYTE" | "DINT_TO_BYTE" | "INT_TO_SINT" => self.context.i8_type(),
-                    "LINT_TO_INT" | "UDINT_TO_UINT" | "ULINT_TO_UINT" | "DWORD_TO_INT" => {
-                        self.context.i16_type()
-                    }
-                    "LINT_TO_DINT" | "ULINT_TO_UDINT" => self.context.i32_type(),
-                    _ => unreachable!(),
-                };
-                let result = self.resize_int(iv, target, true)?;
-                Ok(Some(result.into()))
-            }
-
-            // --- Float conversions ---
-            "REAL_TO_LREAL" => {
-                if arg_vals.len() != 1 {
-                    return Err(CodegenError::LlvmError(
-                        "REAL_TO_LREAL expects 1 argument".into(),
-                    ));
-                }
-                let fv = self.ensure_float(arg_vals[0], arg_tys.get(0).and_then(Option::as_ref))?;
-                let result = self
-                    .builder
-                    .build_float_cast(fv, self.context.f64_type(), "real_to_lreal")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                Ok(Some(result.into()))
-            }
-            "LREAL_TO_REAL" => {
-                if arg_vals.len() != 1 {
-                    return Err(CodegenError::LlvmError(
-                        "LREAL_TO_REAL expects 1 argument".into(),
-                    ));
-                }
-                let fv = self.ensure_float(arg_vals[0], arg_tys.get(0).and_then(Option::as_ref))?;
-                let result = self
-                    .builder
-                    .build_float_cast(fv, self.context.f32_type(), "lreal_to_real")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                Ok(Some(result.into()))
-            }
-
-            // --- Signed int to float ---
-            "LINT_TO_REAL" => {
-                if arg_vals.len() != 1 {
-                    return Err(CodegenError::LlvmError(
-                        "LINT_TO_REAL expects 1 argument".into(),
-                    ));
-                }
-                let result = self.to_float_of(arg_vals[0], self.context.f32_type(), false, &uname)?;
-                Ok(Some(result.into()))
-            }
-
-            // --- Unsigned int to float ---
-            "ULINT_TO_REAL" | "UINT_TO_REAL" | "UDINT_TO_REAL" => {
-                if arg_vals.len() != 1 {
-                    return Err(CodegenError::LlvmError(format!(
-                        "{uname} expects 1 argument"
-                    )));
-                }
-                let result = self.to_float_of(arg_vals[0], self.context.f32_type(), true, &uname)?;
-                Ok(Some(result.into()))
-            }
-
-            // --- Bool conversions (zext from i8) ---
-            "BOOL_TO_BYTE" | "BOOL_TO_WORD" | "BOOL_TO_DINT" => {
-                if arg_vals.len() != 1 {
-                    return Err(CodegenError::LlvmError(format!(
-                        "{uname} expects 1 argument"
-                    )));
-                }
-                let iv = self.int_operand(arg_vals[0], &uname)?;
-                let target = match uname.as_str() {
-                    "BOOL_TO_BYTE" => self.context.i8_type(),
-                    "BOOL_TO_WORD" => self.context.i16_type(),
-                    "BOOL_TO_DINT" => self.context.i32_type(),
-                    _ => unreachable!(),
-                };
-                let result = self.resize_int(iv, target, false)?;
-                Ok(Some(result.into()))
-            }
-
-            // --- To-bool conversions (compare != 0, zext result to i8) ---
-            "INT_TO_BOOL" | "DINT_TO_BOOL" | "BYTE_TO_BOOL" => {
-                if arg_vals.len() != 1 {
-                    return Err(CodegenError::LlvmError(format!(
-                        "{uname} expects 1 argument"
-                    )));
-                }
-                let iv = self.int_operand(arg_vals[0], &uname)?;
-                let zero = iv.get_type().const_zero();
-                let cmp = self
-                    .builder
-                    .build_int_compare(IntPredicate::NE, iv, zero, "to_bool_cmp")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                let result = self
-                    .builder
-                    .build_int_z_extend(cmp, self.context.i8_type(), &uname.to_lowercase())
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                Ok(Some(result.into()))
-            }
-
             "LEN" => {
                 if arg_vals.len() != 1 {
                     return Err(CodegenError::LlvmError("LEN expects 1 argument".into()));
@@ -1510,182 +1255,9 @@ impl<'ctx> Compiler<'ctx> {
                 }
             }
 
-            // Date/time arithmetic — TIME values are i64 (nanoseconds)
-            "ADD_TIME" => {
-                if arg_vals.len() != 2 {
-                    return Err(CodegenError::LlvmError(
-                        "ADD_TIME expects 2 arguments".into(),
-                    ));
-                }
-                let t1 = self.int_operand(arg_vals[0], &uname)?;
-                let t2 = self.int_operand(arg_vals[1], &uname)?;
-                let result = self
-                    .builder
-                    .build_int_add(t1, t2, "add_time")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                Ok(Some(result.into()))
-            }
-            "SUB_TIME" => {
-                if arg_vals.len() != 2 {
-                    return Err(CodegenError::LlvmError(
-                        "SUB_TIME expects 2 arguments".into(),
-                    ));
-                }
-                let t1 = self.int_operand(arg_vals[0], &uname)?;
-                let t2 = self.int_operand(arg_vals[1], &uname)?;
-                let result = self
-                    .builder
-                    .build_int_sub(t1, t2, "sub_time")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                Ok(Some(result.into()))
-            }
-            "MUL_TIME" => {
-                if arg_vals.len() != 2 {
-                    return Err(CodegenError::LlvmError(
-                        "MUL_TIME expects 2 arguments".into(),
-                    ));
-                }
-                let t1 = self.int_operand(arg_vals[0], &uname)?;
-                let factor = self.int_operand(arg_vals[1], &uname)?;
-                // Extend factor to i64 if needed
-                let i64_ty = self.context.i64_type();
-                let factor_i64 = if factor.get_type().get_bit_width() < 64 {
-                    self.builder
-                        .build_int_s_extend(factor, i64_ty, "factor_ext")
-                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                } else {
-                    factor
-                };
-                let result = self
-                    .builder
-                    .build_int_mul(t1, factor_i64, "mul_time")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                Ok(Some(result.into()))
-            }
-            "DIV_TIME" => {
-                if arg_vals.len() != 2 {
-                    return Err(CodegenError::LlvmError(
-                        "DIV_TIME expects 2 arguments".into(),
-                    ));
-                }
-                let t1 = self.int_operand(arg_vals[0], &uname)?;
-                let divisor = self.int_operand(arg_vals[1], &uname)?;
-                // Extend divisor to i64 if needed
-                let i64_ty = self.context.i64_type();
-                let divisor_i64 = if divisor.get_type().get_bit_width() < 64 {
-                    self.builder
-                        .build_int_s_extend(divisor, i64_ty, "divisor_ext")
-                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                } else {
-                    divisor
-                };
-                let result = self
-                    .builder
-                    .build_int_signed_div(t1, divisor_i64, "div_time")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                Ok(Some(result.into()))
-            }
-
-            // --- TIME <-> integer / float, in milliseconds ---
-            //
-            // TIME is held as i64 nanoseconds, but the IEC/CODESYS convention for a
-            // TIME converted to or from a number is milliseconds: OSCAT stores
-            // durations as raw ms in a DWORD (`DWORD_TO_TIME(T_PLC_MS())`). Integer
-            // results truncate toward zero, as every float-to-int conversion here does.
-            "TIME_TO_DWORD" | "TIME_TO_UDINT" | "TIME_TO_DINT" => {
-                let t = self.time_arg_ns(&uname, &arg_vals)?;
-                let ms = self
-                    .builder
-                    .build_int_signed_div(
-                        t,
-                        self.context.i64_type().const_int(NS_PER_MS, false),
-                        "ms",
-                    )
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                let v = self.resize_int(ms, self.context.i32_type(), true)?;
-                Ok(Some(v.into()))
-            }
-            "TIME_TO_REAL" | "TIME_TO_LREAL" => {
-                let t = self.time_arg_ns(&uname, &arg_vals)?;
-                let f64_ty = self.context.f64_type();
-                let ns = self
-                    .builder
-                    .build_signed_int_to_float(t, f64_ty, "ns_f")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                let ms = self
-                    .builder
-                    .build_float_div(ns, f64_ty.const_float(NS_PER_MS as f64), "ms_f")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                if uname == "TIME_TO_REAL" {
-                    let r = self
-                        .builder
-                        .build_float_trunc(ms, self.context.f32_type(), "ms_real")
-                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                    Ok(Some(r.into()))
-                } else {
-                    Ok(Some(ms.into()))
-                }
-            }
-            "DWORD_TO_TIME" | "UDINT_TO_TIME" | "DINT_TO_TIME" => {
-                let iv = self.single_int_arg(&uname, &arg_vals)?;
-                // DWORD/UDINT are unsigned: 16#FFFF_FFFF ms is ~49.7 days, not -1 ms.
-                let signed = uname == "DINT_TO_TIME";
-                let iv = self.resize_int(iv, self.context.i32_type(), signed)?;
-                let wide = self.resize_int(iv, self.context.i64_type(), signed)?;
-                let ns = self
-                    .builder
-                    .build_int_mul(
-                        wide,
-                        self.context.i64_type().const_int(NS_PER_MS, false),
-                        "ns",
-                    )
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                Ok(Some(ns.into()))
-            }
-            "REAL_TO_TIME" | "LREAL_TO_TIME" => {
-                let f = self.single_float_arg(&uname, &arg_vals)?;
-                let f64_ty = self.context.f64_type();
-                let f = if f.get_type() == f64_ty {
-                    f
-                } else {
-                    self.builder
-                        .build_float_ext(f, f64_ty, "ms_ext")
-                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                };
-                let ns = self
-                    .builder
-                    .build_float_mul(f, f64_ty.const_float(NS_PER_MS as f64), "ns_f")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                // Nearest nanosecond: `0.1 * 1e6` is not exactly 100000.
-                let ns = self.float_to_int(ns, &IecType::Lint, true)?;
-                Ok(Some(ns.into()))
-            }
-
-            // --- Unsigned int to float ---
-            "DWORD_TO_REAL" | "WORD_TO_REAL" | "DWORD_TO_LREAL" | "UDINT_TO_LREAL" => {
-                let iv = self.single_int_arg(&uname, &arg_vals)?;
-                let fty = if uname.ends_with("_LREAL") {
-                    self.context.f64_type()
-                } else {
-                    self.context.f32_type()
-                };
-                let r = self
-                    .builder
-                    .build_unsigned_int_to_float(iv, fty, &uname.to_lowercase())
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                Ok(Some(r.into()))
-            }
-
-            // --- Integer resize, by the source's signedness ---
-            "INT_TO_DWORD" | "INT_TO_UDINT" | "UINT_TO_INT" | "DWORD_TO_BYTE" | "BOOL_TO_DWORD" => {
-                let iv = self.single_int_arg(&uname, &arg_vals)?;
-                let (target, signed) = match uname.as_str() {
-                    "INT_TO_DWORD" | "INT_TO_UDINT" => (self.context.i32_type(), true),
-                    "UINT_TO_INT" => (self.context.i16_type(), false),
-                    "DWORD_TO_BYTE" => (self.context.i8_type(), false),
-                    _ => (self.context.i32_type(), false),
-                };
-                Ok(Some(self.resize_int(iv, target, signed)?.into()))
+            // IEC 61131-3 Table 30 date/time functions, CONCAT_DATE_TOD, TIME(), ...
+            n if Self::is_datetime_function(n) => {
+                self.compile_datetime_call(n, &arg_vals, &arg_tys)
             }
 
             // String functions that return STRING are handled as special cases
@@ -2748,45 +2320,6 @@ impl<'ctx> Compiler<'ctx> {
         r.map_err(|e| CodegenError::LlvmError(e.to_string()))
     }
 
-    /// The one integer argument of a conversion builtin.
-    fn single_int_arg(
-        &self,
-        uname: &str,
-        arg_vals: &[BasicValueEnum<'ctx>],
-    ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
-        match arg_vals {
-            [v] => self.int_operand(*v, uname),
-            _ => Err(CodegenError::LlvmError(format!(
-                "{uname} expects 1 argument"
-            ))),
-        }
-    }
-
-    /// The one floating-point argument of a conversion builtin. An integer is
-    /// accepted and converted (signed), as a literal like `0` often arrives that way.
-    fn single_float_arg(
-        &self,
-        uname: &str,
-        arg_vals: &[BasicValueEnum<'ctx>],
-    ) -> Result<inkwell::values::FloatValue<'ctx>, CodegenError> {
-        match arg_vals {
-            [v] => self.ensure_float(*v, None),
-            _ => Err(CodegenError::LlvmError(format!(
-                "{uname} expects 1 argument"
-            ))),
-        }
-    }
-
-    /// The one TIME argument of a conversion builtin, as i64 nanoseconds.
-    fn time_arg_ns(
-        &self,
-        uname: &str,
-        arg_vals: &[BasicValueEnum<'ctx>],
-    ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
-        let iv = self.single_int_arg(uname, arg_vals)?;
-        self.resize_int(iv, self.context.i64_type(), true)
-    }
-
     /// A STRING argument as a pointer to its bytes: a variable's storage, or a
     /// private constant for a string literal (`REPLACE(s, '', 1, pos)`).
     fn string_arg_ptr(
@@ -3326,35 +2859,6 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
-    /// Convert a value to float if it's an integer (int -> f32).
-    /// A math builtin's operand as floating point. An integer converts to REAL by
-    /// its own signedness: `SQRT(b)` with `b : BYTE := 200` is SQRT(200.0), where a
-    /// signed conversion made it SQRT(-56.0) = NaN.
-    /// `REAL_TO_<t>` / `LREAL_TO_<t>` for an integer or bit-string `<t>`: the target
-    /// type, or `None` when `name` is not one of them.
-    fn float_to_int_target(name: &str) -> Option<IecType> {
-        let rest = name
-            .strip_prefix("LREAL_TO_")
-            .or_else(|| name.strip_prefix("REAL_TO_"))?;
-        let ty = plcc_hir::types::resolve_type_name(rest)?;
-        matches!(
-            ty,
-            IecType::Sint
-                | IecType::Int
-                | IecType::Dint
-                | IecType::Lint
-                | IecType::Usint
-                | IecType::Uint
-                | IecType::Udint
-                | IecType::Ulint
-                | IecType::Byte
-                | IecType::Word
-                | IecType::Dword
-                | IecType::Lword
-        )
-        .then_some(ty)
-    }
-
     /// The one REAL/LREAL → integer conversion. Every `REAL_TO_<int>`,
     /// `LREAL_TO_<int>`, `TRUNC`, `REAL_TO_TIME` and implicit REAL → integer store
     /// lowers here. Out-of-range values saturate and NaN is 0 (see below).
@@ -3478,35 +2982,6 @@ impl<'ctx> Compiler<'ctx> {
                 "{what} needs an integer operand but got a vector value"
             ))),
         }
-    }
-
-    /// Source operand of an `X_TO_REAL`/`X_TO_LREAL` conversion: an integer
-    /// converts (signed or unsigned as `unsigned` says), and a value that is already
-    /// floating point is only resized. The latter is how a non-IEC builtin such as
-    /// `FLOOR` (which returns REAL here) can feed `INT_TO_REAL(FLOOR(x) - n)`.
-    fn to_float_of(
-        &self,
-        val: BasicValueEnum<'ctx>,
-        target: inkwell::types::FloatType<'ctx>,
-        unsigned: bool,
-        what: &str,
-    ) -> Result<inkwell::values::FloatValue<'ctx>, CodegenError> {
-        if let BasicValueEnum::FloatValue(fv) = val {
-            if fv.get_type() == target {
-                return Ok(fv);
-            }
-            return self
-                .builder
-                .build_float_cast(fv, target, "fcast")
-                .map_err(|e| CodegenError::LlvmError(e.to_string()));
-        }
-        let iv = self.int_operand(val, what)?;
-        if unsigned {
-            self.builder.build_unsigned_int_to_float(iv, target, "uitof")
-        } else {
-            self.builder.build_signed_int_to_float(iv, target, "itof")
-        }
-        .map_err(|e| CodegenError::LlvmError(e.to_string()))
     }
 
     /// Match two float values to the same (wider) type.
@@ -3928,7 +3403,7 @@ impl<'ctx> Compiler<'ctx> {
     /// top of this would be a nicer *message* — with a source span — but it cannot be
     /// the enforcement point.)
     fn validate_declared_types(&mut self, unit: &CompilationUnit) -> Result<(), CodegenError> {
-        let mut check = |this: &mut Self,
+        let check = |this: &mut Self,
                          pou_kind: &'static str,
                          pou_name: &str,
                          blocks: &[VarBlock]|
@@ -7420,11 +6895,10 @@ impl<'ctx> Compiler<'ctx> {
                         Self::arith_result_type(arg_ty(0), arg_ty(1)),
                         arg_ty(2),
                     ),
-                    n if Self::float_to_int_target(n).is_some() => Self::float_to_int_target(n),
-                    n if TYPED_CONVERSIONS.contains(&n) => n
-                        .rsplit("_TO_")
-                        .next()
-                        .and_then(plcc_hir::types::resolve_type_name),
+                    n if Self::parse_conversion(n).is_some() => {
+                        Self::parse_conversion(n).map(|(_, dst)| dst)
+                    }
+                    n if Self::is_datetime_function(n) => Self::datetime_result_type(n),
                     // A user FUNCTION's declared result type. Without it
                     // `NOT MY_BYTE_FN()` could not be told from a BOOL NOT.
                     _ => self.fn_return_types.get(&name.name.to_lowercase()).cloned(),

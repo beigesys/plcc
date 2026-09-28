@@ -104,7 +104,7 @@ Complete IEC 61131-3:2013 (3rd edition) Structured Text:
 | CLASS, INTERFACE, METHOD (OOP) | Full |
 | VAR, VAR_INPUT, VAR_OUTPUT, VAR_IN_OUT (by reference), VAR_TEMP, VAR_GLOBAL | Full |
 | VAR CONSTANT, VAR RETAIN | Full |
-| All elementary types (BOOL through LREAL, STRING, WSTRING, TIME, DATE) | Full — DATE/TOD/DT are i64 nanoseconds (since 1970-01-01 for DATE and DT, since midnight for TOD); the DATE/TOD/DT conversion functions are not implemented yet |
+| All elementary types (BOOL through LREAL, STRING, WSTRING, TIME, DATE) | Full — every TIME/date type is i64 nanoseconds (since 1970-01-01 for DATE and DT, since midnight for TOD); converted to/from numbers in CODESYS units (see Standard Library) |
 | ARRAY (1D, multi-dimensional, negative and non-zero lower bounds) | Full |
 | ARRAY aggregate initializers (`[10, 20, 30]`, `[3(0)]`) | Full |
 | STRUCT (incl. field default initializers), ENUM, UNION, subranges, alias types | Full |
@@ -129,9 +129,8 @@ Complete IEC 61131-3:2013 (3rd edition) Structured Text:
 | Bit ops | SHL, SHR, ROL, ROR |
 | Memory | ADR, SIZEOF |
 | String | LEN, CONCAT, LEFT, RIGHT, MID, FIND, REPLACE |
-| Time | ADD_TIME, SUB_TIME, MUL_TIME, DIV_TIME |
-| Type conversion | 60+ variants: INT_TO_REAL, REAL_TO_INT, BYTE_TO_WORD, BOOL_TO_DINT, REAL_TO_DWORD, DWORD_TO_REAL, etc. |
-| TIME conversion (milliseconds) | TIME_TO_DWORD, TIME_TO_UDINT, TIME_TO_DINT, TIME_TO_REAL, TIME_TO_LREAL, DWORD_TO_TIME, UDINT_TO_TIME, DINT_TO_TIME, REAL_TO_TIME, LREAL_TO_TIME |
+| Time | ADD_TIME, SUB_TIME, MUL_TIME, DIV_TIME (and the L- variants), ADD_TOD_TIME, ADD_DT_TIME, SUB_DATE_DATE, SUB_TOD_TIME, SUB_TOD_TOD, SUB_DT_TIME, SUB_DT_DT, CONCAT_DATE_TOD, CONCAT_DATE, CONCAT_TOD, CONCAT_DT, DAY_OF_WEEK, CODESYS `TIME()`; operators `DT - DT`, `DT + TIME`, `TOD + TIME`, `DATE - DATE` |
+| Type conversion | `<SRC>_TO_<DST>` between every pair of non-string elementary types (BOOL, bit strings, integers, REAL/LREAL, TIME/LTIME, DATE/TOD/DT and their L- forms, CHAR/WCHAR), and the overloaded `TO_<DST>`. REAL → integer rounds (halves away from zero) and saturates. TIME and TOD convert as milliseconds, DATE and DT as seconds since 1970-01-01, LTIME/LTOD/LDATE/LDT as nanoseconds (CODESYS units) |
 
 **10 standard function blocks**, per IEC 61131-3 section 2.5.2:
 
