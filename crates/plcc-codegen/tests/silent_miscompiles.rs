@@ -817,6 +817,78 @@ END_PROGRAM
 }
 
 #[test]
+fn fb_string_input_from_literal() {
+    // The input store was skipped silently: the FB kept its previous value.
+    let src = r#"
+FUNCTION_BLOCK FB
+VAR_INPUT
+    name : STRING[8] := 'init';
+END_VAR
+VAR_OUTPUT
+    copy : STRING[8];
+END_VAR
+    copy := name;
+END_FUNCTION_BLOCK
+
+PROGRAM p
+VAR
+    out : STRING[8];
+    f : FB;
+END_VAR
+    f(name := 'valve');
+    out := f.copy;
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(cstr(&state, 0), "valve");
+}
+
+#[test]
+fn string_literal_arguments() {
+    let src = r#"
+FUNCTION SLEN : DINT
+VAR_INPUT
+    s : STRING[10];
+END_VAR
+    SLEN := LEN(s);
+END_FUNCTION
+
+FUNCTION_BLOCK FB
+VAR_INPUT
+    name : STRING[8];
+END_VAR
+VAR_OUTPUT
+    copy : STRING[8];
+END_VAR
+METHOD Width : DINT
+VAR_INPUT
+    t : STRING[8];
+END_VAR
+    Width := LEN(t);
+END_METHOD
+    copy := name;
+END_FUNCTION_BLOCK
+
+PROGRAM p
+VAR
+    n1 : DINT;
+    n2 : DINT;
+    out : STRING[8];
+    f : FB;
+END_VAR
+    n1 := SLEN('abcd');
+    f(name := 'valve');
+    out := f.copy;
+    n2 := f.Width('xy');
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(dint(&state, 0), 4);
+    assert_eq!(dint(&state, 1), 2);
+    assert_eq!(cstr(&state, 8), "valve", "FB STRING input from a literal");
+}
+
+#[test]
 fn user_function_arguments_are_evaluated_once() {
     // The builtin dispatcher compiled every argument before finding out the callee
     // was not a builtin, and the user-FUNCTION path then compiled them again: a

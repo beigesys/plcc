@@ -6051,6 +6051,37 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
+    /// One by-value argument of a FUNCTION or METHOD call, converted to the declared
+    /// parameter type when there is one. A string literal becomes a constant of the
+    /// STRING parameter's type; an argument that yields no value is a diagnostic
+    /// rather than being dropped from the call.
+    fn compile_call_arg(
+        &mut self,
+        arg: &Expression,
+        param_ty: Option<&IecType>,
+        what: &str,
+        function: FunctionValue<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        if let (Some(text), Some(ty)) = (Self::string_literal_text(arg), param_ty) {
+            return self.string_literal_const(ty, text).ok_or_else(|| {
+                CodegenError::UnsupportedType(format!(
+                    "{what}: string literal {} cannot be passed as a {ty}",
+                    Self::describe_lvalue(arg)
+                ))
+            });
+        }
+        let Some(val) = self.compile_expression(arg, function)? else {
+            return Err(self.no_value_error(what.to_string(), arg));
+        };
+        match param_ty {
+            Some(ty) => {
+                let src = self.rvalue_iec_type(arg);
+                self.coerce_value(val, src.as_ref(), ty)
+            }
+            None => Ok(val),
+        }
+    }
+
     /// The address to pass for a VAR_IN_OUT argument.
     ///
     /// A VAR_IN_OUT is bound by reference, so the argument has to be something with an
@@ -6212,17 +6243,27 @@ impl<'ctx> Compiler<'ctx> {
                     continue;
                 }
 
-                // Compile the argument value
-                if let Some(val) = self.compile_expression(&arg.value, function)? {
-                    // Widen/narrow to the declared input type. Integer literals
-                    // default to INT (i16), so `ctr(PV := 100000)` on a DINT input
-                    // used to store a truncated 16-bit value into a 32-bit field.
-                    let src = self.rvalue_iec_type(&arg.value);
-                    let val = self.coerce_value(val, src.as_ref(), &field.declared)?;
-                    self.builder
-                        .build_store(field_ptr, val)
-                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                // `f(name := 'abc')`: the literal's bytes into the STRING input.
+                if let Some(text) = Self::string_literal_text(&arg.value) {
+                    self.store_string_literal(field_ptr, &field.declared, &arg.value, text)?;
+                    continue;
                 }
+                // Compile the argument value. One that yields none is a diagnostic:
+                // skipping the store left the input at its previous value.
+                let Some(val) = self.compile_expression(&arg.value, function)? else {
+                    return Err(self.no_value_error(
+                        format!("input `{}` of `{fb_type_name}`", arg_name.name),
+                        &arg.value,
+                    ));
+                };
+                // Widen/narrow to the declared input type. Integer literals
+                // default to INT (i16), so `ctr(PV := 100000)` on a DINT input
+                // used to store a truncated 16-bit value into a 32-bit field.
+                let src = self.rvalue_iec_type(&arg.value);
+                let val = self.coerce_value(val, src.as_ref(), &field.declared)?;
+                self.builder
+                    .build_store(field_ptr, val)
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
             }
         }
 
@@ -6286,16 +6327,13 @@ impl<'ctx> Compiler<'ctx> {
                 );
                 continue;
             }
-            if let Some(val) = self.compile_expression(arg, function)? {
-                let val = match param {
-                    Some(p) => {
-                        let src = self.rvalue_iec_type(arg);
-                        self.coerce_value(val, src.as_ref(), &p.ty)?
-                    }
-                    None => val,
-                };
-                call_args.push(val);
-            }
+            let val = self.compile_call_arg(
+                arg,
+                param.map(|p| &p.ty),
+                &format!("argument {} of `{instance_name}.{method_name}`", i + 1),
+                function,
+            )?;
+            call_args.push(val);
         }
 
         let method_fn = self
@@ -7499,20 +7537,17 @@ impl<'ctx> Compiler<'ctx> {
                                 compiled_args.push(ptr.into());
                                 continue;
                             }
-                            if let Some(val) = self.compile_expression(arg, function)? {
-                                // Coerce to the declared parameter type. Passing the value
-                                // through unconverted produces a call whose argument width
-                                // does not match the signature, which LLVM's verifier
-                                // rejects outright.
-                                let val = match param {
-                                    Some(p) => {
-                                        let src = self.rvalue_iec_type(arg);
-                                        self.coerce_value(val, src.as_ref(), &p.ty)?
-                                    }
-                                    None => val,
-                                };
-                                compiled_args.push(val.into());
-                            }
+                            // Coerced to the declared parameter type inside: passing the
+                            // value through unconverted produces a call whose argument
+                            // width does not match the signature, which LLVM's verifier
+                            // rejects outright.
+                            let val = self.compile_call_arg(
+                                arg,
+                                param.map(|p| &p.ty),
+                                &format!("argument {} of `{}`", i + 1, ident.name),
+                                function,
+                            )?;
+                            compiled_args.push(val.into());
                         }
                         let call = self
                             .builder
