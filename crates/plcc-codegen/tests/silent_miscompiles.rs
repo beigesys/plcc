@@ -1016,6 +1016,73 @@ END_PROGRAM
     assert_eq!(state[48], 1, "D#2024-01-02 > D#2024-01-01");
 }
 
+fn compile_err(source: &str) -> Option<String> {
+    let (unit, errors) = plcc_st::parse(source);
+    assert!(errors.is_empty(), "parse errors: {errors:?}");
+    let ctx = Context::create();
+    let mut compiler = Compiler::new(&ctx, "silent");
+    compiler.compile(&unit).err().map(|e| e.to_string())
+}
+
+#[test]
+fn unknown_call_statement_is_an_error() {
+    // Compiled to no code at all.
+    let err = compile_err("PROGRAM p VAR x : DINT; END_VAR NOSUCH(x); x := 1; END_PROGRAM")
+        .expect("NOSUCH(x); must not compile silently");
+    assert!(err.contains("NOSUCH"), "{err}");
+
+    // A FUNCTION without a result type is the legitimate no-value call.
+    let src = r#"
+VAR_GLOBAL
+    g : DINT;
+END_VAR
+
+FUNCTION SET_G
+VAR_INPUT
+    v : DINT;
+END_VAR
+    g := v;
+END_FUNCTION
+
+PROGRAM p
+VAR
+    r : DINT;
+END_VAR
+    SET_G(12);
+    r := g;
+END_PROGRAM
+"#;
+    assert_eq!(dint(&run(src), 0), 12);
+}
+
+#[test]
+fn case_on_unsigned_selectors() {
+    let src = r#"
+PROGRAM p
+VAR
+    r : DINT;
+    r2 : DINT;
+    b : BYTE := 200;
+    w : WORD := 65000;
+END_VAR
+    CASE b OF
+        200: r := 1;
+        201..250: r := 3;
+    ELSE
+        r := 2;
+    END_CASE;
+    CASE w OF
+        60000..65535: r2 := 1;
+    ELSE
+        r2 := 2;
+    END_CASE;
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(dint(&state, 0), 1);
+    assert_eq!(dint(&state, 1), 1);
+}
+
 // ---------------------------------------------------------------------------
 // IEC `$` escapes in string literals
 // ---------------------------------------------------------------------------

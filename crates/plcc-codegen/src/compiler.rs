@@ -6112,8 +6112,25 @@ impl<'ctx> Compiler<'ctx> {
                         },
                         span: stmt.span,
                     };
-                    this.compile_expression(&call_expr, function)?;
-                    Ok(())
+                    if this.compile_expression(&call_expr, function)?.is_some() {
+                        return Ok(());
+                    }
+                    // No value is expected only from a FUNCTION declared without a
+                    // result type. Anything else yielding none means nothing was
+                    // emitted: `NOSUCH(x);` used to compile to no code at all.
+                    let void_fn = match &callee.kind {
+                        ExpressionKind::Identifier(id) => this
+                            .module
+                            .get_function(&id.name.to_lowercase())
+                            .is_some_and(|f| f.get_type().get_return_type().is_none()),
+                        _ => false,
+                    };
+                    if void_fn {
+                        this.no_value_cause = None;
+                        Ok(())
+                    } else {
+                        Err(this.no_value_error("call statement", &call_expr))
+                    }
                 };
 
                 // An FB instance call. The callee is anything addressable whose *type*
