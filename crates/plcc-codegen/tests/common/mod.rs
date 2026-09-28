@@ -131,6 +131,13 @@ pub fn try_run_with(src: &str, scans: usize, dt_ms: i64, optimize: bool) -> Resu
                 CodeModel::Default,
             )
             .unwrap();
+        // The optimizer folds struct GEPs into byte offsets, so the module has to
+        // carry the target's data layout first, or it lays out i64 fields with the
+        // LLVM default (4-byte) alignment and disagrees with the contract offsets.
+        compiler.module().set_triple(&triple);
+        compiler
+            .module()
+            .set_data_layout(&tm.get_target_data().get_data_layout());
         compiler
             .module()
             .run_passes("default<O3>", &tm, PassBuilderOptions::create())
