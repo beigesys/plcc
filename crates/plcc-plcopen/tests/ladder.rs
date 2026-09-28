@@ -22,7 +22,10 @@ fn seal_in_latches_and_stops() {
         start(false);
         plc.scan();
         plc.scan();
-        assert!(plc.get_bool("SealIn.Motor"), "the Motor contact seals it in");
+        assert!(
+            plc.get_bool("SealIn.Motor"),
+            "the Motor contact seals it in"
+        );
         stop(true);
         plc.scan();
         assert!(!plc.get_bool("SealIn.Motor"), "Stop breaks the seal");
@@ -132,7 +135,12 @@ fn set_reset_negated_and_edge_coils() {
         for v in [true, true, true, false, false] {
             set("In", v);
             plc.scan();
-            trace.push((b("RisePulse"), b("FallPulse"), b("PulseCoil"), b("DropCoil")));
+            trace.push((
+                b("RisePulse"),
+                b("FallPulse"),
+                b("PulseCoil"),
+                b("DropCoil"),
+            ));
         }
         assert_eq!(
             trace,
@@ -144,7 +152,11 @@ fn set_reset_negated_and_edge_coils() {
                 (false, false, false, false),
             ]
         );
-        assert_eq!(plc.get("Coils.Rises"), 1, "ADD with EN runs only on the pulse");
+        assert_eq!(
+            plc.get("Coils.Rises"),
+            1,
+            "ADD with EN runs only on the pulse"
+        );
         set("In", true);
         plc.scan();
         assert_eq!(plc.get("Coils.Rises"), 2);
@@ -163,7 +175,11 @@ fn parallel_branches_fanout_and_connectors() {
             set("C", c);
             set("D", d);
             plc.scan();
-            assert_eq!(b("Out1"), (a && bb) || (c && !d), "A={a} B={bb} C={c} D={d}");
+            assert_eq!(
+                b("Out1"),
+                (a && bb) || (c && !d),
+                "A={a} B={bb} C={c} D={d}"
+            );
         }
         for bits in 0..4u8 {
             let (e, f) = (bits & 1 != 0, bits & 2 != 0);

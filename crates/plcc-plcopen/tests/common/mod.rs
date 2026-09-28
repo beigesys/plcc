@@ -86,7 +86,8 @@ pub fn lower(name: &str) -> plcc_st::CompilationUnit {
     if !errors.is_empty() {
         let mut msg = String::new();
         for e in errors {
-            let r = miette::Report::new(e).with_source_code(miette::NamedSource::new(name, src.clone()));
+            let r = miette::Report::new(e)
+                .with_source_code(miette::NamedSource::new(name, src.clone()));
             msg.push_str(&format!("{r:?}\n"));
         }
         panic!("{name} failed to lower:\n{msg}");
@@ -264,7 +265,9 @@ pub fn with_plc<R>(name: &str, f: impl FnOnce(&Plc) -> R) -> R {
         };
         panic!("{name}: codegen failed: {e}{detail}");
     }
-    let contract = compiler.runtime_contract("x86_64-unknown-linux-gnu").expect("contract");
+    let contract = compiler
+        .runtime_contract("x86_64-unknown-linux-gnu")
+        .expect("contract");
     let clock = compiler.module().get_function("plcc_monotonic_ns");
     let ee = compiler
         .module()
@@ -273,7 +276,9 @@ pub fn with_plc<R>(name: &str, f: impl FnOnce(&Plc) -> R) -> R {
     if let Some(decl) = clock {
         ee.add_global_mapping(&decl, fake_monotonic_ns as *const () as usize);
     }
-    let get = ee.get_function_address("plcc_get_app").expect("plcc_get_app");
+    let get = ee
+        .get_function_address("plcc_get_app")
+        .expect("plcc_get_app");
     let get: extern "C" fn() -> *const App = unsafe { std::mem::transmute(get) };
     let app = unsafe { &*get() };
     assert_eq!(app.abi_version, 1);

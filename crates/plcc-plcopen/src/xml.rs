@@ -70,7 +70,10 @@ pub(crate) fn content_fragment(src: &str, n: XNode) -> Fragment {
         return Fragment::decode(src, r.end..r.end);
     };
     let start = first.range().start;
-    let end = src[r.clone()].rfind("</").map_or(r.end, |p| r.start + p).max(start);
+    let end = src[r.clone()]
+        .rfind("</")
+        .map_or(r.end, |p| r.start + p)
+        .max(start);
     Fragment::decode(src, start..end)
 }
 
@@ -78,7 +81,11 @@ pub(crate) fn content_fragment(src: &str, n: XNode) -> Fragment {
 pub(crate) fn position(n: XNode) -> (f64, f64) {
     child(n, "position")
         .map(|p| {
-            let f = |a| p.attribute(a).and_then(|v| v.trim().parse().ok()).unwrap_or(0.0);
+            let f = |a| {
+                p.attribute(a)
+                    .and_then(|v| v.trim().parse().ok())
+                    .unwrap_or(0.0)
+            };
             (f("x"), f("y"))
         })
         .unwrap_or((0.0, 0.0))

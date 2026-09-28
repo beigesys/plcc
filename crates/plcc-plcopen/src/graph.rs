@@ -142,11 +142,19 @@ impl Elem {
     }
 
     fn is_fb(&self) -> bool {
-        matches!(&self.kind, Kind::Block { instance: Some(_), .. })
+        matches!(
+            &self.kind,
+            Kind::Block {
+                instance: Some(_),
+                ..
+            }
+        )
     }
 
     fn pin(&self, formal: &str) -> Option<usize> {
-        self.ins.iter().position(|p| p.formal.eq_ignore_ascii_case(formal))
+        self.ins
+            .iter()
+            .position(|p| p.formal.eq_ignore_ascii_case(formal))
     }
 
     fn label(&self) -> String {
@@ -318,7 +326,10 @@ fn parse_storage(n: XNode, lower: &mut Lower) -> Storage {
 fn parse_pin(lower: &mut Lower, cpi: Option<XNode>, formal: &str, owner: XNode) -> PinIn {
     let mut conns = Vec::new();
     let mut expr = None;
-    let span = cpi.map_or_else(|| xml::tag_span(lower.src, owner), |c| xml::tag_span(lower.src, c));
+    let span = cpi.map_or_else(
+        || xml::tag_span(lower.src, owner),
+        |c| xml::tag_span(lower.src, c),
+    );
     if let Some(cpi) = cpi {
         for c in xml::children(cpi, "connection") {
             let cspan = xml::tag_span(lower.src, c);
@@ -449,7 +460,8 @@ fn parse_elem(lower: &mut Lower, n: XNode) -> Option<Elem> {
                         let Some(formal) = required_attr(lower, v, "formalParameter") else {
                             continue;
                         };
-                        let mut pin = parse_pin(lower, xml::child(v, "connectionPointIn"), &formal, v);
+                        let mut pin =
+                            parse_pin(lower, xml::child(v, "connectionPointIn"), &formal, v);
                         pin.negated = xml::attr_bool(v, "negated");
                         pin.edge = parse_edge(v, lower);
                         if is_inout {
@@ -570,7 +582,9 @@ pub(crate) fn lower_body(
     var_blocks: &mut Vec<VarBlock>,
 ) -> Vec<Statement> {
     let before = lower.errors.len();
-    let elems: Vec<Elem> = xml::elements(body).filter_map(|n| parse_elem(lower, n)).collect();
+    let elems: Vec<Elem> = xml::elements(body)
+        .filter_map(|n| parse_elem(lower, n))
+        .collect();
     let mut by_id = HashMap::new();
     for (i, e) in elems.iter().enumerate() {
         if by_id.insert(e.id, i).is_some() {
@@ -645,7 +659,11 @@ impl Graph<'_, '_> {
         }
         let formal = match &c.formal {
             Some(f) => f.clone(),
-            None => match e.outs.iter().find(|o| !o.formal.eq_ignore_ascii_case("ENO")) {
+            None => match e
+                .outs
+                .iter()
+                .find(|o| !o.formal.eq_ignore_ascii_case("ENO"))
+            {
                 Some(o) => o.formal.clone(),
                 None => {
                     let l = e.label();
@@ -736,12 +754,21 @@ impl Graph<'_, '_> {
             .all(|g| g.iter().any(|&i| self.elems[i].eo.is_some()));
         let key = |g: &Vec<usize>| -> (u32, f64, f64) {
             let eo = if all_ordered {
-                g.iter().filter_map(|&i| self.elems[i].eo).min().unwrap_or(u32::MAX)
+                g.iter()
+                    .filter_map(|&i| self.elems[i].eo)
+                    .min()
+                    .unwrap_or(u32::MAX)
             } else {
                 0
             };
-            let y = g.iter().map(|&i| self.elems[i].pos.1).fold(f64::INFINITY, f64::min);
-            let x = g.iter().map(|&i| self.elems[i].pos.0).fold(f64::INFINITY, f64::min);
+            let y = g
+                .iter()
+                .map(|&i| self.elems[i].pos.1)
+                .fold(f64::INFINITY, f64::min);
+            let x = g
+                .iter()
+                .map(|&i| self.elems[i].pos.0)
+                .fold(f64::INFINITY, f64::min);
             (eo, y, x)
         };
         nets.sort_by(|a, b| {
@@ -814,7 +841,11 @@ impl Graph<'_, '_> {
                 );
                 pass.extend(guarded(
                     hit,
-                    vec![assign(jmp(span), ex(ExpressionKind::IntegerLiteral(0), span), span)],
+                    vec![assign(
+                        jmp(span),
+                        ex(ExpressionKind::IntegerLiteral(0), span),
+                        span,
+                    )],
                     span,
                 ));
                 continue;
@@ -845,7 +876,11 @@ impl Graph<'_, '_> {
                 ex(ExpressionKind::IntegerLiteral(0), body_span),
                 body_span,
             );
-            pass.extend(guarded(done, vec![stmt(StatementKind::Exit, body_span)], body_span));
+            pass.extend(guarded(
+                done,
+                vec![stmt(StatementKind::Exit, body_span)],
+                body_span,
+            ));
             body.push(stmt(
                 StatementKind::While {
                     condition: lit_bool(true, body_span),
@@ -860,7 +895,11 @@ impl Graph<'_, '_> {
     }
 
     fn lower_network(&mut self, net: &[usize]) -> Vec<Statement> {
-        let mut sinks: Vec<usize> = net.iter().copied().filter(|&i| self.elems[i].is_sink()).collect();
+        let mut sinks: Vec<usize> = net
+            .iter()
+            .copied()
+            .filter(|&i| self.elems[i].is_sink())
+            .collect();
         sinks.sort_by(|&a, &b| {
             let k = |i: usize| {
                 let e = &self.elems[i];
@@ -891,15 +930,20 @@ impl Graph<'_, '_> {
                     if let Some(call) = self.function_call(idx, span) {
                         let en = self.en_value(idx);
                         let s = match call.kind {
-                            ExpressionKind::FunctionCall { callee, args } => {
-                                stmt(StatementKind::FunctionCall { callee: *callee, args }, span)
-                            }
+                            ExpressionKind::FunctionCall { callee, args } => stmt(
+                                StatementKind::FunctionCall {
+                                    callee: *callee,
+                                    args,
+                                },
+                                span,
+                            ),
                             _ => {
                                 // Operators have no effect when their value is unused.
                                 return;
                             }
                         };
-                        let body = guarded(en.unwrap_or_else(|| lit_bool(true, span)), vec![s], span);
+                        let body =
+                            guarded(en.unwrap_or_else(|| lit_bool(true, span)), vec![s], span);
                         self.out.extend(body);
                     }
                 }
@@ -911,26 +955,38 @@ impl Graph<'_, '_> {
                 // An output fed straight by a function with EN is only written
                 // when EN is TRUE (IEC 61131-3: outputs keep their value).
                 if let Some((f, en)) = self.enabled_function_feeding(idx) {
-                    let Some(v) = self.function_call(f, span) else { return };
+                    let Some(v) = self.function_call(f, span) else {
+                        return;
+                    };
                     let v = if negated { not(v, span) } else { v };
                     let body = guarded(en, vec![assign(target, v, span)], span);
                     self.out.extend(body);
                     return;
                 }
-                let Some(v) = self.required_input(idx, 0) else { return };
+                let Some(v) = self.required_input(idx, 0) else {
+                    return;
+                };
                 let v = if negated { not(v, span) } else { v };
                 self.out.push(assign(target, v, span));
             }
             Kind::InOutVar { expr } => {
                 let target = expr.clone();
                 self.emitted.insert(idx);
-                let Some(v) = self.required_input(idx, 0) else { return };
+                let Some(v) = self.required_input(idx, 0) else {
+                    return;
+                };
                 self.out.push(assign(target, v, span));
             }
             Kind::Jump { label } => {
-                let k = self.labels.get(&label.to_ascii_uppercase()).copied().unwrap_or(0);
+                let k = self
+                    .labels
+                    .get(&label.to_ascii_uppercase())
+                    .copied()
+                    .unwrap_or(0);
                 self.emitted.insert(idx);
-                let Some(p) = self.required_input(idx, 0) else { return };
+                let Some(p) = self.required_input(idx, 0) else {
+                    return;
+                };
                 let set = assign(
                     ident("_ld_jmp", span),
                     ex(ExpressionKind::IntegerLiteral(k), span),
@@ -941,8 +997,14 @@ impl Graph<'_, '_> {
             }
             Kind::Return => {
                 self.emitted.insert(idx);
-                let Some(p) = self.required_input(idx, 0) else { return };
-                let body = guarded(p, vec![stmt(StatementKind::Return { value: None }, span)], span);
+                let Some(p) = self.required_input(idx, 0) else {
+                    return;
+                };
+                let body = guarded(
+                    p,
+                    vec![stmt(StatementKind::Return { value: None }, span)],
+                    span,
+                );
                 self.out.extend(body);
             }
             _ => {}
@@ -962,14 +1024,24 @@ impl Graph<'_, '_> {
             return;
         };
         let (var, negated, storage, edge) = (var.clone(), *negated, *storage, *edge);
-        let Some(p) = self.required_input(idx, 0) else { return };
+        let Some(p) = self.required_input(idx, 0) else {
+            return;
+        };
         if negated && (storage != Storage::None || edge != Edge::None) {
-            self.err("a negated coil cannot also be a set/reset or edge coil", span);
+            self.err(
+                "a negated coil cannot also be a set/reset or edge coil",
+                span,
+            );
             return;
         }
         let p = match edge {
             Edge::None => p,
-            e => match self.trig(e == Edge::Rising, p, &format!("{}", self.elems[idx].id), span) {
+            e => match self.trig(
+                e == Edge::Rising,
+                p,
+                &format!("{}", self.elems[idx].id),
+                span,
+            ) {
                 Some(q) => q,
                 None => return,
             },
@@ -980,7 +1052,11 @@ impl Graph<'_, '_> {
                 self.out.push(assign(var, v, span));
             }
             Storage::Set | Storage::Reset => {
-                let body = guarded(p, vec![assign(var, lit_bool(storage == Storage::Set, span), span)], span);
+                let body = guarded(
+                    p,
+                    vec![assign(var, lit_bool(storage == Storage::Set, span), span)],
+                    span,
+                );
                 self.out.extend(body);
             }
         }
@@ -1044,7 +1120,9 @@ impl Graph<'_, '_> {
         for p in 0..self.elems[idx].ins.len() {
             let formal = self.elems[idx].ins[p].formal.clone();
             let pspan = self.elems[idx].ins[p].span;
-            let Some(v) = self.input(idx, p) else { continue };
+            let Some(v) = self.input(idx, p) else {
+                continue;
+            };
             if formal.eq_ignore_ascii_case("EN") {
                 en = Some(v);
             } else {
@@ -1093,7 +1171,13 @@ impl Graph<'_, '_> {
     }
 
     /// Emit an edge detector on `clk`; return its `Q`.
-    fn trig(&mut self, rising: bool, clk: Expression, suffix: &str, span: Span) -> Option<Expression> {
+    fn trig(
+        &mut self,
+        rising: bool,
+        clk: Expression,
+        suffix: &str,
+        span: Span,
+    ) -> Option<Expression> {
         if self.pou == PouKind::Function {
             self.lower.errors.push(
                 PlcOpenError::new(
@@ -1150,7 +1234,10 @@ impl Graph<'_, '_> {
             });
         }
         let mut v = acc?;
-        let (negated, edge) = (self.elems[idx].ins[pin].negated, self.elems[idx].ins[pin].edge);
+        let (negated, edge) = (
+            self.elems[idx].ins[pin].negated,
+            self.elems[idx].ins[pin].edge,
+        );
         if negated {
             v = not(v, span);
         }
@@ -1191,7 +1278,12 @@ impl Graph<'_, '_> {
                 let term = match (edge, negated) {
                     (Edge::None, false) => var,
                     (Edge::None, true) => not(var, span),
-                    (e, false) => self.trig(e == Edge::Rising, var, &format!("{}", self.elems[idx].id), span)?,
+                    (e, false) => self.trig(
+                        e == Edge::Rising,
+                        var,
+                        &format!("{}", self.elems[idx].id),
+                        span,
+                    )?,
                     (_, true) => {
                         self.err("a contact cannot be both negated and edge-sensing", span);
                         return None;
@@ -1223,7 +1315,10 @@ impl Graph<'_, '_> {
             }
             Kind::Continuation { name } => {
                 let Some(&c) = self.connectors.get(&name.to_ascii_uppercase()) else {
-                    self.err(format!("continuation `{name}` has no matching connector"), span);
+                    self.err(
+                        format!("continuation `{name}` has no matching connector"),
+                        span,
+                    );
                     return None;
                 };
                 self.in_progress.insert(idx);
@@ -1262,7 +1357,10 @@ impl Graph<'_, '_> {
     }
 
     fn block_output(&mut self, idx: usize, formal: &str, span: Span) -> Option<Expression> {
-        let Kind::Block { instance, inouts, .. } = &self.elems[idx].kind else {
+        let Kind::Block {
+            instance, inouts, ..
+        } = &self.elems[idx].kind
+        else {
             return None;
         };
         let negated = self.elems[idx]
@@ -1276,7 +1374,10 @@ impl Graph<'_, '_> {
                     self.emit_fb_call(idx);
                     // In a feedback loop through ENO, use TRUE (the call has not
                     // happened yet); otherwise the latched EN.
-                    self.eno.get(&idx).cloned().unwrap_or_else(|| lit_bool(true, span))
+                    self.eno
+                        .get(&idx)
+                        .cloned()
+                        .unwrap_or_else(|| lit_bool(true, span))
                 } else if is_inout {
                     let p = self.elems[idx].pin(formal)?;
                     self.emit_fb_call(idx);
@@ -1336,7 +1437,8 @@ impl Graph<'_, '_> {
                 continue;
             }
             let pspan = self.elems[idx].ins[p].span;
-            let has_source = !self.elems[idx].ins[p].conns.is_empty() || self.elems[idx].ins[p].expr.is_some();
+            let has_source =
+                !self.elems[idx].ins[p].conns.is_empty() || self.elems[idx].ins[p].expr.is_some();
             let v = self.input(idx, p);
             if has_source && v.is_none() {
                 return None;
@@ -1380,7 +1482,11 @@ impl Graph<'_, '_> {
         };
         if let Some((bop, extensible)) = op {
             let vals = all.unwrap_or_default();
-            let ok = if extensible { vals.len() >= 2 } else { vals.len() == 2 };
+            let ok = if extensible {
+                vals.len() >= 2
+            } else {
+                vals.len() == 2
+            };
             if !arity(self, if extensible { "2 or more" } else { "exactly 2" }, ok) {
                 return None;
             }
@@ -1388,7 +1494,11 @@ impl Graph<'_, '_> {
         }
         if let Some(c) = cmp {
             let vals = all.unwrap_or_default();
-            let ok = if c == BinaryOp::NotEqual { vals.len() == 2 } else { vals.len() >= 2 };
+            let ok = if c == BinaryOp::NotEqual {
+                vals.len() == 2
+            } else {
+                vals.len() >= 2
+            };
             if !arity(self, "2 or more", ok) {
                 return None;
             }

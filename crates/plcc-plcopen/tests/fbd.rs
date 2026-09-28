@@ -20,7 +20,11 @@ fn fbd_arithmetic_runs() {
             assert_eq!(g("y"), y);
             assert_eq!(g("s"), a + b, "connector/continuation");
             assert_eq!(g("m"), a.max(b), "MAX call");
-            assert_eq!(g("lim"), y.clamp(0, 100), "LIMIT reads y after it was written");
+            assert_eq!(
+                g("lim"),
+                y.clamp(0, 100),
+                "LIMIT reads y after it was written"
+            );
             assert_eq!(g("sc"), a * 2 + 1, "user FUNCTION with an FBD body");
             assert_eq!(g("agtb"), (a > b) as i64);
         }

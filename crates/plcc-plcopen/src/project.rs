@@ -8,8 +8,8 @@ use crate::embed::{self, Fragment};
 use crate::error::PlcOpenError;
 use crate::graph;
 use crate::xml::{self, XNode};
-use plcc_st::ast::*;
 use plcc_st::Span;
+use plcc_st::ast::*;
 
 pub(crate) struct Lower<'s> {
     pub src: &'s str,
@@ -26,9 +26,33 @@ pub(crate) enum PouKind {
 }
 
 const ELEMENTARY: &[&str] = &[
-    "BOOL", "BYTE", "WORD", "DWORD", "LWORD", "SINT", "INT", "DINT", "LINT", "USINT", "UINT",
-    "UDINT", "ULINT", "REAL", "LREAL", "TIME", "LTIME", "DATE", "LDATE", "TIME_OF_DAY", "TOD",
-    "LTOD", "DATE_AND_TIME", "DT", "LDT", "CHAR", "WCHAR",
+    "BOOL",
+    "BYTE",
+    "WORD",
+    "DWORD",
+    "LWORD",
+    "SINT",
+    "INT",
+    "DINT",
+    "LINT",
+    "USINT",
+    "UINT",
+    "UDINT",
+    "ULINT",
+    "REAL",
+    "LREAL",
+    "TIME",
+    "LTIME",
+    "DATE",
+    "LDATE",
+    "TIME_OF_DAY",
+    "TOD",
+    "LTOD",
+    "DATE_AND_TIME",
+    "DT",
+    "LDT",
+    "CHAR",
+    "WCHAR",
 ];
 
 impl<'s> Lower<'s> {
@@ -130,11 +154,15 @@ impl<'s> Lower<'s> {
 
     /// The type inside a `<type>`, `<baseType>` or `<returnType>` wrapper.
     pub fn type_of(&mut self, wrapper: XNode) -> Option<TypeSpec> {
-        let mut inner = xml::elements(wrapper).filter(|e| !matches!(xml::name(*e), "addData" | "documentation"));
+        let mut inner = xml::elements(wrapper)
+            .filter(|e| !matches!(xml::name(*e), "addData" | "documentation"));
         match inner.next() {
             Some(e) => self.type_elem(e),
             None => {
-                self.err(format!("<{}> names no type", xml::name(wrapper)), self.tag(wrapper));
+                self.err(
+                    format!("<{}> names no type", xml::name(wrapper)),
+                    self.tag(wrapper),
+                );
                 None
             }
         }
@@ -206,7 +234,10 @@ impl<'s> Lower<'s> {
                     Some(b) => match self.type_of(b)?.kind {
                         TypeSpecKind::Named(id) => Some(id),
                         _ => {
-                            self.err("an enum base type must be an elementary integer type", xml::span(b));
+                            self.err(
+                                "an enum base type must be an elementary integer type",
+                                xml::span(b),
+                            );
                             return None;
                         }
                     },
@@ -229,7 +260,10 @@ impl<'s> Lower<'s> {
                 let base = match self.base_type(e)?.kind {
                     TypeSpecKind::Named(id) => id,
                     _ => {
-                        self.err("a subrange base type must be an elementary integer type", span);
+                        self.err(
+                            "a subrange base type must be an elementary integer type",
+                            span,
+                        );
                         return None;
                     }
                 };
@@ -307,7 +341,10 @@ impl<'s> Lower<'s> {
                         None => None,
                     };
                     let Some(inner) = xml::elements(item).next() else {
-                        self.err("array initial value element without a value", self.tag(item));
+                        self.err(
+                            "array initial value element without a value",
+                            self.tag(item),
+                        );
                         return None;
                     };
                     let value = self.value(inner)?;
@@ -347,7 +384,10 @@ impl<'s> Lower<'s> {
     fn variable(&mut self, v: XNode) -> Option<VarDecl> {
         let name = self.ident_attr(v, "name")?;
         let Some(t) = xml::child(v, "type") else {
-            self.err(format!("variable `{}` has no <type>", name.name), self.tag(v));
+            self.err(
+                format!("variable `{}` has no <type>", name.name),
+                self.tag(v),
+            );
             return None;
         };
         let type_spec = self.type_of(t)?;
@@ -506,10 +546,13 @@ impl<'s> Lower<'s> {
         pou_name: &str,
         var_blocks: &mut Vec<VarBlock>,
     ) -> Vec<Statement> {
-        let Some(lang) = xml::elements(body)
-            .find(|e| !matches!(xml::name(*e), "documentation" | "addData"))
+        let Some(lang) =
+            xml::elements(body).find(|e| !matches!(xml::name(*e), "documentation" | "addData"))
         else {
-            self.err(format!("POU `{pou_name}` has an empty <body>"), self.tag(body));
+            self.err(
+                format!("POU `{pou_name}` has an empty <body>"),
+                self.tag(body),
+            );
             return Vec::new();
         };
         match xml::name(lang) {

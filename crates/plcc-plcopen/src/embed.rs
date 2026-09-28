@@ -53,7 +53,9 @@ impl Fragment {
                     .next()
                     .unwrap_or("");
                 let local = name.rsplit(':').next().unwrap_or(name);
-                if local.eq_ignore_ascii_case("br") || (local.eq_ignore_ascii_case("p") && tag.starts_with("</")) {
+                if local.eq_ignore_ascii_case("br")
+                    || (local.eq_ignore_ascii_case("p") && tag.starts_with("</"))
+                {
                     text.push('\n');
                     map.push(i);
                 }
@@ -135,7 +137,8 @@ impl Remap<'_> {
         if p < self.prefix_len {
             self.frag.raw.start
         } else {
-            self.frag.raw_at((p - self.prefix_len).min(self.frag.text.len()))
+            self.frag
+                .raw_at((p - self.prefix_len).min(self.frag.text.len()))
         }
     }
 
@@ -188,7 +191,9 @@ impl Remap<'_> {
     fn error(&self, e: &plcc_st::ParseError) -> PlcOpenError {
         use plcc_st::ParseError as P;
         let (message, span) = match e {
-            P::UnexpectedToken { span, .. } | P::UnexpectedEof { span, .. } => (e.to_string(), *span),
+            P::UnexpectedToken { span, .. } | P::UnexpectedEof { span, .. } => {
+                (e.to_string(), *span)
+            }
             P::General { message, span } => (message.clone(), *span),
         };
         let start = self.pos(span.offset());
@@ -246,7 +251,27 @@ pub(crate) fn parse_expression(
         prefix_len: EXPR_PREFIX.len(),
     };
     if !parse_errors.is_empty() {
-        errors.extend(parse_errors.iter().map(|e| remap.error(e)));
+        let text_end = EXPR_PREFIX.len() + frag.text.len();
+        let mut incomplete = false;
+        for e in &parse_errors {
+            let at = match e {
+                plcc_st::ParseError::UnexpectedToken { span, .. }
+                | plcc_st::ParseError::UnexpectedEof { span, .. }
+                | plcc_st::ParseError::General { span, .. } => span.offset(),
+            };
+            if at >= text_end {
+                // The parser ran into the wrapper's `;`: the text just stops.
+                if !incomplete {
+                    errors.push(PlcOpenError::new(
+                        format!("incomplete {what}: `{}`", frag.text.trim()),
+                        Span::from(frag.raw.clone()),
+                    ));
+                }
+                incomplete = true;
+            } else {
+                errors.push(remap.error(e));
+            }
+        }
         return None;
     }
     let mut decls = unit.declarations.into_iter();
@@ -257,7 +282,10 @@ pub(crate) fn parse_expression(
         return Some(remap.remap(value.clone()));
     }
     errors.push(PlcOpenError::new(
-        format!("`{}` is not a single ST expression ({what})", frag.text.trim()),
+        format!(
+            "`{}` is not a single ST expression ({what})",
+            frag.text.trim()
+        ),
         Span::from(frag.raw.clone()),
     ));
     None

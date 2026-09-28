@@ -36,7 +36,9 @@ fn lowers_types_pous_and_configuration() {
             "CONFIGURATION Plant"
         ]
     );
-    let Declaration::TypeDecl(t) = &unit.declarations[0] else { unreachable!() };
+    let Declaration::TypeDecl(t) = &unit.declarations[0] else {
+        unreachable!()
+    };
     assert!(matches!(&t.type_spec.kind, TypeSpecKind::Enum(e) if e.values.len() == 3));
 
     let main = unit
@@ -47,7 +49,11 @@ fn lowers_types_pous_and_configuration() {
             _ => None,
         })
         .unwrap();
-    let kinds: Vec<_> = main.var_blocks.iter().map(|b| (b.kind, b.is_constant, b.is_retain)).collect();
+    let kinds: Vec<_> = main
+        .var_blocks
+        .iter()
+        .map(|b| (b.kind, b.is_constant, b.is_retain))
+        .collect();
     assert_eq!(
         kinds,
         [
@@ -108,7 +114,9 @@ fn st_project_runs() {
 fn sniffing() {
     assert!(plcc_plcopen::is_plcopen(&read_fixture("st_project.xml")));
     assert!(plcc_plcopen::is_plcopen("<project/>"));
-    assert!(plcc_plcopen::is_plcopen("\u{feff}<?xml version=\"1.0\"?>\n<!-- c --><ns:project>"));
+    assert!(plcc_plcopen::is_plcopen(
+        "\u{feff}<?xml version=\"1.0\"?>\n<!-- c --><ns:project>"
+    ));
     assert!(!plcc_plcopen::is_plcopen("PROGRAM p END_PROGRAM"));
     assert!(!plcc_plcopen::is_plcopen("<?xml version=\"1.0\"?><svg/>"));
 }

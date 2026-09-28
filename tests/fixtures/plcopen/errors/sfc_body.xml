@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- An SFC body: not supported yet, and plcc must say so clearly. -->
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <fileHeader companyName="plcc" productName="plcc tests" productVersion="1" creationDateTime="2026-09-27T00:00:00"/>
+  <contentHeader name="sfc">
+    <coordinateInfo>
+      <fbd><scaling x="1" y="1"/></fbd>
+      <ld><scaling x="1" y="1"/></ld>
+      <sfc><scaling x="1" y="1"/></sfc>
+    </coordinateInfo>
+  </contentHeader>
+  <types>
+    <dataTypes/>
+    <pous>
+      <pou name="Sequence" pouType="program">
+        <interface>
+          <localVars>
+            <variable name="go"><type><BOOL/></type></variable>
+          </localVars>
+        </interface>
+        <body>
+          <SFC>
+            <step localId="1" name="Init" initialStep="true" width="40" height="30">
+              <position x="10" y="10"/>
+              <connectionPointOut formalParameter=""/>
+            </step>
+            <transition localId="2" width="10" height="2">
+              <position x="25" y="60"/>
+              <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+              <condition><inline name=""><ST><xhtml:p xmlns:xhtml="http://www.w3.org/1999/xhtml">go</xhtml:p></ST></inline></condition>
+            </transition>
+          </SFC>
+        </body>
+      </pou>
+    </pous>
+  </types>
+</project>

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- Well-formed ladder whose contact reads an undeclared variable: the error
+     comes from codegen, and must point at the contact's <variable> in this file. -->
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <fileHeader companyName="plcc" productName="plcc tests" productVersion="1" creationDateTime="2026-09-27T00:00:00"/>
+  <contentHeader name="undeclared">
+    <coordinateInfo>
+      <fbd><scaling x="1" y="1"/></fbd>
+      <ld><scaling x="1" y="1"/></ld>
+      <sfc><scaling x="1" y="1"/></sfc>
+    </coordinateInfo>
+  </contentHeader>
+  <types>
+    <dataTypes/>
+    <pous>
+      <pou name="Undeclared" pouType="program">
+        <interface>
+          <localVars>
+            <variable name="A"><type><BOOL/></type></variable>
+          </localVars>
+        </interface>
+        <body>
+          <LD>
+            <leftPowerRail localId="1" width="3" height="30">
+              <position x="10" y="10"/>
+              <connectionPointOut formalParameter=""/>
+            </leftPowerRail>
+            <contact localId="2" width="21" height="20">
+              <position x="50" y="10"/>
+              <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+              <variable>Nope</variable>
+            </contact>
+            <coil localId="3" width="21" height="20">
+              <position x="150" y="10"/>
+              <connectionPointIn><connection refLocalId="2"/></connectionPointIn>
+              <variable>A</variable>
+            </coil>
+          </LD>
+        </body>
+      </pou>
+    </pous>
+  </types>
+</project>
