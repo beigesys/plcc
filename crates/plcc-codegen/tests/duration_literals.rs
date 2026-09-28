@@ -54,3 +54,11 @@ END_PROGRAM
     let e = compile_error(src);
     assert!(e.contains("not a duration unit"), "{e}");
 }
+
+#[test]
+fn a_duration_beyond_64_bit_nanoseconds_is_an_error() {
+    // i64 nanoseconds end at about 106751 days; this used to saturate silently.
+    let src = "PROGRAM p VAR t : LTIME; END_VAR t := LTIME#200000d; END_PROGRAM";
+    let e = compile_error(src);
+    assert!(e.contains("does not fit"), "{e}");
+}

@@ -237,7 +237,13 @@ fn parse_time_literal_ns(s: &str) -> Result<i64, String> {
             };
             // Rounded, not truncated: `1.1 * 1e9` is 1100000000.0000002 and
             // `0.3 * 1e3` is 299.99999999999994.
-            ns += (val * multiplier).round() as i64;
+            let part = (val * multiplier).round();
+            if part >= i64::MAX as f64 {
+                return Err("the duration does not fit in 64-bit nanoseconds (about 106751 days)".into());
+            }
+            ns = ns
+                .checked_add(part as i64)
+                .ok_or("the duration does not fit in 64-bit nanoseconds (about 106751 days)")?;
         }
     }
     // Handle trailing number with no unit (assume ms for bare numbers)
