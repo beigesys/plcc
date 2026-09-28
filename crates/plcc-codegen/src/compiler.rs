@@ -4342,7 +4342,7 @@ impl<'ctx> Compiler<'ctx> {
     ) -> Option<BasicValueEnum<'ctx>> {
         match &expr.kind {
             ExpressionKind::IntegerLiteral(v) => Some(self.int_literal(*v).into()),
-            ExpressionKind::RealLiteral(v) => Some(self.context.f32_type().const_float(*v).into()),
+            ExpressionKind::RealLiteral(v) => Some(self.context.f64_type().const_float(*v).into()),
             ExpressionKind::BoolLiteral(v) => {
                 Some(self.context.i8_type().const_int(*v as u64, false).into())
             }
@@ -7246,9 +7246,13 @@ impl<'ctx> Compiler<'ctx> {
         }
         match &expr.kind {
             ExpressionKind::IntegerLiteral(v) => Ok(Some(self.int_literal(*v).into())),
+            // An untyped real literal is held as an LREAL and takes the type its
+            // context needs (IEC 61131-3 §6.3.3): stored into a REAL it is rounded
+            // once, combined with a REAL it becomes a REAL (`compile_binary_op`).
+            // Holding it as a REAL made `lr := 0.1` 0.10000000149 and
+            // `lr := 1.0E300` +inf.
             ExpressionKind::RealLiteral(v) => {
-                // Default to f32 (REAL) to match common IEC usage
-                Ok(Some(self.context.f32_type().const_float(*v).into()))
+                Ok(Some(self.context.f64_type().const_float(*v).into()))
             }
             ExpressionKind::BoolLiteral(v) => Ok(Some(
                 self.context.i8_type().const_int(*v as u64, false).into(),
@@ -7733,11 +7737,17 @@ impl<'ctx> Compiler<'ctx> {
             let target_fty = if left.is_float_value() && right.is_float_value() {
                 let lw = left.into_float_value().get_type();
                 let rw = right.into_float_value().get_type();
-                // Compare bit widths: f32=32, f64=64
-                if lw == self.context.f64_type() || rw == self.context.f64_type() {
+                let f32t = self.context.f32_type();
+                // An untyped real literal (held as LREAL) next to a REAL operand is
+                // a REAL: `2.0 * r` stays REAL arithmetic.
+                if (lw == f32t && left_ty.is_some() && right_ty.is_none())
+                    || (rw == f32t && right_ty.is_some() && left_ty.is_none())
+                {
+                    f32t
+                } else if lw == self.context.f64_type() || rw == self.context.f64_type() {
                     self.context.f64_type()
                 } else {
-                    self.context.f32_type()
+                    f32t
                 }
             } else if left.is_float_value() {
                 left.into_float_value().get_type()
@@ -7749,7 +7759,7 @@ impl<'ctx> Compiler<'ctx> {
                 let fv = left.into_float_value();
                 if fv.get_type() != target_fty {
                     self.builder
-                        .build_float_ext(fv, target_fty, "fext")
+                        .build_float_cast(fv, target_fty, "fcast")
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?
                 } else {
                     fv
@@ -7767,7 +7777,7 @@ impl<'ctx> Compiler<'ctx> {
                 let fv = right.into_float_value();
                 if fv.get_type() != target_fty {
                     self.builder
-                        .build_float_ext(fv, target_fty, "fext")
+                        .build_float_cast(fv, target_fty, "fcast")
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?
                 } else {
                     fv
