@@ -2,7 +2,7 @@
 #![allow(unused_assignments, unused_variables)]
 
 use crate::scope::{PouInfo, PouKind, Scope, SymbolTable, VarInfo};
-use crate::types::{IecType, TypeRegistry};
+use crate::types::{IecType, TypeRegistry, resolve_type_name};
 use miette::Diagnostic;
 use plcc_st::Span;
 use plcc_st::ast::*;
@@ -893,24 +893,32 @@ impl TypeChecker {
                 }
             }
             TypeSpecKind::Enum(spec) => {
-                let mut values = Vec::new();
-                for (i, v) in spec.values.iter().enumerate() {
+                // An enumerator without a value is the previous one plus one (the
+                // first is 0), per IEC 61131-3 §6.4.4.3 and CODESYS:
+                // `(Idle, Running := 5, Stopped)` makes Stopped 6. Numbering by
+                // position instead made it 2.
+                let mut values: Vec<(String, i64)> = Vec::new();
+                let mut next = 0i64;
+                for v in &spec.values {
                     let val = v
                         .value
                         .as_ref()
-                        .and_then(|e| {
-                            if let ExpressionKind::IntegerLiteral(n) = &e.kind {
-                                Some(*n as i64)
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap_or(i as i64);
+                        .and_then(|e| Self::enum_const(e, &values))
+                        .unwrap_or(next);
                     values.push((v.name.name.clone(), val));
+                    next = val.wrapping_add(1);
                 }
+                // `TYPE Color : DINT (Red, Green);` — the base type, INT by default
+                // (as in CODESYS).
+                let base_type = spec
+                    .base_type
+                    .as_ref()
+                    .and_then(|b| resolve_type_name(&b.name))
+                    .filter(|t| t.is_any_int() || t.is_any_bit())
+                    .unwrap_or(IecType::Int);
                 IecType::Enum {
                     name: String::new(),
-                    base_type: Box::new(IecType::Int),
+                    base_type: Box::new(base_type),
                     values,
                 }
             }
@@ -924,6 +932,28 @@ impl TypeChecker {
                     fields: resolved,
                 }
             }
+        }
+    }
+}
+
+impl TypeChecker {
+    /// The value of an enumerator's initializer: an integer literal, possibly
+    /// negated, parenthesized or typed (`INT#5`, `16#FF`), or an earlier
+    /// enumerator of the same type.
+    fn enum_const(e: &Expression, earlier: &[(String, i64)]) -> Option<i64> {
+        match &e.kind {
+            ExpressionKind::IntegerLiteral(n) => i64::try_from(*n).ok(),
+            ExpressionKind::Parenthesized(inner) => Self::enum_const(inner, earlier),
+            ExpressionKind::TypedLiteral { value, .. } => Self::enum_const(value, earlier),
+            ExpressionKind::UnaryOp {
+                op: UnaryOp::Neg,
+                operand,
+            } => Self::enum_const(operand, earlier).map(i64::wrapping_neg),
+            ExpressionKind::Identifier(id) => earlier
+                .iter()
+                .find(|(n, _)| n.eq_ignore_ascii_case(&id.name))
+                .map(|(_, v)| *v),
+            _ => None,
         }
     }
 }

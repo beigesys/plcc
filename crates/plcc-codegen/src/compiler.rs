@@ -19,6 +19,7 @@ use thiserror::Error;
 
 pub mod contract;
 mod convert;
+mod enums;
 mod image;
 pub use contract::{RuntimeContract, TaskOptions};
 
@@ -468,6 +469,8 @@ pub struct Compiler<'ctx> {
     /// Process image, AT bindings, tasks: the runtime contract (see `image.rs`,
     /// `contract.rs`).
     rt: image::ContractState<'ctx>,
+    /// Enumerators of every enumeration in the unit (see `enums.rs`).
+    enums: enums::EnumTable,
 }
 
 impl<'ctx> Compiler<'ctx> {
@@ -495,6 +498,7 @@ impl<'ctx> Compiler<'ctx> {
             current_state_ptr: None,
             no_value_cause: None,
             rt: image::ContractState::default(),
+            enums: enums::EnumTable::default(),
         }
     }
 
@@ -3319,7 +3323,11 @@ impl<'ctx> Compiler<'ctx> {
             let before = pending.len();
             let mut still = Vec::with_capacity(before);
             for td in pending {
-                let ty = self.resolve_type_spec(&td.type_spec);
+                let mut ty = self.resolve_type_spec(&td.type_spec);
+                if let IecType::Enum { name, .. } = &mut ty {
+                    *name = td.name.name.clone();
+                }
+                self.register_enum(&td.name.name, &ty);
                 let incomplete = Self::first_unresolved_in_layout(&ty);
                 // Register even a partially resolved type: it is what lets the *next*
                 // round make progress on whatever referenced it.
@@ -4958,7 +4966,12 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     fn resolve_type_spec(&mut self, spec: &TypeSpec) -> IecType {
-        self.type_checker.resolve_type_spec(spec)
+        let ty = self.type_checker.resolve_type_spec(spec);
+        // An inline enumeration (`x : (A, B, C);`) declares its enumerators here.
+        if matches!(spec.kind, TypeSpecKind::Enum(_)) {
+            self.register_enum("", &ty);
+        }
+        ty
     }
 
     /// Point `variables` at every field of a POU state struct.
@@ -6656,45 +6669,84 @@ impl<'ctx> Compiler<'ctx> {
             end_bb
         };
 
-        // Build switch — case label constants must match the selector's integer type
-        let sel_int_ty = self.int_operand(sel_val, "a CASE selector")?.get_type();
-        let mut cases: Vec<(
-            inkwell::values::IntValue<'ctx>,
-            inkwell::basic_block::BasicBlock<'ctx>,
-        )> = Vec::new();
+        // Test the labels branch by branch, first match wins. Each label is an
+        // ordinary comparison with the selector (so it takes the selector's
+        // signedness and width like any `=`), which is what lets a label be any
+        // constant expression: `-1`, `INT#5`, `16#FF`, an enumerator (`Idle`,
+        // `Mode#Idle`), a named CONSTANT. Only a bare integer literal used to be
+        // understood — every other label was dropped without a diagnostic, so its
+        // branch could never run — and a range became one switch case per value,
+        // which for `0..2000000000` never finished. LLVM turns the chain back into a
+        // switch where it can.
+        let sel_ty = self.rvalue_iec_type(selector);
+        // IEC and CODESYS: the selector is ANY_INT or an enumeration.
+        if !sel_val.is_int_value() {
+            self.int_operand(sel_val, "a CASE selector")?;
+        }
         let mut branch_blocks = Vec::new();
-
         for (i, branch) in branches.iter().enumerate() {
             let bb = self
                 .context
                 .append_basic_block(function, &format!("case_{i}"));
             branch_blocks.push(bb);
+            let mut cond: Option<inkwell::values::IntValue<'ctx>> = None;
             for label in &branch.labels {
-                match label {
-                    CaseLabel::Value(expr) => {
-                        if let ExpressionKind::IntegerLiteral(v) = &expr.kind {
-                            cases.push((sel_int_ty.const_int(*v as u64, true), bb));
-                        }
-                    }
+                let cmp = |this: &mut Self,
+                               e: &Expression,
+                               op: BinaryOp|
+                 -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+                    let v = this
+                        .compile_expression(e, function)?
+                        .ok_or_else(|| this.no_value_error("CASE label", e))?;
+                    let vty = this.rvalue_iec_type(e);
+                    let r = this.compile_binary_op(op, sel_val, sel_ty.as_ref(), v, vty.as_ref())?;
+                    this.int_operand(r, "a CASE label comparison")
+                };
+                let hit = match label {
+                    CaseLabel::Value(e) => cmp(self, e, BinaryOp::Equal)?,
                     CaseLabel::Range(lo, hi) => {
-                        if let (
-                            ExpressionKind::IntegerLiteral(lo_v),
-                            ExpressionKind::IntegerLiteral(hi_v),
-                        ) = (&lo.kind, &hi.kind)
-                        {
-                            for v in *lo_v..=*hi_v {
-                                cases.push((sel_int_ty.const_int(v as u64, true), bb));
-                            }
-                        }
+                        let ge = cmp(self, lo, BinaryOp::GreaterEqual)?;
+                        let le = cmp(self, hi, BinaryOp::LessEqual)?;
+                        self.builder
+                            .build_and(ge, le, "in_range")
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?
                     }
+                };
+                cond = Some(match cond {
+                    None => hit,
+                    Some(c) => self
+                        .builder
+                        .build_or(c, hit, "case_any")
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?,
+                });
+            }
+            let next = if i + 1 < branches.len() {
+                self.context
+                    .append_basic_block(function, &format!("case_test_{}", i + 1))
+            } else {
+                else_bb
+            };
+            match cond {
+                Some(c) => {
+                    self.builder
+                        .build_conditional_branch(c, bb, next)
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                }
+                None => {
+                    self.builder
+                        .build_unconditional_branch(next)
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                 }
             }
+            if i + 1 < branches.len() {
+                self.builder.position_at_end(next);
+            }
         }
-
-        let switch = self
-            .builder
-            .build_switch(self.int_operand(sel_val, "a CASE selector")?, else_bb, &cases)
-            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+        if branches.is_empty() {
+            self.builder
+                .build_unconditional_branch(else_bb)
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+        }
 
         // Compile branch bodies
         for (i, branch) in branches.iter().enumerate() {
@@ -6809,6 +6861,9 @@ impl<'ctx> Compiler<'ctx> {
     /// sign-extension, so it is deliberately conservative: `None` means "no static
     /// type", and the caller falls back to the destination's signedness.
     fn rvalue_iec_type(&self, expr: &Expression) -> Option<IecType> {
+        if let Ok(Some((_, ty))) = self.enum_constant_of(expr) {
+            return Some(ty);
+        }
         match &expr.kind {
             ExpressionKind::Identifier(_)
             | ExpressionKind::ArrayIndex { .. }
@@ -7373,6 +7428,9 @@ impl<'ctx> Compiler<'ctx> {
         expr: &Expression,
         function: FunctionValue<'ctx>,
     ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
+        if let Some((v, ty)) = self.enum_constant_of(expr)? {
+            return Ok(Some(self.enum_value_const(v, &ty)));
+        }
         match &expr.kind {
             ExpressionKind::IntegerLiteral(v) => Ok(Some(self.int_literal(*v).into())),
             ExpressionKind::RealLiteral(v) => {

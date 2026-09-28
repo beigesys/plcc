@@ -1267,28 +1267,39 @@ impl<'s> Parser<'s> {
         }
     }
 
-    /// Check if current position looks like a case label start:
-    /// integer/identifier followed by : or , (but not :=)
+    /// Whether the tokens at the current position are the label list of the next
+    /// CASE branch (`3:`, `1, 5..7:`, `Idle:`, `Color#Red:`, `-1:`, `INT#5:`) rather
+    /// than a statement of the current branch.
+    ///
+    /// Scans forward over tokens a label can contain until a `:`. Anything a label
+    /// cannot contain — `:=`, `;`, `(`, `[`, an operator — means a statement.
+    /// Recognizing only `<int|ident> :` made a `Color#Red:` label parse as a bare
+    /// statement followed by an unparseable `:`.
     fn is_case_label_start(&self) -> bool {
-        let tok = match self.ts.tokens.get(self.ts.pos) {
-            Some((t, _)) => t,
-            None => return false,
-        };
-        // Case labels are integers, identifiers, or enum values
-        let is_label_token = matches!(
-            tok,
-            Token::IntegerLiteral(_) | Token::Identifier | Token::True | Token::False
-        );
-        if !is_label_token {
-            return false;
+        let mut i = self.ts.pos;
+        let mut seen = 0;
+        while let Some((tok, _)) = self.ts.tokens.get(i) {
+            match tok {
+                Token::Colon => return seen > 0,
+                Token::IntegerLiteral(_)
+                | Token::True
+                | Token::False
+                | Token::Hash
+                | Token::Minus
+                | Token::Plus
+                | Token::Dot
+                | Token::DotDot
+                | Token::Comma => {}
+                t if Self::is_ident_like(t) || Self::is_type_keyword(t) => {}
+                _ => return false,
+            }
+            seen += 1;
+            if seen > 64 {
+                return false;
+            }
+            i += 1;
         }
-        // Look at what follows: must be :, ,, or ..
-        match self.ts.tokens.get(self.ts.pos + 1) {
-            Some((Token::Colon, _)) => true,
-            Some((Token::Comma, _)) => true,
-            Some((Token::DotDot, _)) => true,
-            _ => false,
-        }
+        false
     }
 
     fn parse_case_branch_body(&mut self) -> Vec<Statement> {
@@ -1303,12 +1314,28 @@ impl<'s> Parser<'s> {
             if Self::is_var_block_start(tok) {
                 break;
             }
+            let pos_before = self.ts.pos;
             match self.parse_statement() {
                 Some(stmt) => stmts.push(stmt),
                 None => {
-                    if self.ts.advance().is_none() {
+                    if self.ts.pos == pos_before && self.ts.advance().is_none() {
                         break;
                     }
+                }
+            }
+            // A statement that consumed nothing (an unexpected token such as a
+            // stray `:`) must not be retried forever: this loop once pushed empty
+            // statements until the process ran out of memory.
+            if self.ts.pos == pos_before {
+                let span = self.ts.peek_span();
+                if let Some((tok, _)) = self.ts.advance() {
+                    self.errors.push(ParseError::UnexpectedToken {
+                        expected: "a statement".into(),
+                        found: tok.to_string(),
+                        span: span.into(),
+                    });
+                } else {
+                    break;
                 }
             }
         }
