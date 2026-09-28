@@ -1734,6 +1734,31 @@ impl<'s> Parser<'s> {
         expr
     }
 
+    /// The value after `TYPE#`. The IEC grammar allows a sign there (`INT#-5`,
+    /// `REAL#+1.5`, Annex A `signed_integer`), which a bare primary does not accept.
+    fn parse_typed_literal_value(&mut self) -> Expression {
+        match self.ts.peek() {
+            Some(Token::Minus) => {
+                let start = self.ts.peek_span();
+                self.ts.advance();
+                let operand = self.parse_primary();
+                let span = start.merge(operand.span);
+                Expression {
+                    kind: ExpressionKind::UnaryOp {
+                        op: UnaryOp::Neg,
+                        operand: Box::new(operand),
+                    },
+                    span,
+                }
+            }
+            Some(Token::Plus) => {
+                self.ts.advance();
+                self.parse_primary()
+            }
+            _ => self.parse_primary(),
+        }
+    }
+
     fn parse_primary(&mut self) -> Expression {
         let _span = self.ts.peek_span();
 
@@ -1846,7 +1871,7 @@ impl<'s> Parser<'s> {
                 // Check for typed literal: TYPE#value
                 if self.ts.at(&Token::Hash) {
                     self.ts.advance(); // consume #
-                    let value = self.parse_primary();
+                    let value = self.parse_typed_literal_value();
                     let span = ident.span.merge(value.span);
                     Expression {
                         kind: ExpressionKind::TypedLiteral {
@@ -1870,7 +1895,7 @@ impl<'s> Parser<'s> {
                 let type_name = Ident::new(Self::type_keyword_name(&tok), tok_span);
                 if self.ts.at(&Token::Hash) {
                     self.ts.advance(); // consume #
-                    let value = self.parse_primary();
+                    let value = self.parse_typed_literal_value();
                     let span = tok_span.merge(value.span);
                     Expression {
                         kind: ExpressionKind::TypedLiteral {

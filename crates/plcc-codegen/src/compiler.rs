@@ -3435,6 +3435,10 @@ impl<'ctx> Compiler<'ctx> {
                 if let Some(init_expr) = init {
                     // Try to evaluate constant initializer
                     if let Some(val) = self.eval_const_initializer(init_expr, ty) {
+                        // At the field's width: `g : DINT := BYTE#5` (or a plain
+                        // literal narrower than its slot) must not mistype the
+                        // aggregate. Aggregates are already built at their type.
+                        let val = self.const_coerce(val, ty).unwrap_or(val);
                         const_vals.push(val);
                     } else {
                         const_vals.push(global_fields[i].const_zero());
@@ -4634,6 +4638,10 @@ impl<'ctx> Compiler<'ctx> {
             ExpressionKind::RealLiteral(v) => Some(self.context.f32_type().const_float(*v).into()),
             ExpressionKind::BoolLiteral(v) => {
                 Some(self.context.i8_type().const_int(*v as u64, false).into())
+            }
+            ExpressionKind::TypedLiteral { type_name, value } => {
+                let lit_ty = plcc_hir::types::resolve_type_name(&type_name.name)?;
+                self.typed_literal_const(&lit_ty, value)
             }
             // A VAR_GLOBAL array's aggregate becomes the global's constant contents;
             // there is no init function to store it from.
@@ -6474,6 +6482,10 @@ impl<'ctx> Compiler<'ctx> {
             | ExpressionKind::ArrayIndex { .. }
             | ExpressionKind::MemberAccess { .. } => self.lvalue_iec_type(expr),
             ExpressionKind::Parenthesized(inner) => self.rvalue_iec_type(inner),
+            // `DWORD#1` is a DWORD: unsigned, whatever the digits look like.
+            ExpressionKind::TypedLiteral { type_name, .. } => {
+                plcc_hir::types::resolve_type_name(&type_name.name)
+            }
             // Negation only makes sense on a signed value, and the result is signed
             // regardless of what went in. NOT preserves its operand's type.
             ExpressionKind::UnaryOp { op, operand } => match op {
@@ -7129,7 +7141,102 @@ impl<'ctx> Compiler<'ctx> {
                     .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                 Ok(Some(val))
             }
+            ExpressionKind::TypedLiteral { type_name, value } => {
+                self.compile_typed_literal(expr, &type_name.name, value, function)
+            }
             _ => self.no_value_here(expr),
+        }
+    }
+
+    /// The literal inside `TYPE#value`, as a compile-time number: an integer (from
+    /// an integer literal, a BOOL literal or a negated integer) or a real.
+    fn typed_literal_number(value: &Expression) -> Option<Result<i128, f64>> {
+        match &value.kind {
+            ExpressionKind::IntegerLiteral(v) => Some(Ok(*v)),
+            ExpressionKind::BoolLiteral(b) => Some(Ok(i128::from(*b))),
+            ExpressionKind::RealLiteral(r) => Some(Err(*r)),
+            ExpressionKind::Parenthesized(inner) => Self::typed_literal_number(inner),
+            ExpressionKind::UnaryOp {
+                op: UnaryOp::Neg,
+                operand,
+            } => match Self::typed_literal_number(operand)? {
+                Ok(v) => Some(Ok(v.checked_neg()?)),
+                Err(r) => Some(Err(-r)),
+            },
+            _ => None,
+        }
+    }
+
+    /// The constant for a numeric `TYPE#value` of elementary type `ty`, if `value`
+    /// is a number that type can hold (an integer for ANY_INT/ANY_BIT, an integer or
+    /// a real for ANY_REAL). No builder needed, so global initializers use it too.
+    fn typed_literal_const(
+        &self,
+        ty: &IecType,
+        value: &Expression,
+    ) -> Option<BasicValueEnum<'ctx>> {
+        let is_int = ty.is_any_int() || ty.is_any_bit() || matches!(ty, IecType::Char | IecType::Wchar);
+        match (self.iec_to_llvm_type(ty), Self::typed_literal_number(value)?) {
+            (BasicTypeEnum::IntType(it), Ok(v)) if is_int => {
+                // BOOL#1 / BOOL#TRUE is a truth value, not a bit pattern.
+                let v = if matches!(ty, IecType::Bool) {
+                    i128::from(v != 0)
+                } else {
+                    v
+                };
+                // Keep the low `width` bits ourselves: LLVM's constant constructor
+                // does not promise to truncate an out-of-range value.
+                let width = it.get_bit_width();
+                let bits = if width >= 64 {
+                    v as u64
+                } else {
+                    (v as u64) & ((1u64 << width) - 1)
+                };
+                Some(it.const_int(bits, false).into())
+            }
+            (BasicTypeEnum::FloatType(ft), Ok(v)) => Some(ft.const_float(v as f64).into()),
+            (BasicTypeEnum::FloatType(ft), Err(r)) => Some(ft.const_float(r).into()),
+            _ => None,
+        }
+    }
+
+    /// `TYPE#value` — a literal of an explicit elementary type (`DWORD#1`,
+    /// `BYTE#255`, `INT#-10`, `REAL#1`, `BOOL#1`).
+    ///
+    /// The constant is built at exactly the named type's width, and
+    /// [`Self::rvalue_iec_type`] reports that type, so `DWORD#16#FFFFFFFF` widens as
+    /// the unsigned 4294967295 and `SINT#-1` as -1. An integer that does not fit the
+    /// type keeps its low bits, as the standard's modular integer types do.
+    /// Duration, date and string literals already carry their type in the value
+    /// (`TIME#5s`, `STRING#'x'`), so their value is compiled as is.
+    fn compile_typed_literal(
+        &mut self,
+        expr: &Expression,
+        type_name: &str,
+        value: &Expression,
+        function: FunctionValue<'ctx>,
+    ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
+        let Some(ty) = plcc_hir::types::resolve_type_name(type_name) else {
+            // A user-defined type (an alias, an enum): the value carries no width of
+            // its own here, so compile it untyped.
+            return self.compile_expression(value, function);
+        };
+        if let Some(c) = self.typed_literal_const(&ty, value) {
+            return Ok(Some(c));
+        }
+        match (self.iec_to_llvm_type(&ty), Self::typed_literal_number(value)) {
+            (BasicTypeEnum::IntType(_), Some(Err(r)))
+                if !matches!(
+                    ty,
+                    IecType::Time | IecType::Ltime | IecType::Date | IecType::Tod | IecType::Dt
+                ) =>
+            {
+                Err(CodegenError::UnsupportedType(format!(
+                    "typed literal `{}`: {r} is not a value of the integer type {ty}",
+                    Self::describe_lvalue(expr)
+                )))
+            }
+            _ => self.compile_expression(value, function),
         }
     }
 
