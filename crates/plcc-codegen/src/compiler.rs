@@ -3356,7 +3356,8 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     /// The one REAL/LREAL → integer conversion. Every `REAL_TO_<int>`,
-    /// `LREAL_TO_<int>`, `TRUNC` and implicit REAL → integer store lowers here.
+    /// `LREAL_TO_<int>`, `TRUNC`, `REAL_TO_TIME` and implicit REAL → integer store
+    /// lowers here. Out-of-range values saturate and NaN is 0 (see below).
     ///
     /// `round`: round to nearest, halves away from zero (`llvm.round`), which is what
     /// CODESYS documents for REAL_TO_<type> — "for 1 to 4 after the decimal point,
@@ -3393,23 +3394,32 @@ impl<'ctx> Compiler<'ctx> {
         } else {
             fv
         };
+        // Saturating: an out-of-range value clamps to the target's range and NaN
+        // becomes 0 (`llvm.fpto[su]i.sat`). A plain fptosi/fptoui is poison out of
+        // range — undefined behaviour once the optimizer sees it — and CODESYS only
+        // promises "an undefined, target system-dependent value", so any defined
+        // answer conforms; saturation is the one that is the same on every target.
         let it = self.iec_to_llvm_type(target).into_int_type();
-        let unsigned = Self::widens_unsigned(target);
-        if it.get_bit_width() < 64 {
-            // Through i64, so the whole unsigned 32-bit range survives.
-            let wide = self
-                .builder
-                .build_float_to_signed_int(fv, self.context.i64_type(), "f_to_i64")
-                .map_err(llvm_err)?;
-            self.resize_int(wide, it, true)
-        } else if unsigned {
-            self.builder
-                .build_float_to_unsigned_int(fv, it, "f_to_u")
-                .map_err(llvm_err)
+        let name = if Self::widens_unsigned(target) {
+            "llvm.fptoui.sat"
         } else {
-            self.builder
-                .build_float_to_signed_int(fv, it, "f_to_i")
-                .map_err(llvm_err)
+            "llvm.fptosi.sat"
+        };
+        let intr = Intrinsic::find(name)
+            .ok_or_else(|| CodegenError::LlvmError(format!("intrinsic {name} not found")))?;
+        let decl = intr
+            .get_declaration(&self.module, &[it.into(), fv.get_type().into()])
+            .ok_or_else(|| CodegenError::LlvmError(format!("{name} declaration")))?;
+        match self
+            .builder
+            .build_call(decl, &[fv.into()], "f_to_int_sat")
+            .map_err(llvm_err)?
+            .try_as_basic_value()
+        {
+            inkwell::values::ValueKind::Basic(v) => Ok(v.into_int_value()),
+            inkwell::values::ValueKind::Instruction(_) => Err(CodegenError::LlvmError(format!(
+                "{name} returned no value"
+            ))),
         }
     }
 

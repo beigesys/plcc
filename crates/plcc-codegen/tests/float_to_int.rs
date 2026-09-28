@@ -150,3 +150,118 @@ END_PROGRAM
     let s = run(src);
     assert_eq!(i32::from_ne_bytes(s[0..4].try_into().unwrap()), 7);
 }
+
+// ---------------------------------------------------------------------------
+// Out of range: saturate, NaN → 0
+// ---------------------------------------------------------------------------
+//
+// CODESYS leaves an out-of-range result "undefined, target system-dependent" and
+// allows an exception. plcc saturates (llvm.fptosi.sat / llvm.fptoui.sat), which is
+// defined on every target; a plain fptosi is LLVM poison, i.e. undefined behaviour
+// once the optimizer sees it.
+
+#[test]
+fn out_of_range_saturates_signed() {
+    assert_eq!(
+        conv("REAL_TO_INT", &["1.0E6", "-1.0E6", "32767.4", "-32768.4"], false),
+        [32767, -32768, 32767, -32768]
+    );
+    assert_eq!(
+        conv("REAL_TO_SINT", &["300.0", "-300.0"], false),
+        [127, -128]
+    );
+    assert_eq!(
+        conv("REAL_TO_DINT", &["1.0E20", "-1.0E20"], false),
+        [i32::MAX as i64, i32::MIN as i64]
+    );
+    assert_eq!(
+        conv("LREAL_TO_LINT", &["1.0E30", "-1.0E30"], true),
+        [i64::MAX, i64::MIN]
+    );
+    assert_eq!(conv("TRUNC", &["1.0E20", "-1.0E20"], false), [i32::MAX as i64, i32::MIN as i64]);
+}
+
+#[test]
+fn out_of_range_saturates_unsigned() {
+    assert_eq!(
+        conv("REAL_TO_UDINT", &["-5.0", "1.0E10"], false),
+        [0, u32::MAX as i64]
+    );
+    assert_eq!(conv("REAL_TO_BYTE", &["-1.0", "256.0"], false), [0, 255]);
+    assert_eq!(conv("REAL_TO_WORD", &["70000.0"], false), [65535]);
+    // ULINT::MAX does not fit the LINT result slot; read it back as unsigned.
+    let v = conv("LREAL_TO_ULINT", &["-1.0", "1.0E30"], true);
+    assert_eq!((v[0], v[1] as u64), (0, u64::MAX));
+}
+
+#[test]
+fn nan_and_infinity() {
+    let src = r#"
+PROGRAM p
+VAR
+    a : LINT;
+    b : DINT;
+    c : INT;
+    d : UDINT;
+    e : LINT;
+    f : LINT;
+    z : REAL;
+    nan : REAL;
+    inf : LREAL;
+END_VAR
+    nan := z / z;
+    inf := 1.0 / REAL_TO_LREAL(z);
+    a := REAL_TO_LINT(nan);
+    b := REAL_TO_DINT(nan);
+    c := nan;
+    d := REAL_TO_UDINT(nan);
+    e := LREAL_TO_LINT(inf);
+    f := LREAL_TO_LINT(-inf);
+END_PROGRAM
+"#;
+    let s = run(src);
+    let a = i64::from_ne_bytes(s[0..8].try_into().unwrap());
+    let b = i32::from_ne_bytes(s[8..12].try_into().unwrap());
+    let c = i16::from_ne_bytes(s[12..14].try_into().unwrap());
+    let d = u32::from_ne_bytes(s[16..20].try_into().unwrap());
+    let e = i64::from_ne_bytes(s[24..32].try_into().unwrap());
+    let f = i64::from_ne_bytes(s[32..40].try_into().unwrap());
+    assert_eq!((a, b, c, d), (0, 0, 0, 0), "NaN converts to 0");
+    assert_eq!((e, f), (i64::MAX, i64::MIN), "infinities saturate");
+}
+
+#[test]
+fn implicit_store_saturates() {
+    let src = r#"
+PROGRAM p
+VAR
+    a : INT;
+    b : INT;
+    x : REAL := 1.0E6;
+END_VAR
+    a := x;
+    b := -x;
+END_PROGRAM
+"#;
+    let s = run(src);
+    let a = i16::from_ne_bytes(s[0..2].try_into().unwrap());
+    let b = i16::from_ne_bytes(s[2..4].try_into().unwrap());
+    assert_eq!((a, b), (32767, -32768));
+}
+
+#[test]
+fn saturation_holds_under_optimization() {
+    let src = r#"
+PROGRAM p
+VAR
+    a : LINT;
+    b : LINT;
+    x : REAL := 1.0E6;
+END_VAR
+    a := REAL_TO_INT(x);
+    b := REAL_TO_INT(3.0E9);
+END_PROGRAM
+"#;
+    let v = i64s(&run_opt(src, OptimizationLevel::Aggressive), 2);
+    assert_eq!(v, [32767, 32767]);
+}

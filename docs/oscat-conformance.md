@@ -62,9 +62,8 @@ Found and **not** fixed (semantics decisions, not one-liners):
 - ~~`REAL_TO_INT` / `REAL_TO_DINT` / `LREAL_TO_*` / assignment of a REAL to an integer
   **truncate**.~~ Fixed: they round to nearest, halves away from zero, as CODESYS does
   (`crates/plcc-codegen/tests/float_to_int.rs`; decision in codesys-compatibility.md).
-- Float-to-integer conversion uses a plain `fptosi`, which is LLVM *poison* for an
-  out-of-range value (`REAL_TO_INT(1.0E6)`), not a wrap or a saturation. Under
-  optimization that is undefined behaviour. `llvm.fptosi.sat` would pin it down.
+- ~~Float-to-integer conversion uses a plain `fptosi`, which is LLVM *poison* for an
+  out-of-range value.~~ Fixed: it saturates, NaN → 0 (`llvm.fpto[su]i.sat`).
 - `plcc compile` never runs the HIR type checker; `plcc check` does. The checker types a
   REAL literal as LREAL, so `x : REAL; x := 2.0 * x;` fails `plcc check` but compiles.
 
