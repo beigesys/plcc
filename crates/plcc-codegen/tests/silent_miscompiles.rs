@@ -779,6 +779,43 @@ END_PROGRAM
     assert_eq!(state[68], b'Q', "CHAR initializer");
 }
 
+#[test]
+fn string_assignment_between_lengths_stays_in_bounds() {
+    let src = r#"
+FUNCTION_BLOCK FB
+VAR_INPUT
+    name : STRING[4];
+END_VAR
+VAR_OUTPUT
+    guard : DINT := 77;
+END_VAR
+END_FUNCTION_BLOCK
+
+PROGRAM p
+VAR
+    a : STRING[3];
+    n : DINT := 5;
+    b : STRING[20] := 'hello world';
+    c : STRING[20];
+    k : DINT;
+    f : FB;
+    fname : STRING[4];
+END_VAR
+    a := b;
+    c := a;
+    f(name := b);
+    fname := f.name;
+    k := f.guard;
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(cstr(&state, 0), "hel", "truncated and NUL-terminated");
+    assert_eq!(dint(&state, 1), 5, "the variable after a STRING[3] is not overwritten");
+    assert_eq!(cstr(&state, 8), "hello world");
+    assert_eq!(cstr(&state, 29), "hel", "short into long");
+    assert_eq!(dint(&state, 52 / 4), 77, "FB input STRING[4] did not overrun");
+}
+
 // ---------------------------------------------------------------------------
 // Unsigned integers convert to REAL by their own signedness
 // ---------------------------------------------------------------------------

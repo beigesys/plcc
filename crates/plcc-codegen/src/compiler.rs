@@ -4396,6 +4396,37 @@ impl<'ctx> Compiler<'ctx> {
                 let iv = self.int_operand(val, "a pointer-to-integer store")?;
                 Ok(self.resize_int(iv, it, false)?.into())
             }
+            // STRING[n] into STRING[m] (and WSTRING): re-shape the buffer to the
+            // destination's length. Storing the source array as is wrote n+1 bytes
+            // into an m+1 byte slot — past the end of the variable, over whatever
+            // followed it, with no terminating NUL when n > m.
+            (BasicValueEnum::ArrayValue(av), BasicTypeEnum::ArrayType(at))
+                if matches!(ty, IecType::StringType { .. } | IecType::WstringType { .. })
+                    && av.get_type() != at =>
+            {
+                let src_len = av.get_type().len();
+                let dst_len = at.len();
+                if dst_len == 0 || av.get_type().get_element_type() != at.get_element_type() {
+                    return Err(CodegenError::UnsupportedType(format!(
+                        "cannot store a value of this string type into a {ty}"
+                    )));
+                }
+                let err = |e: inkwell::builder::BuilderError| CodegenError::LlvmError(e.to_string());
+                let mut out = at.const_zero();
+                // Characters 0..m, leaving the last slot as the NUL terminator.
+                for i in 0..src_len.min(dst_len - 1) {
+                    let ch = self
+                        .builder
+                        .build_extract_value(av, i, "strch")
+                        .map_err(err)?;
+                    out = self
+                        .builder
+                        .build_insert_value(out, ch, i, "strfit")
+                        .map_err(err)?
+                        .into_array_value();
+                }
+                Ok(out.into())
+            }
             _ => Ok(val),
         }
     }
