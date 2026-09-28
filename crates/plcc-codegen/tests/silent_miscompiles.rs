@@ -778,3 +778,33 @@ END_PROGRAM
     assert_eq!(dint(&state, 56 / 4), 7);
     assert_eq!(state[68], b'Q', "CHAR initializer");
 }
+
+// ---------------------------------------------------------------------------
+// Unsigned integers convert to REAL by their own signedness
+// ---------------------------------------------------------------------------
+
+#[test]
+fn unsigned_to_real_conversions() {
+    let src = r#"
+PROGRAM p
+VAR
+    r1 : REAL;
+    r2 : REAL;
+    r3 : REAL;
+    r4 : LREAL;
+    b : BYTE := 200;
+    w : WORD := 65000;
+    u : USINT := 250;
+END_VAR
+    r1 := b;
+    r2 := SQRT(b);
+    r3 := MAX(1.5, u);
+    r4 := w;
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(real(&state, 0), 200.0, "REAL := BYTE 200");
+    assert!((real(&state, 1) - 200f32.sqrt()).abs() < 1e-4, "SQRT(BYTE 200)");
+    assert_eq!(real(&state, 2), 250.0, "MAX(1.5, USINT 250)");
+    assert_eq!(lreal(&state, 2), 65000.0, "LREAL := WORD 65000");
+}

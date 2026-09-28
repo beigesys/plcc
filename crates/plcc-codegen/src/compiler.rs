@@ -513,7 +513,7 @@ impl<'ctx> Compiler<'ctx> {
                         arg_vals.len()
                     )));
                 }
-                let arg = self.ensure_float(arg_vals[0])?;
+                let arg = self.ensure_float(arg_vals[0], arg_tys.get(0).and_then(Option::as_ref))?;
                 let intrinsic_name = match uname.as_str() {
                     "SQRT" => "llvm.sqrt",
                     "SIN" => "llvm.sin",
@@ -634,8 +634,8 @@ impl<'ctx> Compiler<'ctx> {
                 let is_max = uname == "MAX";
 
                 if a.is_float_value() || b.is_float_value() {
-                    let fa = self.ensure_float(a)?;
-                    let fb = self.ensure_float(b)?;
+                    let fa = self.ensure_float(a, arg_tys.get(0).and_then(Option::as_ref))?;
+                    let fb = self.ensure_float(b, arg_tys.get(1).and_then(Option::as_ref))?;
                     let (fa, fb) = self.match_float_widths(fa, fb)?;
                     let pred = if is_max {
                         FloatPredicate::OGT
@@ -691,9 +691,9 @@ impl<'ctx> Compiler<'ctx> {
                 let mx = arg_vals[2];
 
                 if val.is_float_value() || mn.is_float_value() || mx.is_float_value() {
-                    let fmn = self.ensure_float(mn)?;
-                    let fval = self.ensure_float(val)?;
-                    let fmx = self.ensure_float(mx)?;
+                    let fmn = self.ensure_float(mn, arg_tys.get(0).and_then(Option::as_ref))?;
+                    let fval = self.ensure_float(val, arg_tys.get(1).and_then(Option::as_ref))?;
+                    let fmx = self.ensure_float(mx, arg_tys.get(2).and_then(Option::as_ref))?;
                     // One float width for all three, or a REAL bound against an LREAL
                     // input builds a mistyped compare.
                     let (fmn, fval) = self.match_float_widths(fmn, fval)?;
@@ -910,7 +910,7 @@ impl<'ctx> Compiler<'ctx> {
                         "REAL_TO_INT expects 1 argument".into(),
                     ));
                 }
-                let fv = self.ensure_float(arg_vals[0])?;
+                let fv = self.ensure_float(arg_vals[0], arg_tys.get(0).and_then(Option::as_ref))?;
                 let result = self
                     .builder
                     .build_float_to_signed_int(fv, self.context.i16_type(), "real_to_int")
@@ -923,7 +923,7 @@ impl<'ctx> Compiler<'ctx> {
                         "REAL_TO_DINT expects 1 argument".into(),
                     ));
                 }
-                let fv = self.ensure_float(arg_vals[0])?;
+                let fv = self.ensure_float(arg_vals[0], arg_tys.get(0).and_then(Option::as_ref))?;
                 let result = self
                     .builder
                     .build_float_to_signed_int(fv, self.context.i32_type(), "real_to_dint")
@@ -969,7 +969,7 @@ impl<'ctx> Compiler<'ctx> {
                 if arg_vals.len() != 1 {
                     return Err(CodegenError::LlvmError("TRUNC expects 1 argument".into()));
                 }
-                let fv = self.ensure_float(arg_vals[0])?;
+                let fv = self.ensure_float(arg_vals[0], arg_tys.get(0).and_then(Option::as_ref))?;
                 let result = self
                     .builder
                     .build_float_to_signed_int(fv, self.context.i32_type(), "trunc")
@@ -985,7 +985,7 @@ impl<'ctx> Compiler<'ctx> {
                         arg_vals.len()
                     )));
                 }
-                let arg = self.ensure_float(arg_vals[0])?;
+                let arg = self.ensure_float(arg_vals[0], arg_tys.get(0).and_then(Option::as_ref))?;
                 let fty = arg.get_type();
                 let is_f64 = fty == self.context.f64_type();
                 let c_name = match uname.as_str() {
@@ -1050,8 +1050,8 @@ impl<'ctx> Compiler<'ctx> {
                         arg_vals.len()
                     )));
                 }
-                let y = self.ensure_float(arg_vals[0])?;
-                let x = self.ensure_float(arg_vals[1])?;
+                let y = self.ensure_float(arg_vals[0], arg_tys.get(0).and_then(Option::as_ref))?;
+                let x = self.ensure_float(arg_vals[1], arg_tys.get(1).and_then(Option::as_ref))?;
                 let (y, x) = self.match_float_widths(y, x)?;
                 let fty = y.get_type();
                 let is_f64 = fty == self.context.f64_type();
@@ -1087,7 +1087,7 @@ impl<'ctx> Compiler<'ctx> {
                         arg_vals.len()
                     )));
                 }
-                let arg = self.ensure_float(arg_vals[0])?;
+                let arg = self.ensure_float(arg_vals[0], arg_tys.get(0).and_then(Option::as_ref))?;
                 let fty = arg.get_type();
                 let intr = Intrinsic::find("llvm.log10").ok_or_else(|| {
                     CodegenError::LlvmError("intrinsic llvm.log10 not found".into())
@@ -1121,7 +1121,7 @@ impl<'ctx> Compiler<'ctx> {
                         arg_vals.len()
                     )));
                 }
-                let arg = self.ensure_float(arg_vals[0])?;
+                let arg = self.ensure_float(arg_vals[0], arg_tys.get(0).and_then(Option::as_ref))?;
                 let fty = arg.get_type();
                 let intrinsic_name = match uname.as_str() {
                     "FLOOR" => "llvm.floor",
@@ -1244,7 +1244,7 @@ impl<'ctx> Compiler<'ctx> {
                         "REAL_TO_LREAL expects 1 argument".into(),
                     ));
                 }
-                let fv = self.ensure_float(arg_vals[0])?;
+                let fv = self.ensure_float(arg_vals[0], arg_tys.get(0).and_then(Option::as_ref))?;
                 let result = self
                     .builder
                     .build_float_cast(fv, self.context.f64_type(), "real_to_lreal")
@@ -1257,7 +1257,7 @@ impl<'ctx> Compiler<'ctx> {
                         "LREAL_TO_REAL expects 1 argument".into(),
                     ));
                 }
-                let fv = self.ensure_float(arg_vals[0])?;
+                let fv = self.ensure_float(arg_vals[0], arg_tys.get(0).and_then(Option::as_ref))?;
                 let result = self
                     .builder
                     .build_float_cast(fv, self.context.f32_type(), "lreal_to_real")
@@ -1272,7 +1272,7 @@ impl<'ctx> Compiler<'ctx> {
                         "{uname} expects 1 argument"
                     )));
                 }
-                let fv = self.ensure_float(arg_vals[0])?;
+                let fv = self.ensure_float(arg_vals[0], arg_tys.get(0).and_then(Option::as_ref))?;
                 let target = match uname.as_str() {
                     "LREAL_TO_INT" => self.context.i16_type(),
                     "LREAL_TO_DINT" => self.context.i32_type(),
@@ -2668,7 +2668,7 @@ impl<'ctx> Compiler<'ctx> {
         arg_vals: &[BasicValueEnum<'ctx>],
     ) -> Result<inkwell::values::FloatValue<'ctx>, CodegenError> {
         match arg_vals {
-            [v] => self.ensure_float(*v),
+            [v] => self.ensure_float(*v, None),
             _ => Err(CodegenError::LlvmError(format!(
                 "{uname} expects 1 argument"
             ))),
@@ -3220,17 +3220,19 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     /// Convert a value to float if it's an integer (int -> f32).
+    /// A math builtin's operand as floating point. An integer converts to REAL by
+    /// its own signedness: `SQRT(b)` with `b : BYTE := 200` is SQRT(200.0), where a
+    /// signed conversion made it SQRT(-56.0) = NaN.
     fn ensure_float(
         &self,
         val: BasicValueEnum<'ctx>,
+        ty: Option<&IecType>,
     ) -> Result<inkwell::values::FloatValue<'ctx>, CodegenError> {
         if val.is_float_value() {
             Ok(val.into_float_value())
         } else {
             let iv = self.int_operand(val, "a floating-point operand")?;
-            self.builder
-                .build_signed_int_to_float(iv, self.context.f32_type(), "itof")
-                .map_err(|e| CodegenError::LlvmError(e.to_string()))
+            self.int_to_float(iv, ty, self.context.f32_type())
         }
     }
 
@@ -4350,11 +4352,15 @@ impl<'ctx> Compiler<'ctx> {
                     Ok(tr.into())
                 }
             }
+            // By the source's signedness, like integer widening: `r := b;` with
+            // `b : BYTE := 200` is 200.0, not -56.0.
             (BasicValueEnum::IntValue(iv), BasicTypeEnum::FloatType(ft)) => {
-                let f = self
-                    .builder
-                    .build_signed_int_to_float(iv, ft, "initsitofp")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                let f = if unsigned && src.is_some() {
+                    self.builder.build_unsigned_int_to_float(iv, ft, "inituitofp")
+                } else {
+                    self.builder.build_signed_int_to_float(iv, ft, "initsitofp")
+                }
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                 Ok(f.into())
             }
             (BasicValueEnum::FloatValue(fv), BasicTypeEnum::FloatType(ft)) => {
