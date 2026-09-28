@@ -21,11 +21,47 @@ fn parse_real(lex: &logos::Lexer<Token>) -> Option<f64> {
     s.parse().ok()
 }
 
+/// Skip a block comment whose opener was just matched, allowing nesting of the
+/// same kind; an unterminated one is a lex error.
+fn block_comment(
+    lex: &mut logos::Lexer<Token>,
+    open: &[u8; 2],
+    close: &[u8; 2],
+) -> logos::FilterResult<(), ()> {
+    let rest = lex.remainder().as_bytes();
+    let mut depth = 1usize;
+    let mut i = 0;
+    while i + 1 < rest.len() {
+        if rest[i] == open[0] && rest[i + 1] == open[1] {
+            depth += 1;
+            i += 2;
+        } else if rest[i] == close[0] && rest[i + 1] == close[1] {
+            depth -= 1;
+            i += 2;
+            if depth == 0 {
+                lex.bump(i);
+                return logos::FilterResult::Skip;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    lex.bump(rest.len());
+    logos::FilterResult::Error(())
+}
+
 #[derive(Logos, Debug, Clone, PartialEq)]
 #[logos(skip r"[ \t\r\n]+")]
 #[logos(skip(r"//[^\n]*", allow_greedy = true))]
-#[logos(skip(r"\(\*([^*]|\*[^)])*\*\)", allow_greedy = true))]
 pub enum Token {
+    /// `(* ... *)`, nesting (IEC 61131-3 3rd ed. Table 5 feature 3, CODESYS,
+    /// OSCAT's `NESTEDCOMMENTS := 'Yes'`), and `/* ... */`. Skipped. A regex
+    /// could not nest, and the one used could not even end on `**)`:
+    /// `(* banner **)` was a lex error.
+    #[token("(*", |lex| block_comment(lex, b"(*", b"*)"))]
+    #[token("/*", |lex| block_comment(lex, b"/*", b"*/"))]
+    BlockComment,
+
     // ── Keywords: POUs ──
     #[token("PROGRAM", ignore(case))]
     Program,
