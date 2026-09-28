@@ -17,6 +17,9 @@ plcc compile program.st -o program.ll
 # Compile to native object
 plcc compile program.st -o program.o --target thumbv7em-unknown-none-eabi
 
+# Optimized (LLVM default<O2> pipeline; -O0 .. -O3, default -O0)
+plcc compile -O2 program.st -o program.o
+
 # Multi-file compilation
 plcc compile main.st motor.st utils.st -o system.o
 

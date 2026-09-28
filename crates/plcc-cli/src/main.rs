@@ -66,6 +66,11 @@ enum Commands {
         /// generation and stops the build on a type error
         #[arg(long)]
         no_typecheck: bool,
+        /// Optimization level: 0 (default) runs no IR optimization, 1-3 run
+        /// LLVM's `default<O1>`..`default<O3>` pipeline before emitting
+        #[arg(short = 'O', long = "opt-level", default_value_t = 0,
+              value_parser = clap::value_parser!(u8).range(0..=3))]
+        opt_level: u8,
     },
     /// Compile and JIT-run ST programs, optionally with Modbus TCP for SCADA
     Sim {
@@ -337,6 +342,7 @@ fn main() -> Result<()> {
             image_size,
             task_interval,
             no_typecheck,
+            opt_level,
         } => {
             if inputs.is_empty() {
                 eprintln!("Error: at least one input file is required");
@@ -371,6 +377,11 @@ fn main() -> Result<()> {
             compiler
                 .set_target(&target)
                 .map_err(|e| miette::miette!("{e}"))?;
+            if opt_level > 0 {
+                compiler
+                    .optimize(&target, opt_level)
+                    .map_err(|e| miette::miette!("{e}"))?;
+            }
 
             if emit_header.is_some() || emit_symbols.is_some() {
                 let contract = compiler

@@ -8251,6 +8251,20 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
+    /// Run LLVM's `default<O{level}>` pipeline over the module for `triple`
+    /// (which also stamps the triple and data layout, see [`Self::set_target`]).
+    pub fn optimize(&self, triple: &str, level: u8) -> Result<(), CodegenError> {
+        self.set_target(triple)?;
+        let machine = self.target_machine(triple)?;
+        self.module
+            .run_passes(
+                &format!("default<O{}>", level.min(3)),
+                &machine,
+                inkwell::passes::PassBuilderOptions::create(),
+            )
+            .map_err(|e| CodegenError::LlvmError(e.to_string()))
+    }
+
     /// Write bitcode to disk.
     pub fn emit_bitcode(&self, path: &Path) -> bool {
         self.module.write_bitcode_to_path(path)
