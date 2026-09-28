@@ -428,13 +428,6 @@ impl<'ctx> Compiler<'ctx> {
         self.variables.insert(key, (ptr, ty.clone()));
     }
 
-    /// Bind every VAR_GLOBAL AT variable over its (unused) slot in `plcc_globals`.
-    pub(crate) fn bind_global_at(&mut self) {
-        for (name, addr, ty, _) in self.rt.global_at.clone() {
-            self.bind_at(&name, &addr, &ty);
-        }
-    }
-
     /// `(byte pointer, bit)` if `name` is currently bound to a bit address.
     pub(crate) fn bit_binding(&self, name_upper: &str) -> Option<(PointerValue<'ctx>, u32)> {
         let (ptr, bit) = *self.rt.bit_vars.get(name_upper)?;

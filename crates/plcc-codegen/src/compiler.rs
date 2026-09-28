@@ -4264,10 +4264,20 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     /// Add global variable GEPs to the variables map.
+    ///
+    /// A name the POU already bound — a local, an input, a method parameter, the
+    /// FUNCTION result — shadows the global of the same name, as IEC scoping and
+    /// CODESYS require. Callers bind globals *after* their own variables, and the
+    /// globals used to overwrite them: with `VAR_GLOBAL x`, every `x` in every
+    /// program, FB, method and function read and wrote the global.
     fn add_globals_to_variables(&mut self) -> Result<(), CodegenError> {
+        let own: std::collections::HashSet<String> = self.variables.keys().cloned().collect();
         if let Some((global_val, global_struct, ref names)) = self.global_var.clone() {
             let global_ptr = global_val.as_pointer_value();
             for (i, (name, iec_ty)) in names.iter().enumerate() {
+                if own.contains(&name.to_uppercase()) {
+                    continue;
+                }
                 let ptr = self
                     .builder
                     .build_struct_gep(global_struct, global_ptr, i as u32, name)
@@ -4277,7 +4287,11 @@ impl<'ctx> Compiler<'ctx> {
             }
         }
         // AT globals are the image location, not their (unused) struct slot.
-        self.bind_global_at();
+        for (name, addr, ty, _) in self.rt.global_at.clone() {
+            if !own.contains(&name.to_uppercase()) {
+                self.bind_at(&name, &addr, &ty);
+            }
+        }
         Ok(())
     }
 
