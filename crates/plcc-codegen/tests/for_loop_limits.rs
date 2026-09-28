@@ -7,7 +7,7 @@
 //! variable holds the wrapped value CODESYS would leave in it.
 
 mod common;
-use common::{run, run_o3};
+use common::{compile_error, run, run_o3};
 
 const SRC: &str = r#"
 PROGRAM p
@@ -47,4 +47,12 @@ fn loops_at_type_limits_terminate() {
         assert_eq!(s.i64("c7"), 3);
         assert_eq!(s.i64("c8"), 2);
     }
+}
+
+#[test]
+fn a_constant_step_of_zero_is_an_error() {
+    let e = compile_error(
+        "PROGRAM p VAR i : INT; END_VAR FOR i := 1 TO 5 BY 0 DO END_FOR; END_PROGRAM",
+    );
+    assert!(e.contains("BY 0 never terminates"), "{e}");
 }

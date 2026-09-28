@@ -6347,6 +6347,14 @@ impl<'ctx> Compiler<'ctx> {
             _ if step_ty.as_ref().is_some_and(Self::widens_unsigned) => StepDir::Up,
             None => StepDir::Up,
             Some(by_expr) => match Self::const_int_of(by_expr) {
+                // `BY 0` never reaches the end value: an endless loop, which
+                // IEC 61131-3 makes an error.
+                Some(0) => {
+                    return Err(CodegenError::UnsupportedType(format!(
+                        "FOR `{}` ... BY 0 never terminates (source offset {})",
+                        variable.name, by_expr.span.start
+                    )));
+                }
                 Some(v) if v < 0 => StepDir::Down,
                 Some(_) => StepDir::Up,
                 None => {
