@@ -64,3 +64,24 @@ END_PROGRAM
         assert_eq!(s.u64("r4"), 0, "SHL of a BYTE drops the top bit");
     }
 }
+
+#[test]
+fn unary_minus_is_a_native_width_temporary() {
+    let src = r#"
+PROGRAM p
+VAR us : USINT := 200; w : WORD := 1; si : SINT := -128; d1 : DINT; d2 : DINT; d3 : DINT; nw : WORD; ns : SINT; END_VAR
+d1 := -us;
+d2 := -w;
+d3 := -si;
+nw := -w;
+ns := -si;
+END_PROGRAM
+"#;
+    for s in [run(src), run_o3(src)] {
+        assert_eq!(s.i64("d1"), -200);
+        assert_eq!(s.i64("d2"), -1);
+        assert_eq!(s.i64("d3"), 128);
+        assert_eq!(s.u64("nw"), 0xFFFF, "the store still wraps");
+        assert_eq!(s.i64("ns"), -128);
+    }
+}

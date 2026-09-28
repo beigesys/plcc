@@ -8389,9 +8389,19 @@ impl<'ctx> Compiler<'ctx> {
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?
                         .into())
                 } else if operand.is_int_value() {
+                    // A native-width temporary, like the binary operators: `-us`
+                    // with `us : USINT := 200` is -200, not 56.
+                    let iv = operand.into_int_value();
+                    let iv = if iv.get_type().get_bit_width() > 1
+                        && iv.get_type().get_bit_width() < 32
+                    {
+                        self.widen_to(iv, Self::signedness_of(operand_ty), self.context.i32_type())?
+                    } else {
+                        iv
+                    };
                     Ok(self
                         .builder
-                        .build_int_neg(operand.into_int_value(), "neg")
+                        .build_int_neg(iv, "neg")
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?
                         .into())
                 } else {
