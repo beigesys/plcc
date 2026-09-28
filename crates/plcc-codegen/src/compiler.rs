@@ -2737,6 +2737,9 @@ impl<'ctx> Compiler<'ctx> {
         let hoisted = contract::hoist_configuration_globals(unit);
         let unit = hoisted.as_ref().unwrap_or(unit);
         // EXTENDS: every derived FB/CLASS gets its base's variables and methods.
+        // VAR_INST method variables become hidden instance members.
+        let lifted = oop::lift_var_inst(unit);
+        let unit = lifted.as_ref().unwrap_or(unit);
         let (flattened, hierarchy) = oop::flatten_inheritance(unit)?;
         self.hierarchy = hierarchy;
         let unit = flattened.as_ref().unwrap_or(unit);

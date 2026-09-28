@@ -130,6 +130,9 @@ pub enum Token {
     VarExternal,
     #[token("VAR_TEMP", ignore(case))]
     VarTemp,
+    /// CODESYS: a METHOD variable that keeps its value between calls.
+    #[token("VAR_INST", ignore(case))]
+    VarInst,
     #[token("VAR_ACCESS", ignore(case))]
     VarAccess,
     #[token("VAR_CONFIG", ignore(case))]

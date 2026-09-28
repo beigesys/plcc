@@ -645,6 +645,7 @@ impl<'s> Parser<'s> {
                 | Token::VarTemp
                 | Token::VarAccess
                 | Token::VarConfig
+                | Token::VarInst
         )
     }
 
@@ -659,6 +660,7 @@ impl<'s> Parser<'s> {
             Some((Token::VarTemp, s)) => (VarBlockKind::VarTemp, s),
             Some((Token::VarAccess, s)) => (VarBlockKind::VarAccess, s),
             Some((Token::VarConfig, s)) => (VarBlockKind::VarConfig, s),
+            Some((Token::VarInst, s)) => (VarBlockKind::VarInst, s),
             _ => {
                 let s = self.ts.peek_span();
                 return VarBlock {

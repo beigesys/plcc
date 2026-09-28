@@ -118,6 +118,9 @@ pub enum VarBlockKind {
     VarTemp,
     VarAccess,
     VarConfig,
+    /// CODESYS `VAR_INST` in a METHOD: stored in the instance, so it keeps its
+    /// value between calls of the method.
+    VarInst,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -29,7 +29,6 @@ implemented (a compile error, "unknown function"). The opposite direction is:
 | Construct | Example | Status |
 |---|---|---|
 | PROPERTY (CODESYS GET/SET) | `PROPERTY Level : REAL` | not parsed |
-| `VAR_INST` in a METHOD | `METHOD M VAR_INST calls : INT; END_VAR` | not parsed |
 | Variable-length arrays | `VAR_IN_OUT a : ARRAY[*] OF INT; END_VAR`, `LOWER_BOUND(a, 1)` | not parsed |
 | WSTRING values in expressions | `LEN(ws)`, `CONCAT(ws, "x")`, `ws = "abc"` | WSTRING works in declarations, initializers and `:=` of literals/variables only |
 | A member of a call's result | `Add3(a, b).x` | "does not resolve to a field" |

@@ -240,3 +240,168 @@ impl<'ctx> Compiler<'ctx> {
         })
     }
 }
+
+/// CODESYS `VAR_INST`: a METHOD variable kept in the instance. Each is moved into
+/// its FB/CLASS as a hidden member (`__INST_<METHOD>_<NAME>`), and the method's
+/// uses renamed, so it keeps its value between calls. Returns `None` when the unit
+/// has none.
+pub(super) fn lift_var_inst(unit: &CompilationUnit) -> Option<CompilationUnit> {
+    let has = |ms: &[MethodDecl]| {
+        ms.iter()
+            .any(|m| m.var_blocks.iter().any(|b| b.kind == VarBlockKind::VarInst))
+    };
+    if !unit.declarations.iter().any(|d| match d {
+        Declaration::FunctionBlock(fb) => has(&fb.methods),
+        Declaration::Class(c) => has(&c.methods),
+        _ => false,
+    }) {
+        return None;
+    }
+    let mut out = unit.clone();
+    for d in &mut out.declarations {
+        let (blocks, methods) = match d {
+            Declaration::FunctionBlock(fb) => (&mut fb.var_blocks, &mut fb.methods),
+            Declaration::Class(c) => (&mut c.var_blocks, &mut c.methods),
+            _ => continue,
+        };
+        for m in methods.iter_mut() {
+            let mut map: HashMap<String, String> = HashMap::new();
+            let mut lifted = Vec::new();
+            for b in m.var_blocks.iter().filter(|b| b.kind == VarBlockKind::VarInst) {
+                let mut nb = b.clone();
+                nb.kind = VarBlockKind::Var;
+                for decl in &mut nb.declarations {
+                    let new = format!(
+                        "__INST_{}_{}",
+                        m.name.name.to_uppercase(),
+                        decl.name.name.to_uppercase()
+                    );
+                    map.insert(decl.name.name.to_uppercase(), new.clone());
+                    decl.name.name = new;
+                }
+                lifted.push(nb);
+            }
+            if map.is_empty() {
+                continue;
+            }
+            m.var_blocks.retain(|b| b.kind != VarBlockKind::VarInst);
+            rename_stmts(&mut m.body, &map);
+            blocks.extend(lifted);
+        }
+    }
+    Some(out)
+}
+
+fn rename_expr(e: &mut Expression, map: &HashMap<String, String>) {
+    match &mut e.kind {
+        ExpressionKind::Identifier(id) => {
+            if let Some(n) = map.get(&id.name.to_uppercase()) {
+                id.name = n.clone();
+            }
+        }
+        ExpressionKind::FunctionCall { callee, args } => {
+            rename_expr(callee, map);
+            for a in args {
+                rename_expr(&mut a.value, map);
+            }
+        }
+        ExpressionKind::BinaryOp { left, right, .. } => {
+            rename_expr(left, map);
+            rename_expr(right, map);
+        }
+        ExpressionKind::UnaryOp { operand, .. } => rename_expr(operand, map),
+        ExpressionKind::MemberAccess { object, .. } => rename_expr(object, map),
+        ExpressionKind::ArrayIndex { array, indices } => {
+            rename_expr(array, map);
+            for i in indices {
+                rename_expr(i, map);
+            }
+        }
+        ExpressionKind::Dereference(inner) | ExpressionKind::Parenthesized(inner) => {
+            rename_expr(inner, map)
+        }
+        _ => {}
+    }
+}
+
+fn rename_stmts(body: &mut [Statement], map: &HashMap<String, String>) {
+    for s in body {
+        match &mut s.kind {
+            StatementKind::Assignment { target, value } => {
+                rename_expr(target, map);
+                rename_expr(value, map);
+            }
+            StatementKind::FunctionCall { callee, args } => {
+                rename_expr(callee, map);
+                for a in args {
+                    rename_expr(&mut a.value, map);
+                }
+            }
+            StatementKind::If {
+                condition,
+                then_body,
+                elsif_branches,
+                else_body,
+            } => {
+                rename_expr(condition, map);
+                rename_stmts(then_body, map);
+                for b in elsif_branches {
+                    rename_expr(&mut b.condition, map);
+                    rename_stmts(&mut b.body, map);
+                }
+                if let Some(e) = else_body {
+                    rename_stmts(e, map);
+                }
+            }
+            StatementKind::Case {
+                selector,
+                branches,
+                else_body,
+            } => {
+                rename_expr(selector, map);
+                for b in branches {
+                    for l in &mut b.labels {
+                        match l {
+                            CaseLabel::Value(v) => rename_expr(v, map),
+                            CaseLabel::Range(a, c) => {
+                                rename_expr(a, map);
+                                rename_expr(c, map);
+                            }
+                        }
+                    }
+                    rename_stmts(&mut b.body, map);
+                }
+                if let Some(e) = else_body {
+                    rename_stmts(e, map);
+                }
+            }
+            StatementKind::For {
+                variable,
+                from,
+                to,
+                by,
+                body,
+            } => {
+                if let Some(n) = map.get(&variable.name.to_uppercase()) {
+                    variable.name = n.clone();
+                }
+                rename_expr(from, map);
+                rename_expr(to, map);
+                if let Some(b) = by {
+                    rename_expr(b, map);
+                }
+                rename_stmts(body, map);
+            }
+            StatementKind::While { condition, body } => {
+                rename_expr(condition, map);
+                rename_stmts(body, map);
+            }
+            StatementKind::Repeat { body, until } => {
+                rename_stmts(body, map);
+                rename_expr(until, map);
+            }
+            StatementKind::Return { value: Some(v) } => rename_expr(v, map),
+            _ => {}
+        }
+    }
+}

@@ -120,7 +120,7 @@ Complete IEC 61131-3:2013 (3rd edition) Structured Text:
 | Exponentiation `**` / EXPT | Full — per IEC Table 23/29 the result is ANY_REAL even for integer operands: an integer base converts to REAL (8/16-bit) or LREAL (32/64-bit, and bare literals), so `2 ** -1` is 0.5, `0 ** 0` is 1.0, `0 ** -1` is +inf; the result is converted back (rounded) when it is assigned to an integer variable (exact up to 2**53), and the type checker warns about that REAL-into-integer conversion, as CODESYS does |
 | POINTER TO, dereference (^), ADR, SIZEOF | Full — `pt^` as a value and a target, `pt^[i]`, `pt^.f`; CODESYS byte-addressed pointer arithmetic (`pt := pt + 1`) |
 | Pragmas, block/line comments | Full — `(* *)` nests, `/* */`, `//` |
-| CODESYS extensions | Bit access `x.3` / `x.%X3`, `S=` / `R=`, `REFERENCE TO` / `REF=` / `__ISVALIDREF`, calling a PROGRAM from another POU, the CODESYS parameter names of SR/RS/CTU/CTD/CTUD — see docs/codesys-compatibility.md; not yet: PROPERTY, VAR_INST, `ARRAY[*]` (docs/known-issues.md) |
+| CODESYS extensions | Bit access `x.3` / `x.%X3`, `S=` / `R=`, `REFERENCE TO` / `REF=` / `__ISVALIDREF`, calling a PROGRAM from another POU, the CODESYS parameter names of SR/RS/CTU/CTD/CTUD, `VAR_INST` — see docs/codesys-compatibility.md; not yet: PROPERTY, `ARRAY[*]` (docs/known-issues.md) |
 
 ## Standard Library
 
