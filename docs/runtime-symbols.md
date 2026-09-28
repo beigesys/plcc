@@ -8,6 +8,11 @@ needs from the outside world is imported as a plain C symbol. There are only two
 Link them in, and a plcc-compiled object runs on bare metal with no Rust runtime,
 no allocator and no OS.
 
+This page is about what the object *imports*. What it *exports* for the runtime
+to drive it — the `%I`/`%Q`/`%M` process image, the task table, `plcc_init()` /
+`plcc_run_task()`, the RETAIN regions and the `plcc_app` descriptor — is the
+runtime contract in [process-image.md](process-image.md).
+
 ## `plcc_monotonic_ns`
 
 ```c
@@ -60,6 +65,10 @@ Math is emitted as LLVM intrinsics (`llvm.sqrt`, `llvm.sin`, …). On most targe
 LLVM lowers those to inline instructions; on targets without hardware support it
 lowers them to libm calls (`sqrtf`, `sinf`, …), so a freestanding build that uses
 `SQRT`/`SIN`/`COS`/`EXP`/`LN` needs a libm — `compiler-rt` or `newlib` both work.
+
+Nothing else is imported. In particular the process image is *defined* by the
+object (`plcc_image_i/q/m`), not supplied by the runtime, and there is no
+allocator call anywhere: program instances are static.
 
 The standard function blocks are **not** runtime symbols. They are compiled from
 bundled ST source into the user's module (see `--stdlib`), so they inline and

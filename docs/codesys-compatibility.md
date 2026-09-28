@@ -209,6 +209,9 @@ be written down:
 - string index base
 - division by zero
 - overload resolution and implicit conversion tables
+- direct-address units (`%IW1`) and task defaults — decided: CODESYS size-indexed
+  addressing and a T#20ms `MainTask`; the full table is in
+  [process-image.md](process-image.md#implementation-defined-choices)
 
 **Default to CODESYS behaviour** — that is what real code expects — and maintain a table
 in this document of each divergence, which way we went, and why. Strict mode should warn

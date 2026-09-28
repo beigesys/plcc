@@ -63,7 +63,10 @@ This compiles to two native functions:
 - `main_init(state: *mut u8)` -- applies variable initializers
 - `main_scan(state: *mut u8)` -- executes one scan cycle
 
-The PLC runtime calls `init` once, then `scan` in a loop at the configured task rate.
+and, for every module, a program-independent runtime contract: a statically
+allocated instance of each program, the `%I`/`%Q`/`%M` process image, a task
+table, and `plcc_init()` / `plcc_run_task(i)`. A runtime written once against
+that contract runs any program -- see [Integration](#integration).
 
 ## Architecture
 
@@ -98,8 +101,8 @@ Complete IEC 61131-3:2013 (3rd edition) Structured Text:
 | STRUCT (incl. field default initializers), ENUM, UNION, subranges, alias types | Full |
 | IF/ELSIF/ELSE, CASE, FOR/TO/BY, WHILE, REPEAT/UNTIL | Full |
 | EXIT, CONTINUE, RETURN | Full |
-| CONFIGURATION, RESOURCE, TASK | Parsed |
-| Direct representation (%I, %Q, %M) | Parsed |
+| CONFIGURATION, RESOURCE, TASK, program instances (`PROGRAM p WITH t : Main (in := g, out => h)`) | Full -- compiled to a task table; INTERVAL, PRIORITY, SINGLE |
+| Direct representation (%I, %Q, %M), `AT` | Full -- CODESYS addressing (`%IW1` = bytes 2..3), bit/byte/word/dword/lword, in declarations and statements; partial `%I*` / VAR_CONFIG not yet |
 | Typed literals (INT#5, REAL#3.14) | Full |
 | Exponentiation `**` / EXPT | Full — per IEC Table 23/29 the result is ANY_REAL even for integer operands: an integer base converts to REAL (8/16-bit) or LREAL (32/64-bit, and bare literals), so `2 ** -1` is 0.5, `0 ** 0` is 1.0, `0 ** -1` is +inf; `plcc compile` converts the result back when it is assigned to an integer variable (exact up to 2**53), while `plcc check` reports that as the REAL-into-integer mismatch it is |
 | POINTER TO, dereference (^), ADR, SIZEOF | Full — `pt^` as a value and a target, `pt^[i]`, `pt^.f`; CODESYS byte-addressed pointer arithmetic (`pt := pt + 1`) |
@@ -197,23 +200,41 @@ A `LinuxSimulator` reference implementation is included for development and test
 
 ## Integration
 
-The compiler outputs native functions with C calling convention:
+Every compiled module exports the same runtime contract, so one runtime runs any
+program -- no per-program structs or I/O glue:
+
+```bash
+plcc compile plc.st -o plc.o --target thumbv7em-none-eabihf \
+    --emit-header plc.h --emit-symbols plc.json
+```
 
 ```c
-// Compiled from ST
-extern void main_init(void *state);
-extern void main_scan(void *state);
+#include "plc.h"            // image sizes, task table, layouts checked by _Static_assert
 
-// Your runtime loop
-struct main_state state = {0};
-main_init(&state);
+plcc_init();                // every program instance, statically allocated
 while (running) {
-    read_inputs(&process_image);
-    main_scan(&state);
-    write_outputs(&process_image);
-    watchdog_kick();
-    sleep_until_next_cycle();
+    read_field_inputs(plcc_image_i, PLCC_IMAGE_I_SIZE);    // latch %I
+    for (uint32_t t = 0; t < PLCC_TASK_COUNT; t++)
+        if (task_is_due(&plcc_tasks[t], now()))           // INTERVAL / SINGLE / PRIORITY
+            plcc_run_task(t);
+    write_field_outputs(plcc_image_q, PLCC_IMAGE_Q_SIZE); // flush %Q
 }
+```
+
+- `AT %IX0.3`, `%QW1`, `%MD4` variables *are* bytes of `plcc_image_i/q/m`
+  (CODESYS addressing, native byte order); the header lists every binding.
+- A `CONFIGURATION` becomes the task table; without one, every PROGRAM runs in
+  one cyclic `MainTask` (T#20ms, `--task-interval` to change).
+- `plcc_retain_regions[]` points at every RETAIN variable, for persistence.
+- `--emit-symbols` gives every variable's offset for HMI / Modbus mapping.
+- The per-program `main_init(state)` / `main_scan(state)` are still exported.
+
+The full contract, the addressing rules, the scheduling semantics and a complete
+C runtime loop are in [docs/process-image.md](docs/process-image.md). In Rust,
+`plcc_hal::scan::ScanCycle` runs a compiled module on any `plcc_hal::Platform`:
+
+```bash
+cargo run --example linux_sim -p plcc-hal -- plc.st --input 0=1 --scans 10
 ```
 
 ## Building
@@ -227,7 +248,7 @@ sudo apt install llvm-21-dev
 # Build
 cargo build --release
 
-# Run tests (560 tests)
+# Run tests (668 tests)
 cargo test
 
 # Run the Linux simulator example
@@ -236,7 +257,7 @@ cargo run --example linux_sim -p plcc-hal
 
 ## Test Suite
 
-560 tests across all crates, all passing:
+668 tests across all crates, all passing:
 
 | Suite | Tests | What's Verified |
 |-------|-------|-----------------|
@@ -244,7 +265,7 @@ cargo run --example linux_sim -p plcc-hal
 | Type checker | 22 | IEC type hierarchy, implicit conversions, negative tests |
 | Runtime (FBs + functions) | 64 | All 11 standard FBs, all math/selection/conversion functions |
 | Codegen (JIT execution) | 156 | Arithmetic, control flow, functions, FB instantiation, arrays, OOP, stdlib, IEC conformance, IR safety, cross-compile, real-world PLC patterns |
-| HAL (simulator) | 11 | Process image, clock, retain, diagnostics, scan cycle |
+| HAL (simulator + scan cycle) | 17 | Process image, clock, retain, diagnostics; compiled programs run end-to-end through the generic scan cycle (tasks, priorities, SINGLE, RETAIN warm start) |
 
 Real-world PLC patterns verified end-to-end with JIT execution:
 - PID controllers
