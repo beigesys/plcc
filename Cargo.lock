@@ -401,6 +401,7 @@ dependencies = [
  "miette",
  "plcc-codegen",
  "plcc-hir",
+ "plcc-plcopen",
  "plcc-runtime",
  "plcc-st",
  "plcc-stdlib",
