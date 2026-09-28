@@ -119,11 +119,12 @@ Complete IEC 61131-3:2013 (3rd edition) Structured Text:
 | Typed literals (INT#5, REAL#3.14) | Full |
 | Exponentiation `**` / EXPT | Full — per IEC Table 23/29 the result is ANY_REAL even for integer operands: an integer base converts to REAL (8/16-bit) or LREAL (32/64-bit, and bare literals), so `2 ** -1` is 0.5, `0 ** 0` is 1.0, `0 ** -1` is +inf; the result is converted back (rounded) when it is assigned to an integer variable (exact up to 2**53), and the type checker warns about that REAL-into-integer conversion, as CODESYS does |
 | POINTER TO, dereference (^), ADR, SIZEOF | Full — `pt^` as a value and a target, `pt^[i]`, `pt^.f`; CODESYS byte-addressed pointer arithmetic (`pt := pt + 1`) |
-| Pragmas, block/line comments | Full |
+| Pragmas, block/line comments | Full — `(* *)` nests, `/* */`, `//` |
+| CODESYS extensions | Bit access `x.3` / `x.%X3`, `S=` / `R=`, `REFERENCE TO` / `REF=` / `__ISVALIDREF`, calling a PROGRAM from another POU, the CODESYS parameter names of SR/RS/CTU/CTD/CTUD — see docs/codesys-compatibility.md; not yet: PROPERTY, VAR_INST, `ARRAY[*]` (docs/known-issues.md) |
 
 ## Standard Library
 
-**85+ functions** callable from ST code:
+**150+ functions** callable from ST code:
 
 | Category | Functions |
 |----------|-----------|
@@ -135,6 +136,7 @@ Complete IEC 61131-3:2013 (3rd edition) Structured Text:
 | Memory | ADR, SIZEOF |
 | String | LEN, CONCAT (2 or more inputs), LEFT, RIGHT, MID, INSERT, DELETE, FIND, REPLACE, and `=` `<>` `<` `<=` `>` `>=` on STRING — usable anywhere in an expression, nested, with literal arguments; results are truncated to the destination's length. WSTRING values are supported in declarations and assignments only |
 | Time | ADD_TIME, SUB_TIME, MUL_TIME, DIV_TIME (and the L- variants), ADD_TOD_TIME, ADD_DT_TIME, SUB_DATE_DATE, SUB_TOD_TIME, SUB_TOD_TOD, SUB_DT_TIME, SUB_DT_DT, CONCAT_DATE_TOD, CONCAT_DATE, CONCAT_TOD, CONCAT_DT, DAY_OF_WEEK, CODESYS `TIME()`; operators `DT - DT`, `DT + TIME`, `TOD + TIME`, `DATE - DATE` |
+| STRING conversions | `<int/bit/BOOL>_TO_STRING`, `STRING_TO_<int/BOOL>`, `REAL_TO_STRING`, `LREAL_TO_STRING`, `STRING_TO_REAL`, `STRING_TO_LREAL`, `TIME_TO_STRING`, `LTIME_TO_STRING`, `DATE_TO_STRING`, `TOD_TO_STRING`, `DT_TO_STRING` (the REAL and TIME/date ones are written in ST and compiled in only when used) |
 | Type conversion | `<SRC>_TO_<DST>` between every pair of non-string elementary types (BOOL, bit strings, integers, REAL/LREAL, TIME/LTIME, DATE/TOD/DT and their L- forms, CHAR/WCHAR), and the overloaded `TO_<DST>`. REAL → integer rounds (halves away from zero) and saturates. TIME and TOD convert as milliseconds, DATE and DT as seconds since 1970-01-01, LTIME/LTOD/LDATE/LDT as nanoseconds (CODESYS units) |
 
 **10 standard function blocks**, per IEC 61131-3 section 2.5.2:
