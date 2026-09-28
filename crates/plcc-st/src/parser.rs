@@ -1138,10 +1138,7 @@ impl<'s> Parser<'s> {
                 if self.ts.eat(&Token::Assign).is_some() {
                     // Assignment
                     let value = self.parse_expression();
-                    let end = self
-                        .ts
-                        .eat(&Token::Semicolon)
-                        .unwrap_or(self.ts.peek_span());
+                    let end = self.expect_statement_end();
                     Some(Statement {
                         kind: StatementKind::Assignment {
                             target: expr,
@@ -1151,10 +1148,7 @@ impl<'s> Parser<'s> {
                     })
                 } else {
                     // Expression statement (function call or bare expression)
-                    let end = self
-                        .ts
-                        .eat(&Token::Semicolon)
-                        .unwrap_or(self.ts.peek_span());
+                    let end = self.expect_statement_end();
                     match expr.kind {
                         ExpressionKind::FunctionCall { callee, args } => Some(Statement {
                             kind: StatementKind::FunctionCall {
@@ -1178,6 +1172,28 @@ impl<'s> Parser<'s> {
                 }
             }
         }
+    }
+
+    /// The `;` that ends an assignment or call statement. A missing one is an
+    /// error (as in CODESYS): accepting it silently let `t := T#-1.5s;` — before
+    /// negative durations lexed — parse as `t := T#-1.5` followed by a separate
+    /// statement `s;`.
+    fn expect_statement_end(&mut self) -> Span {
+        if let Some(span) = self.ts.eat(&Token::Semicolon) {
+            return span;
+        }
+        let span = self.ts.peek_span();
+        let found = self
+            .ts
+            .peek()
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "end of input".into());
+        self.errors.push(ParseError::UnexpectedToken {
+            found,
+            expected: "';' after the statement".into(),
+            span: span.into(),
+        });
+        span
     }
 
     fn parse_if_statement(&mut self) -> Statement {
