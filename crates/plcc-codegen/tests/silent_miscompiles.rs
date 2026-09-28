@@ -349,6 +349,49 @@ END_PROGRAM
 }
 
 #[test]
+fn not_usint_is_bitwise_at_8_bits() {
+    let src = r#"
+PROGRAM p
+VAR
+    r1 : DINT;
+    r2 : DINT;
+    u : USINT := 16#0F;
+END_VAR
+    r1 := NOT u;
+    u := NOT u;
+    r2 := u;
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(dint(&state, 0), 0xF0, "NOT USINT#16#0F = 16#F0");
+    assert_eq!(dint(&state, 1), 0xF0);
+}
+
+#[test]
+fn usint_and_uint_wrap_at_their_iec_width() {
+    let src = r#"
+PROGRAM p
+VAR
+    r1 : DINT;
+    r2 : DINT;
+    u8 : USINT := 200;
+    u16 : UINT := 65000;
+END_VAR
+    u8 := u8 + 100;
+    u16 := u16 + 1000;
+    r1 := u8;
+    r2 := u16;
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(dint(&state, 0), 44, "USINT 200 + 100 wraps to 44");
+    assert_eq!(dint(&state, 1), 464, "UINT 65000 + 1000 wraps to 464");
+    // Layout: { i32 r1, i32 r2, i8 u8, pad, i16 u16 }
+    assert_eq!(state[8], 44, "USINT occupies one byte");
+    assert_eq!(u16::from_ne_bytes([state[10], state[11]]), 464);
+}
+
+#[test]
 fn not_bool_stays_logical() {
     let src = r#"
 PROGRAM p

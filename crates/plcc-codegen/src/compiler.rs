@@ -4939,9 +4939,14 @@ impl<'ctx> Compiler<'ctx> {
     fn iec_to_llvm_type(&self, ty: &IecType) -> BasicTypeEnum<'ctx> {
         match ty {
             IecType::Bool => self.context.i8_type().into(), // i8 for memory-safe layout
-            IecType::Sint | IecType::Byte => self.context.i8_type().into(),
-            IecType::Int | IecType::Word | IecType::Usint => self.context.i16_type().into(),
-            IecType::Dint | IecType::Dword | IecType::Uint | IecType::Udint => {
+            // USINT/UINT are 8/16 bits like their signed siblings. They used to be
+            // stored one size up (i16/i32), so USINT 200 + 100 was 300 instead of
+            // wrapping to 44, NOT USINT#16#0F was 16#FFF0, and the host-visible
+            // layout of any POU with a USINT/UINT field disagreed with IEC sizes.
+            // Unsignedness is carried by the IEC type, not the width.
+            IecType::Sint | IecType::Byte | IecType::Usint => self.context.i8_type().into(),
+            IecType::Int | IecType::Word | IecType::Uint => self.context.i16_type().into(),
+            IecType::Dint | IecType::Dword | IecType::Udint => {
                 self.context.i32_type().into()
             }
             IecType::Lint | IecType::Lword | IecType::Ulint => self.context.i64_type().into(),

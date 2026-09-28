@@ -105,14 +105,13 @@ END_PROGRAM
 
 #[test]
 fn any_unsigned_widening_into_signed_accumulators() {
-    // This backend stores USINT in i16 and UINT in i32 — one size up — so only the
-    // USINT->DINT and UDINT->LINT steps are actual widenings.
-    // { i16 u8v, i32 u16v, i32 u32v, i32 a, i32 b, i64 c }
+    // USINT is i8 and UINT i16, the IEC sizes.
+    // { i8 u8v, pad, i16 u16v, i32 u32v, i32 a, i32 b, i64 c }
     let state = jit_scan(ANY_UNSIGNED, "uwiden");
-    assert_eq!(read_i32(&state, 12), 255, "USINT 255 widened into DINT");
-    assert_eq!(read_i32(&state, 16), 65535, "UINT 65535 into DINT");
+    assert_eq!(read_i32(&state, 8), 255, "USINT 255 widened into DINT");
+    assert_eq!(read_i32(&state, 12), 65535, "UINT 65535 into DINT");
     assert_eq!(
-        read_i64(&state, 24),
+        read_i64(&state, 16),
         4294967295,
         "UDINT 16#FFFFFFFF widened into LINT"
     );
