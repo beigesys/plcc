@@ -3180,7 +3180,94 @@ impl<'ctx> Compiler<'ctx> {
                 });
             }
         }
+        // `IN : BOOL R_EDGE`: the input's previous value and its edge-detected
+        // value, appended so declared fields keep their indices.
+        for block in var_blocks.iter().filter(|b| b.kind == VarBlockKind::VarInput) {
+            for decl in block.declarations.iter().filter(|d| d.edge.is_some()) {
+                for prefix in ["__EDGE_M_", "__EDGE_Q_"] {
+                    fields.push(PouField {
+                        name: format!("{prefix}{}", decl.name.name.to_uppercase()),
+                        declared: IecType::Bool,
+                        stored: IecType::Bool,
+                        is_in_out: false,
+                        block: Some(VarBlockKind::Var),
+                        at: None,
+                    });
+                }
+            }
+        }
         fields
+    }
+
+    /// On entry to an FB body: re-initialize every VAR_TEMP (IEC 61131-3: a
+    /// temporary is initialized on every call; it used to keep its value from the
+    /// previous call, so `tmp : INT := 5; tmp := tmp + 1;` counted up across
+    /// scans), and evaluate `R_EDGE` / `F_EDGE` inputs: the body sees the edge, the
+    /// raw input stays what the caller passed. The qualifier used to be ignored,
+    /// so an `R_EDGE` input read TRUE on every scan the signal was high.
+    fn emit_fb_entry(
+        &mut self,
+        var_blocks: &[VarBlock],
+        function: FunctionValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let err = |e: inkwell::builder::BuilderError| CodegenError::LlvmError(e.to_string());
+        for block in var_blocks.iter().filter(|b| b.kind == VarBlockKind::VarTemp) {
+            for decl in &block.declarations {
+                let Some((ptr, ty)) = self.variables.get(&decl.name.name.to_uppercase()).cloned()
+                else {
+                    continue;
+                };
+                let llvm_ty = self.iec_to_llvm_type(&ty);
+                self.builder.build_store(ptr, llvm_ty.const_zero()).map_err(err)?;
+                self.emit_field_inits(ptr, &decl.type_spec, function)?;
+                if let Some(init) = &decl.initializer {
+                    self.emit_decl_initializer(ptr, &ty, init, function)?;
+                }
+            }
+        }
+        let i8t = self.context.i8_type();
+        for block in var_blocks.iter().filter(|b| b.kind == VarBlockKind::VarInput) {
+            for decl in &block.declarations {
+                let Some(edge) = decl.edge else {
+                    continue;
+                };
+                let key = decl.name.name.to_uppercase();
+                let (Some((raw_p, _)), Some((m_p, _)), Some((q_p, _))) = (
+                    self.variables.get(&key).cloned(),
+                    self.variables.get(&format!("__EDGE_M_{key}")).cloned(),
+                    self.variables.get(&format!("__EDGE_Q_{key}")).cloned(),
+                ) else {
+                    continue;
+                };
+                let raw = self.builder.build_load(i8t, raw_p, "edge_in").map_err(err)?.into_int_value();
+                let raw = self
+                    .builder
+                    .build_int_compare(IntPredicate::NE, raw, i8t.const_zero(), "edge_raw")
+                    .map_err(err)?;
+                let m = self.builder.build_load(i8t, m_p, "edge_m").map_err(err)?.into_int_value();
+                let m = self
+                    .builder
+                    .build_int_compare(IntPredicate::NE, m, i8t.const_zero(), "edge_mb")
+                    .map_err(err)?;
+                let q = match edge {
+                    EdgeKind::Rising => {
+                        let not_m = self.builder.build_not(m, "not_m").map_err(err)?;
+                        self.builder.build_and(raw, not_m, "r_edge").map_err(err)?
+                    }
+                    EdgeKind::Falling => {
+                        let not_raw = self.builder.build_not(raw, "not_raw").map_err(err)?;
+                        self.builder.build_and(not_raw, m, "f_edge").map_err(err)?
+                    }
+                };
+                let q8 = self.builder.build_int_z_extend(q, i8t, "edge_q").map_err(err)?;
+                self.builder.build_store(q_p, q8).map_err(err)?;
+                let raw8 = self.builder.build_int_z_extend(raw, i8t, "edge_raw8").map_err(err)?;
+                self.builder.build_store(m_p, raw8).map_err(err)?;
+                // In the body, the input's name means the edge.
+                self.variables.insert(key, (q_p, IecType::Bool));
+            }
+        }
+        Ok(())
     }
 
     /// The formal parameters of a FUNCTION or METHOD, in calling-convention order.
@@ -4695,6 +4782,8 @@ impl<'ctx> Compiler<'ctx> {
         self.current_state_ptr = Some(state_ptr);
 
         self.bind_state_fields(struct_type, state_ptr, &fields)?;
+        self.current_pou = None;
+        self.emit_fb_entry(&prog.var_blocks, function)?;
 
         // Add global variables
         self.add_globals_to_variables()?;
@@ -4907,6 +4996,7 @@ impl<'ctx> Compiler<'ctx> {
         self.current_state_ptr = Some(state_ptr);
         self.bind_state_fields(struct_type, state_ptr, &fields)?;
         self.bind_this_super(&fb.name.name, None, state_ptr, function)?;
+        self.emit_fb_entry(&fb.var_blocks, function)?;
 
         // Add global variables
         self.add_globals_to_variables()?;

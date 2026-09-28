@@ -740,7 +740,7 @@ impl<'ctx> Compiler<'ctx> {
                     base,
                     idx,
                     f,
-                    flags[j],
+                    flags.get(j).copied().unwrap_or(false),
                     out,
                     depth + 1,
                 );
