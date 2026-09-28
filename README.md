@@ -106,7 +106,7 @@ Complete IEC 61131-3:2013 (3rd edition) Structured Text:
 
 ## Standard Library
 
-**65+ functions** callable from ST code:
+**85+ functions** callable from ST code:
 
 | Category | Functions |
 |----------|-----------|
@@ -114,9 +114,10 @@ Complete IEC 61131-3:2013 (3rd edition) Structured Text:
 | Rounding | TRUNC, FLOOR, CEIL, ROUND |
 | Selection | MIN, MAX, LIMIT, SEL |
 | Bit ops | SHL, SHR, ROL, ROR |
-| String | LEN, CONCAT, LEFT, RIGHT, MID, FIND |
+| String | LEN, CONCAT, LEFT, RIGHT, MID, FIND, REPLACE |
 | Time | ADD_TIME, SUB_TIME, MUL_TIME, DIV_TIME |
-| Type conversion | 40+ variants: INT_TO_REAL, REAL_TO_INT, BYTE_TO_WORD, BOOL_TO_DINT, etc. |
+| Type conversion | 60+ variants: INT_TO_REAL, REAL_TO_INT, BYTE_TO_WORD, BOOL_TO_DINT, REAL_TO_DWORD, DWORD_TO_REAL, etc. |
+| TIME conversion (milliseconds) | TIME_TO_DWORD, TIME_TO_UDINT, TIME_TO_DINT, TIME_TO_REAL, TIME_TO_LREAL, DWORD_TO_TIME, UDINT_TO_TIME, DINT_TO_TIME, REAL_TO_TIME, LREAL_TO_TIME |
 
 **10 standard function blocks**, per IEC 61131-3 section 2.5.2:
 

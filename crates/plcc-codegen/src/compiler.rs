@@ -42,6 +42,38 @@ enum StepDir<'ctx> {
     Runtime(inkwell::values::IntValue<'ctx>),
 }
 
+/// TIME is stored in nanoseconds; its numeric conversions speak milliseconds.
+const NS_PER_MS: u64 = 1_000_000;
+
+/// Conversion builtins whose result type codegen names, so the value widens by the
+/// right signedness when it lands somewhere wider: `TIME_TO_DWORD` of 3e9 ms stored
+/// into a LINT is 3e9, not a negative number.
+const TYPED_CONVERSIONS: &[&str] = &[
+    "TIME_TO_DWORD",
+    "TIME_TO_UDINT",
+    "TIME_TO_DINT",
+    "TIME_TO_REAL",
+    "TIME_TO_LREAL",
+    "DWORD_TO_TIME",
+    "UDINT_TO_TIME",
+    "DINT_TO_TIME",
+    "REAL_TO_TIME",
+    "LREAL_TO_TIME",
+    "REAL_TO_DWORD",
+    "REAL_TO_UDINT",
+    "LREAL_TO_DWORD",
+    "LREAL_TO_UDINT",
+    "DWORD_TO_REAL",
+    "WORD_TO_REAL",
+    "DWORD_TO_LREAL",
+    "UDINT_TO_LREAL",
+    "INT_TO_DWORD",
+    "INT_TO_UDINT",
+    "UINT_TO_INT",
+    "DWORD_TO_BYTE",
+    "BOOL_TO_DWORD",
+];
+
 /// Parse a TIME literal string (e.g., "T#100ms", "T#1s500ms", "T#1h30m") into nanoseconds.
 fn parse_time_literal_ns(s: &str) -> i64 {
     let s = s.trim();
@@ -1446,6 +1478,124 @@ impl<'ctx> Compiler<'ctx> {
                 Ok(Some(result.into()))
             }
 
+            // --- TIME <-> integer / float, in milliseconds ---
+            //
+            // TIME is held as i64 nanoseconds, but the IEC/CODESYS convention for a
+            // TIME converted to or from a number is milliseconds: OSCAT stores
+            // durations as raw ms in a DWORD (`DWORD_TO_TIME(T_PLC_MS())`). Integer
+            // results truncate toward zero, as every float-to-int conversion here does.
+            "TIME_TO_DWORD" | "TIME_TO_UDINT" | "TIME_TO_DINT" => {
+                let t = self.time_arg_ns(&uname, &arg_vals)?;
+                let ms = self
+                    .builder
+                    .build_int_signed_div(
+                        t,
+                        self.context.i64_type().const_int(NS_PER_MS, false),
+                        "ms",
+                    )
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                let v = self.resize_int(ms, self.context.i32_type(), true)?;
+                Ok(Some(v.into()))
+            }
+            "TIME_TO_REAL" | "TIME_TO_LREAL" => {
+                let t = self.time_arg_ns(&uname, &arg_vals)?;
+                let f64_ty = self.context.f64_type();
+                let ns = self
+                    .builder
+                    .build_signed_int_to_float(t, f64_ty, "ns_f")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                let ms = self
+                    .builder
+                    .build_float_div(ns, f64_ty.const_float(NS_PER_MS as f64), "ms_f")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                if uname == "TIME_TO_REAL" {
+                    let r = self
+                        .builder
+                        .build_float_trunc(ms, self.context.f32_type(), "ms_real")
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    Ok(Some(r.into()))
+                } else {
+                    Ok(Some(ms.into()))
+                }
+            }
+            "DWORD_TO_TIME" | "UDINT_TO_TIME" | "DINT_TO_TIME" => {
+                let iv = self.single_int_arg(&uname, &arg_vals)?;
+                // DWORD/UDINT are unsigned: 16#FFFF_FFFF ms is ~49.7 days, not -1 ms.
+                let signed = uname == "DINT_TO_TIME";
+                let iv = self.resize_int(iv, self.context.i32_type(), signed)?;
+                let wide = self.resize_int(iv, self.context.i64_type(), signed)?;
+                let ns = self
+                    .builder
+                    .build_int_mul(
+                        wide,
+                        self.context.i64_type().const_int(NS_PER_MS, false),
+                        "ns",
+                    )
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(Some(ns.into()))
+            }
+            "REAL_TO_TIME" | "LREAL_TO_TIME" => {
+                let f = self.single_float_arg(&uname, &arg_vals)?;
+                let f64_ty = self.context.f64_type();
+                let f = if f.get_type() == f64_ty {
+                    f
+                } else {
+                    self.builder
+                        .build_float_ext(f, f64_ty, "ms_ext")
+                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                };
+                let ns = self
+                    .builder
+                    .build_float_mul(f, f64_ty.const_float(NS_PER_MS as f64), "ns_f")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                let ns = self
+                    .builder
+                    .build_float_to_signed_int(ns, self.context.i64_type(), "ns")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(Some(ns.into()))
+            }
+
+            // --- Float to 32-bit unsigned ---
+            // Truncates toward zero like REAL_TO_DINT. Goes through i64 so the whole
+            // unsigned range survives (`fptosi` to i32 would be poison above 2^31,
+            // `fptoui` poison below zero); a negative input wraps modulo 2^32.
+            "REAL_TO_DWORD" | "REAL_TO_UDINT" | "LREAL_TO_DWORD" | "LREAL_TO_UDINT" => {
+                let f = self.single_float_arg(&uname, &arg_vals)?;
+                let wide = self
+                    .builder
+                    .build_float_to_signed_int(f, self.context.i64_type(), "f_to_i64")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                let v = self.resize_int(wide, self.context.i32_type(), true)?;
+                Ok(Some(v.into()))
+            }
+
+            // --- Unsigned int to float ---
+            "DWORD_TO_REAL" | "WORD_TO_REAL" | "DWORD_TO_LREAL" | "UDINT_TO_LREAL" => {
+                let iv = self.single_int_arg(&uname, &arg_vals)?;
+                let fty = if uname.ends_with("_LREAL") {
+                    self.context.f64_type()
+                } else {
+                    self.context.f32_type()
+                };
+                let r = self
+                    .builder
+                    .build_unsigned_int_to_float(iv, fty, &uname.to_lowercase())
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(Some(r.into()))
+            }
+
+            // --- Integer resize, by the source's signedness ---
+            "INT_TO_DWORD" | "INT_TO_UDINT" | "UINT_TO_INT" | "DWORD_TO_BYTE" | "BOOL_TO_DWORD" => {
+                let iv = self.single_int_arg(&uname, &arg_vals)?;
+                let (target, signed) = match uname.as_str() {
+                    "INT_TO_DWORD" | "INT_TO_UDINT" => (self.context.i32_type(), true),
+                    "UINT_TO_INT" => (self.context.i16_type(), false),
+                    "DWORD_TO_BYTE" => (self.context.i8_type(), false),
+                    _ => (self.context.i32_type(), false),
+                };
+                Ok(Some(self.resize_int(iv, target, signed)?.into()))
+            }
+
             // String functions that return STRING are handled as special cases
             // in compile_statement (Assignment), not here. CONCAT, LEFT, RIGHT, MID
             // need a destination pointer which is only available at the assignment level.
@@ -2483,6 +2633,357 @@ impl<'ctx> Compiler<'ctx> {
         function
     }
 
+    /// Bring an integer to `target`'s width: extend by `signed`, else truncate.
+    fn resize_int(
+        &self,
+        iv: inkwell::values::IntValue<'ctx>,
+        target: inkwell::types::IntType<'ctx>,
+        signed: bool,
+    ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+        let (sw, tw) = (iv.get_type().get_bit_width(), target.get_bit_width());
+        let r = if sw == tw {
+            return Ok(iv);
+        } else if sw > tw {
+            self.builder.build_int_truncate(iv, target, "rsz")
+        } else if signed {
+            self.builder.build_int_s_extend(iv, target, "rsz")
+        } else {
+            self.builder.build_int_z_extend(iv, target, "rsz")
+        };
+        r.map_err(|e| CodegenError::LlvmError(e.to_string()))
+    }
+
+    /// The one integer argument of a conversion builtin.
+    fn single_int_arg(
+        &self,
+        uname: &str,
+        arg_vals: &[BasicValueEnum<'ctx>],
+    ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+        match arg_vals {
+            [BasicValueEnum::IntValue(iv)] => Ok(*iv),
+            [_] => Err(CodegenError::LlvmError(format!(
+                "{uname} expects an integer argument"
+            ))),
+            _ => Err(CodegenError::LlvmError(format!(
+                "{uname} expects 1 argument"
+            ))),
+        }
+    }
+
+    /// The one floating-point argument of a conversion builtin. An integer is
+    /// accepted and converted (signed), as a literal like `0` often arrives that way.
+    fn single_float_arg(
+        &self,
+        uname: &str,
+        arg_vals: &[BasicValueEnum<'ctx>],
+    ) -> Result<inkwell::values::FloatValue<'ctx>, CodegenError> {
+        match arg_vals {
+            [v] => self.ensure_float(*v),
+            _ => Err(CodegenError::LlvmError(format!(
+                "{uname} expects 1 argument"
+            ))),
+        }
+    }
+
+    /// The one TIME argument of a conversion builtin, as i64 nanoseconds.
+    fn time_arg_ns(
+        &self,
+        uname: &str,
+        arg_vals: &[BasicValueEnum<'ctx>],
+    ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+        let iv = self.single_int_arg(uname, arg_vals)?;
+        self.resize_int(iv, self.context.i64_type(), true)
+    }
+
+    /// A STRING argument as a pointer to its bytes: a variable's storage, or a
+    /// private constant for a string literal (`REPLACE(s, '', 1, pos)`).
+    fn string_arg_ptr(
+        &mut self,
+        expr: &Expression,
+        function: FunctionValue<'ctx>,
+        func_name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        if let ExpressionKind::StringLiteral(s) = &expr.kind {
+            let g = self
+                .builder
+                .build_global_string_ptr(s, "strlit")
+                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+            return Ok(g.as_pointer_value());
+        }
+        self.compile_lvalue_with_fn(expr, function)?.ok_or_else(|| {
+            CodegenError::LlvmError(format!(
+                "{func_name}: `{}` is not a STRING variable or literal",
+                Self::describe_lvalue(expr)
+            ))
+        })
+    }
+
+    /// An integer argument of a string builtin (a length or position), as i32.
+    fn string_int_arg(
+        &mut self,
+        expr: &Expression,
+        function: FunctionValue<'ctx>,
+        func_name: &str,
+    ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+        let v = self.compile_expression(expr, function)?.ok_or_else(|| {
+            CodegenError::LlvmError(format!(
+                "{func_name}: failed to compile `{}`",
+                Self::describe_lvalue(expr)
+            ))
+        })?;
+        let BasicValueEnum::IntValue(iv) = v else {
+            return Err(CodegenError::LlvmError(format!(
+                "{func_name}: `{}` must be an integer",
+                Self::describe_lvalue(expr)
+            )));
+        };
+        let signed = !Self::widens_unsigned_opt(self.rvalue_iec_type(expr).as_ref());
+        self.resize_int(iv, self.context.i32_type(), signed)
+    }
+
+    fn widens_unsigned_opt(ty: Option<&IecType>) -> bool {
+        ty.is_some_and(Self::widens_unsigned)
+    }
+
+    /// Emit, into the current block, a loop copying `src[start..end)` onto
+    /// `buf[*k..]`, stopping early at a NUL in `src` or when `*k` reaches `limit`.
+    /// Leaves the builder at the loop's exit.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_bounded_copy(
+        &self,
+        function: FunctionValue<'ctx>,
+        buf: PointerValue<'ctx>,
+        k_ptr: PointerValue<'ctx>,
+        i_ptr: PointerValue<'ctx>,
+        src: PointerValue<'ctx>,
+        start: inkwell::values::IntValue<'ctx>,
+        end: inkwell::values::IntValue<'ctx>,
+        limit: inkwell::values::IntValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let err = |e: inkwell::builder::BuilderError| CodegenError::LlvmError(e.to_string());
+        let i8_ty = self.context.i8_type();
+        let i32_ty = self.context.i32_type();
+        let i64_ty = self.context.i64_type();
+        let head = self.context.append_basic_block(function, "copy_head");
+        let body = self.context.append_basic_block(function, "copy_body");
+        let exit = self.context.append_basic_block(function, "copy_exit");
+
+        self.builder.build_store(i_ptr, start).map_err(err)?;
+        self.builder.build_unconditional_branch(head).map_err(err)?;
+
+        self.builder.position_at_end(head);
+        let i = self
+            .builder
+            .build_load(i32_ty, i_ptr, "i")
+            .map_err(err)?
+            .into_int_value();
+        let k = self
+            .builder
+            .build_load(i32_ty, k_ptr, "k")
+            .map_err(err)?
+            .into_int_value();
+        let in_range = self
+            .builder
+            .build_int_compare(IntPredicate::SLT, i, end, "in_range")
+            .map_err(err)?;
+        let has_room = self
+            .builder
+            .build_int_compare(IntPredicate::SLT, k, limit, "has_room")
+            .map_err(err)?;
+        // `i` never exceeds the source's length here — `end` is clamped to it, or
+        // the NUL stops the loop — so this load stays inside the string.
+        let i64v = self
+            .builder
+            .build_int_s_extend(i, i64_ty, "i64")
+            .map_err(err)?;
+        let src_ch = unsafe {
+            self.builder
+                .build_in_bounds_gep(i8_ty, src, &[i64v], "src_ch")
+        }
+        .map_err(err)?;
+        let ch = self
+            .builder
+            .build_load(i8_ty, src_ch, "ch")
+            .map_err(err)?
+            .into_int_value();
+        let not_nul = self
+            .builder
+            .build_int_compare(IntPredicate::NE, ch, i8_ty.const_zero(), "not_nul")
+            .map_err(err)?;
+        let go = self
+            .builder
+            .build_and(in_range, has_room, "go")
+            .map_err(err)?;
+        let go = self.builder.build_and(go, not_nul, "go2").map_err(err)?;
+        self.builder
+            .build_conditional_branch(go, body, exit)
+            .map_err(err)?;
+
+        self.builder.position_at_end(body);
+        let k64 = self
+            .builder
+            .build_int_s_extend(k, i64_ty, "k64")
+            .map_err(err)?;
+        let dst_ch = unsafe {
+            self.builder
+                .build_in_bounds_gep(i8_ty, buf, &[k64], "dst_ch")
+        }
+        .map_err(err)?;
+        self.builder.build_store(dst_ch, ch).map_err(err)?;
+        let one = i32_ty.const_int(1, false);
+        let k1 = self.builder.build_int_add(k, one, "k1").map_err(err)?;
+        let i1 = self.builder.build_int_add(i, one, "i1").map_err(err)?;
+        self.builder.build_store(k_ptr, k1).map_err(err)?;
+        self.builder.build_store(i_ptr, i1).map_err(err)?;
+        self.builder.build_unconditional_branch(head).map_err(err)?;
+
+        self.builder.position_at_end(exit);
+        Ok(())
+    }
+
+    /// Get or create `plcc_replace(dest, in1, in2, l: i32, p: i32, max_len: i32)`:
+    /// IEC `REPLACE(IN1, IN2, L, P)` — IN1 with the L characters starting at 1-based
+    /// position P replaced by IN2.
+    ///
+    /// P is clamped into `1..=LEN(IN1)+1` and L to what IN1 has left, so a position
+    /// past the end appends and nothing ever reads beyond IN1's terminator. The
+    /// result is built in a scratch buffer and copied to `dest` last, because the
+    /// idiomatic call writes over its own input: `s := REPLACE(s, '', 1, pos)`.
+    fn get_or_create_replace_fn(&self) -> Result<FunctionValue<'ctx>, CodegenError> {
+        if let Some(f) = self.module.get_function("plcc_replace") {
+            return Ok(f);
+        }
+        let err = |e: inkwell::builder::BuilderError| CodegenError::LlvmError(e.to_string());
+        let i8_ty = self.context.i8_type();
+        let i32_ty = self.context.i32_type();
+        let i64_ty = self.context.i64_type();
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let fn_type = self.context.void_type().fn_type(
+            &[
+                ptr_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+                i32_ty.into(),
+                i32_ty.into(),
+                i32_ty.into(),
+            ],
+            false,
+        );
+        let function = self.module.add_function("plcc_replace", fn_type, None);
+        let saved_block = self.builder.get_insert_block();
+
+        let param = |n: u32| {
+            function
+                .get_nth_param(n)
+                .ok_or_else(|| CodegenError::LlvmError("plcc_replace: missing param".into()))
+        };
+        let dest = param(0)?.into_pointer_value();
+        let in1 = param(1)?.into_pointer_value();
+        let in2 = param(2)?.into_pointer_value();
+        let l = param(3)?.into_int_value();
+        let p = param(4)?.into_int_value();
+        let max_len = param(5)?.into_int_value();
+
+        let entry = self.context.append_basic_block(function, "entry");
+        self.builder.position_at_end(entry);
+        let buf = self
+            .builder
+            .build_array_alloca(i8_ty, max_len, "buf")
+            .map_err(err)?;
+        let k_ptr = self.builder.build_alloca(i32_ty, "k").map_err(err)?;
+        let i_ptr = self.builder.build_alloca(i32_ty, "i").map_err(err)?;
+        self.builder
+            .build_store(k_ptr, i32_ty.const_zero())
+            .map_err(err)?;
+
+        let strlen_fn = self.get_or_create_strlen_fn();
+        let n1 = match self
+            .builder
+            .build_call(strlen_fn, &[in1.into()], "n1")
+            .map_err(err)?
+            .try_as_basic_value()
+        {
+            inkwell::values::ValueKind::Basic(v) => v.into_int_value(),
+            _ => {
+                return Err(CodegenError::LlvmError(
+                    "plcc_strlen returned no value".into(),
+                ));
+            }
+        };
+        let n1 = self
+            .builder
+            .build_int_z_extend(n1, i32_ty, "n1_32")
+            .map_err(err)?;
+
+        let smax = |a, b, name: &str| -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+            let c = self
+                .builder
+                .build_int_compare(IntPredicate::SGT, a, b, name)
+                .map_err(err)?;
+            Ok(self
+                .builder
+                .build_select(c, a, b, name)
+                .map_err(err)?
+                .into_int_value())
+        };
+        let smin = |a, b, name: &str| -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+            let c = self
+                .builder
+                .build_int_compare(IntPredicate::SLT, a, b, name)
+                .map_err(err)?;
+            Ok(self
+                .builder
+                .build_select(c, a, b, name)
+                .map_err(err)?
+                .into_int_value())
+        };
+        let zero = i32_ty.const_zero();
+        let one = i32_ty.const_int(1, false);
+        let p0 = self.builder.build_int_sub(p, one, "p0").map_err(err)?;
+        let p0 = smax(p0, zero, "p0_lo")?;
+        let p0 = smin(p0, n1, "p0_hi")?;
+        let lc = smax(l, zero, "l_lo")?;
+        let tail = self.builder.build_int_add(p0, lc, "tail").map_err(err)?;
+        let tail = smin(tail, n1, "tail_hi")?;
+        let limit = self
+            .builder
+            .build_int_sub(max_len, one, "limit")
+            .map_err(err)?;
+        let no_end = i32_ty.const_int(i32::MAX as u64, false);
+
+        self.emit_bounded_copy(function, buf, k_ptr, i_ptr, in1, zero, p0, limit)?;
+        self.emit_bounded_copy(function, buf, k_ptr, i_ptr, in2, zero, no_end, limit)?;
+        self.emit_bounded_copy(function, buf, k_ptr, i_ptr, in1, tail, n1, limit)?;
+
+        let k = self
+            .builder
+            .build_load(i32_ty, k_ptr, "k_end")
+            .map_err(err)?
+            .into_int_value();
+        let k64 = self
+            .builder
+            .build_int_s_extend(k, i64_ty, "k64")
+            .map_err(err)?;
+        let nul =
+            unsafe { self.builder.build_in_bounds_gep(i8_ty, buf, &[k64], "nul") }.map_err(err)?;
+        self.builder
+            .build_store(nul, i8_ty.const_zero())
+            .map_err(err)?;
+        let size = self
+            .builder
+            .build_int_add(k64, i64_ty.const_int(1, false), "size")
+            .map_err(err)?;
+        self.builder
+            .build_memmove(dest, 1, buf, 1, size)
+            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+        self.builder.build_return(None).map_err(err)?;
+
+        if let Some(bb) = saved_block {
+            self.builder.position_at_end(bb);
+        }
+        Ok(function)
+    }
+
     /// Try to handle string function assignments like `result := CONCAT(a, b)`.
     /// Returns true if the assignment was handled as a string function call.
     fn try_compile_string_assignment(
@@ -2501,7 +3002,10 @@ impl<'ctx> Compiler<'ctx> {
         };
 
         // Only handle known string functions
-        if !matches!(func_name.as_str(), "CONCAT" | "LEFT" | "RIGHT" | "MID") {
+        if !matches!(
+            func_name.as_str(),
+            "CONCAT" | "LEFT" | "RIGHT" | "MID" | "REPLACE"
+        ) {
             return Ok(false);
         }
 
@@ -2529,6 +3033,34 @@ impl<'ctx> Compiler<'ctx> {
         let max_len_val = i32_ty.const_int(max_len as u64, false);
 
         match func_name.as_str() {
+            "REPLACE" => {
+                // REPLACE(IN1, IN2, L, P)
+                if args.len() != 4 {
+                    return Err(CodegenError::LlvmError(
+                        "REPLACE expects 4 arguments (IN1, IN2, L, P)".into(),
+                    ));
+                }
+                let in1 = self.string_arg_ptr(&args[0].value, function, "REPLACE")?;
+                let in2 = self.string_arg_ptr(&args[1].value, function, "REPLACE")?;
+                let l = self.string_int_arg(&args[2].value, function, "REPLACE")?;
+                let p = self.string_int_arg(&args[3].value, function, "REPLACE")?;
+                let replace_fn = self.get_or_create_replace_fn()?;
+                self.builder
+                    .build_call(
+                        replace_fn,
+                        &[
+                            dest_ptr.into(),
+                            in1.into(),
+                            in2.into(),
+                            l.into(),
+                            p.into(),
+                            max_len_val.into(),
+                        ],
+                        "",
+                    )
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(true)
+            }
             "CONCAT" => {
                 if args.len() != 2 {
                     return Err(CodegenError::LlvmError("CONCAT expects 2 arguments".into()));
@@ -5886,6 +6418,10 @@ impl<'ctx> Compiler<'ctx> {
                         Self::arith_result_type(arg_ty(0), arg_ty(1)),
                         arg_ty(2),
                     ),
+                    n if TYPED_CONVERSIONS.contains(&n) => n
+                        .rsplit("_TO_")
+                        .next()
+                        .and_then(plcc_hir::types::resolve_type_name),
                     _ => None,
                 }
             }
