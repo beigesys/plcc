@@ -270,11 +270,11 @@ cargo run --example linux_sim -p plcc-hal
 
 ## Test Suite
 
-668 tests across all crates, all passing:
+803 tests across all crates, all passing:
 
 | Suite | Tests | What's Verified |
 |-------|-------|-----------------|
-| Parser (unit + fixtures + comprehensive) | 75 | Every grammar construct, error recovery, OSCAT corpus 98.6% |
+| Parser (unit + fixtures + comprehensive) | 75 | Every grammar construct, error recovery; all 559 OSCAT files parse, and the whole corpus compiles in one invocation (docs/oscat-conformance.md) |
 | Type checker | 22 | IEC type hierarchy, implicit conversions, negative tests |
 | Runtime (FBs + functions) | 64 | All 11 standard FBs, all math/selection/conversion functions |
 | Codegen (JIT execution) | 156 | Arithmetic, control flow, functions, FB instantiation, arrays, OOP, stdlib, IEC conformance, IR safety, cross-compile, real-world PLC patterns |

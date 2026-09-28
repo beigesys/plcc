@@ -1,22 +1,45 @@
 # What blocks OSCAT
 
-Measured with the debug `plcc` (634 workspace tests passing), compiling each of the 559
-`tests/external/oscat/*.EXP` files individually with the default `--stdlib`, 20s timeout,
-4 GiB cap, sequentially.
+Measured with the debug `plcc` (803 workspace tests passing), 20 s timeout per
+invocation, 4 GiB cap (16 GiB for the merged run), default `--stdlib`.
 
 ```
-parse:    559 / 559   (100%)
-compile:  242 / 559   (43%)   no panics (exit 101): 0
+parse:                                   559 / 559   (100%)
+compile, each file alone:                278 / 559   (50%)   no panics (exit 101): 0
+compile, each file + 2 global constants: 306 / 559   (55%)
+compile, whole corpus in one invocation: 559 / 559   (100%)  with OSCAT's global variable list
+                                         (4.4 s, 97 MB peak RSS)
 ```
 
-242 after the silent-miscompile fixes below (was 241): `MESSAGE_8` now compiles because
-`M := '';` is a string-literal store. No file that compiled before fails now, although
-initializers, arguments and call statements that produce no code are now diagnostics
-rather than silently dropped.
+**The whole corpus compiles.** OSCAT is a library of siblings, and the .EXP export
+omits its global variable list (`MATH`, `PHYS`, `LANGUAGE`, `SETUP`, `LOCATION` of the
+`CONSTANTS_*` types it does contain, and the constants `STRING_LENGTH`/`LIST_LENGTH`).
+With that list supplied (one 14-line file declaring exactly those seven globals), a
+single `plcc compile` of all 559 files type-checks and builds, also at `-O3`. Without
+it, the type checker reports the 209 uses of those undeclared globals and stops.
 
-Parsing has been solved for a while. Compilation is the real number.
+It also *runs*: a generated program calling all 267 OSCAT FUNCTIONs whose parameters
+are scalars (math, bit, string, date/time, conversion families) executes, spot-checked
+against hand-computed values (`GCD(12, 18)` = 6, `CAPITALIZE('hello world')`, `DAY_OF_YEAR`,
+`MONTH_TO_STRING(3, 0, 0)` = 'March' through the LANGUAGE global's STRUCT defaults,
+`REAL_TO_STRF(3.14159, 2, '.')` = '3.14', ...), and gives bit-identical results at `-O0`
+and `-O3`.
 
-## Current state: 241, and why it is lower than the 268 below
+Per file, every remaining failure is a cross-file reference: a sibling FUNCTION
+(`T_PLC_MS` 45, `INC1` 7, `YEAR_OF_DATE` 5, `T_PLC_US` 5, ...), a sibling type (`complex`
+24, `Vector_3` 14, `INTEGRATE` 5, ...), or one of the global variables above. The "alone"
+number went *down* from 299 to 278 during this round for a good reason: a
+`STRING(STRING_LENGTH)` or `ARRAY[1..LIST_LENGTH]` whose constant is not declared is now an
+error instead of silently becoming a 255-character string or a one-element array.
+
+What changed since 242 (each with execution tests; see docs/codesys-compatibility.md):
+all elementary `X_TO_Y` conversions including DATE/TOD/DT (CODESYS units), integer and
+REAL `_TO_STRING` / `STRING_TO_`, STRING values anywhere in an expression, CODESYS bit
+access `x.3`, enumerators (bare, `E#V`, `E.V`), constant-folded array bounds and string
+lengths, FUNCTIONs callable before their declaration, nested comments, `S=`/`R=`,
+REFERENCE TO, EXTENDS/THIS^/SUPER^, INTERFACE references.
+
+## Earlier state: 241, and why it was lower than the 268 below
 
 The earlier **268 was inflated**. An assignment whose right-hand side produced no value
 skipped the store *silently*, so a file like `BIN_TO_BYTE` "compiled" with
