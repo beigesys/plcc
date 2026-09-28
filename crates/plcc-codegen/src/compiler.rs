@@ -418,8 +418,14 @@ impl<'ctx> Compiler<'ctx> {
         ),
         CodegenError,
     > {
-        let val = arg_vals[0].into_int_value();
-        let n = arg_vals[1].into_int_value();
+        let (Some(&val), Some(&n)) = (arg_vals.first(), arg_vals.get(1)) else {
+            return Err(CodegenError::LlvmError(format!(
+                "a shift or rotate expects 2 arguments, got {}",
+                arg_vals.len()
+            )));
+        };
+        let val = self.int_operand(val, "IN of a shift or rotate")?;
+        let n = self.int_operand(n, "N of a shift or rotate")?;
         let n_sign = Self::signedness_of(arg_tys.get(1).and_then(|t| t.as_ref()));
         let target = val.get_type();
         let n = match n.get_type().get_bit_width().cmp(&target.get_bit_width()) {
@@ -577,8 +583,14 @@ impl<'ctx> Compiler<'ctx> {
                 if arg.is_float_value() {
                     let fv = arg.into_float_value();
                     let fty = fv.get_type();
-                    let intr = Intrinsic::find("llvm.fabs").unwrap();
-                    let fn_val = intr.get_declaration(&self.module, &[fty.into()]).unwrap();
+                    let intr = Intrinsic::find("llvm.fabs").ok_or_else(|| {
+                        CodegenError::LlvmError("intrinsic llvm.fabs not found".into())
+                    })?;
+                    let fn_val = intr
+                        .get_declaration(&self.module, &[fty.into()])
+                        .ok_or_else(|| {
+                            CodegenError::LlvmError("failed to get llvm.fabs declaration".into())
+                        })?;
                     let call_result = self
                         .builder
                         .build_call(fn_val, &[fv.into()], "fabs")
@@ -594,7 +606,7 @@ impl<'ctx> Compiler<'ctx> {
                     };
                     Ok(Some(result))
                 } else {
-                    let iv = arg.into_int_value();
+                    let iv = self.int_operand(arg, &uname)?;
                     // An ANY_BIT or ANY_UNSIGNED value is already its own magnitude.
                     // Negating it read `b : BYTE := 200` as -56 and answered 56.
                     if Self::signedness_of(arg_tys[0].as_ref()) == Signedness::Unsigned {
@@ -651,9 +663,9 @@ impl<'ctx> Compiler<'ctx> {
                     // compare unsigned, or `MAX(b, 100)` with `b : BYTE := 200`
                     // answers 100.
                     let (ia, ib, unsigned) = self.prepare_int_operands(
-                        a.into_int_value(),
+                        self.int_operand(a, &uname)?,
                         arg_tys[0].as_ref(),
-                        b.into_int_value(),
+                        self.int_operand(b, &uname)?,
                         arg_tys[1].as_ref(),
                     )?;
                     let pred = match (is_max, unsigned) {
@@ -689,6 +701,11 @@ impl<'ctx> Compiler<'ctx> {
                     let fmn = self.ensure_float(mn)?;
                     let fval = self.ensure_float(val)?;
                     let fmx = self.ensure_float(mx)?;
+                    // One float width for all three, or a REAL bound against an LREAL
+                    // input builds a mistyped compare.
+                    let (fmn, fval) = self.match_float_widths(fmn, fval)?;
+                    let (fval, fmx) = self.match_float_widths(fval, fmx)?;
+                    let (fmn, fval) = self.match_float_widths(fmn, fval)?;
                     let cmp_hi = self
                         .builder
                         .build_float_compare(FloatPredicate::OLT, fval, fmx, "cmp_hi")
@@ -715,9 +732,9 @@ impl<'ctx> Compiler<'ctx> {
                     // SLT clamped `LIMIT(v, 200, 200)` on BYTEs down to 100.
                     let ([imn, ival, imx], unsigned) = self.prepare_int_triple(
                         [
-                            mn.into_int_value(),
-                            val.into_int_value(),
-                            mx.into_int_value(),
+                            self.int_operand(mn, &uname)?,
+                            self.int_operand(val, &uname)?,
+                            self.int_operand(mx, &uname)?,
                         ],
                         [
                             arg_tys[0].as_ref(),
@@ -771,7 +788,7 @@ impl<'ctx> Compiler<'ctx> {
                         arg_vals.len()
                     )));
                 }
-                let g = arg_vals[0].into_int_value();
+                let g = self.int_operand(arg_vals[0], &uname)?;
                 let in0 = arg_vals[1];
                 let in1 = arg_vals[2];
                 let cond = self.to_i1(g)?;
@@ -882,11 +899,7 @@ impl<'ctx> Compiler<'ctx> {
                         "{uname} expects 1 argument"
                     )));
                 }
-                let iv = arg_vals[0].into_int_value();
-                let result = self
-                    .builder
-                    .build_signed_int_to_float(iv, self.context.f32_type(), "to_real")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                let result = self.to_float_of(arg_vals[0], self.context.f32_type(), false, &uname)?;
                 Ok(Some(result.into()))
             }
             "INT_TO_LREAL" | "DINT_TO_LREAL" => {
@@ -895,11 +908,7 @@ impl<'ctx> Compiler<'ctx> {
                         "{uname} expects 1 argument"
                     )));
                 }
-                let iv = arg_vals[0].into_int_value();
-                let result = self
-                    .builder
-                    .build_signed_int_to_float(iv, self.context.f64_type(), "to_lreal")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                let result = self.to_float_of(arg_vals[0], self.context.f64_type(), false, &uname)?;
                 Ok(Some(result.into()))
             }
             "REAL_TO_INT" => {
@@ -908,7 +917,7 @@ impl<'ctx> Compiler<'ctx> {
                         "REAL_TO_INT expects 1 argument".into(),
                     ));
                 }
-                let fv = arg_vals[0].into_float_value();
+                let fv = self.ensure_float(arg_vals[0])?;
                 let result = self
                     .builder
                     .build_float_to_signed_int(fv, self.context.i16_type(), "real_to_int")
@@ -921,7 +930,7 @@ impl<'ctx> Compiler<'ctx> {
                         "REAL_TO_DINT expects 1 argument".into(),
                     ));
                 }
-                let fv = arg_vals[0].into_float_value();
+                let fv = self.ensure_float(arg_vals[0])?;
                 let result = self
                     .builder
                     .build_float_to_signed_int(fv, self.context.i32_type(), "real_to_dint")
@@ -934,11 +943,8 @@ impl<'ctx> Compiler<'ctx> {
                         "INT_TO_DINT expects 1 argument".into(),
                     ));
                 }
-                let iv = arg_vals[0].into_int_value();
-                let result = self
-                    .builder
-                    .build_int_s_extend(iv, self.context.i32_type(), "int_to_dint")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                let iv = self.int_operand(arg_vals[0], &uname)?;
+                let result = self.resize_int(iv, self.context.i32_type(), true)?;
                 Ok(Some(result.into()))
             }
             "DINT_TO_INT" => {
@@ -947,11 +953,8 @@ impl<'ctx> Compiler<'ctx> {
                         "DINT_TO_INT expects 1 argument".into(),
                     ));
                 }
-                let iv = arg_vals[0].into_int_value();
-                let result = self
-                    .builder
-                    .build_int_truncate(iv, self.context.i16_type(), "dint_to_int")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                let iv = self.int_operand(arg_vals[0], &uname)?;
+                let result = self.resize_int(iv, self.context.i16_type(), true)?;
                 Ok(Some(result.into()))
             }
             "BOOL_TO_INT" => {
@@ -960,41 +963,25 @@ impl<'ctx> Compiler<'ctx> {
                         "BOOL_TO_INT expects 1 argument".into(),
                     ));
                 }
-                let iv = arg_vals[0].into_int_value();
-                let result = self
-                    .builder
-                    .build_int_z_extend(iv, self.context.i16_type(), "bool_to_int")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                let iv = self.int_operand(arg_vals[0], &uname)?;
+                let result = self.resize_int(iv, self.context.i16_type(), false)?;
                 Ok(Some(result.into()))
             }
+            // IEC 61131-3 TRUNC: ANY_REAL -> ANY_INT, truncating toward zero. The
+            // result is a DINT, as in CODESYS; OSCAT's RANGE_TO_BYTE writes
+            // `INT_TO_BYTE(TRUNC(x))`. It was lowered to `llvm.trunc`, which yields a
+            // REAL, and the integer conversion wrapped around it then panicked on
+            // the float operand.
             "TRUNC" => {
                 if arg_vals.len() != 1 {
                     return Err(CodegenError::LlvmError("TRUNC expects 1 argument".into()));
                 }
                 let fv = self.ensure_float(arg_vals[0])?;
-                let fty = fv.get_type();
-                let intr = Intrinsic::find("llvm.trunc").ok_or_else(|| {
-                    CodegenError::LlvmError("intrinsic llvm.trunc not found".into())
-                })?;
-                let fn_val = intr
-                    .get_declaration(&self.module, &[fty.into()])
-                    .ok_or_else(|| {
-                        CodegenError::LlvmError("failed to get llvm.trunc declaration".into())
-                    })?;
                 let result = self
                     .builder
-                    .build_call(fn_val, &[fv.into()], "trunc")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                    .try_as_basic_value();
-                let result = match result {
-                    inkwell::values::ValueKind::Basic(v) => v,
-                    _ => {
-                        return Err(CodegenError::LlvmError(
-                            "expected return value from intrinsic".into(),
-                        ));
-                    }
-                };
-                Ok(Some(result))
+                    .build_float_to_signed_int(fv, self.context.i32_type(), "trunc")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                Ok(Some(result.into()))
             }
 
             // --- Trig functions (extern C library) ---
@@ -1182,17 +1169,14 @@ impl<'ctx> Compiler<'ctx> {
                         "{uname} expects 1 argument"
                     )));
                 }
-                let iv = arg_vals[0].into_int_value();
+                let iv = self.int_operand(arg_vals[0], &uname)?;
                 let target = match uname.as_str() {
                     "SINT_TO_INT" => self.context.i16_type(),
                     "SINT_TO_DINT" => self.context.i32_type(),
                     "SINT_TO_LINT" | "INT_TO_LINT" | "DINT_TO_LINT" => self.context.i64_type(),
                     _ => unreachable!(),
                 };
-                let result = self
-                    .builder
-                    .build_int_s_extend(iv, target, &uname.to_lowercase())
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                let result = self.resize_int(iv, target, true)?;
                 Ok(Some(result.into()))
             }
 
@@ -1205,7 +1189,7 @@ impl<'ctx> Compiler<'ctx> {
                         "{uname} expects 1 argument"
                     )));
                 }
-                let iv = arg_vals[0].into_int_value();
+                let iv = self.int_operand(arg_vals[0], &uname)?;
                 let target = match uname.as_str() {
                     "USINT_TO_UINT" | "BYTE_TO_WORD" | "BYTE_TO_INT" => self.context.i16_type(),
                     "USINT_TO_UDINT" | "UINT_TO_UDINT" | "BYTE_TO_DWORD" | "WORD_TO_DWORD"
@@ -1215,10 +1199,7 @@ impl<'ctx> Compiler<'ctx> {
                     }
                     _ => unreachable!(),
                 };
-                let result = self
-                    .builder
-                    .build_int_z_extend(iv, target, &uname.to_lowercase())
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                let result = self.resize_int(iv, target, false)?;
                 Ok(Some(result.into()))
             }
 
@@ -1229,8 +1210,16 @@ impl<'ctx> Compiler<'ctx> {
                         "{uname} expects 1 argument"
                     )));
                 }
-                // Same bit-width, just return the value as-is
-                Ok(Some(arg_vals[0]))
+                // A same-width reinterpretation — but resized all the same, so a
+                // narrower argument (a BYTE handed to WORD_TO_INT) still yields the
+                // declared result width.
+                let iv = self.int_operand(arg_vals[0], &uname)?;
+                let target = if uname == "WORD_TO_INT" {
+                    self.context.i16_type()
+                } else {
+                    self.context.i32_type()
+                };
+                Ok(Some(self.resize_int(iv, target, false)?.into()))
             }
 
             // --- Integer narrowing (truncate) ---
@@ -1242,7 +1231,7 @@ impl<'ctx> Compiler<'ctx> {
                         "{uname} expects 1 argument"
                     )));
                 }
-                let iv = arg_vals[0].into_int_value();
+                let iv = self.int_operand(arg_vals[0], &uname)?;
                 let target = match uname.as_str() {
                     "INT_TO_BYTE" | "DINT_TO_BYTE" | "INT_TO_SINT" => self.context.i8_type(),
                     "LINT_TO_INT" | "UDINT_TO_UINT" | "ULINT_TO_UINT" | "DWORD_TO_INT" => {
@@ -1251,10 +1240,7 @@ impl<'ctx> Compiler<'ctx> {
                     "LINT_TO_DINT" | "ULINT_TO_UDINT" => self.context.i32_type(),
                     _ => unreachable!(),
                 };
-                let result = self
-                    .builder
-                    .build_int_truncate(iv, target, &uname.to_lowercase())
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                let result = self.resize_int(iv, target, true)?;
                 Ok(Some(result.into()))
             }
 
@@ -1265,10 +1251,10 @@ impl<'ctx> Compiler<'ctx> {
                         "REAL_TO_LREAL expects 1 argument".into(),
                     ));
                 }
-                let fv = arg_vals[0].into_float_value();
+                let fv = self.ensure_float(arg_vals[0])?;
                 let result = self
                     .builder
-                    .build_float_ext(fv, self.context.f64_type(), "real_to_lreal")
+                    .build_float_cast(fv, self.context.f64_type(), "real_to_lreal")
                     .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                 Ok(Some(result.into()))
             }
@@ -1278,10 +1264,10 @@ impl<'ctx> Compiler<'ctx> {
                         "LREAL_TO_REAL expects 1 argument".into(),
                     ));
                 }
-                let fv = arg_vals[0].into_float_value();
+                let fv = self.ensure_float(arg_vals[0])?;
                 let result = self
                     .builder
-                    .build_float_trunc(fv, self.context.f32_type(), "lreal_to_real")
+                    .build_float_cast(fv, self.context.f32_type(), "lreal_to_real")
                     .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                 Ok(Some(result.into()))
             }
@@ -1293,7 +1279,7 @@ impl<'ctx> Compiler<'ctx> {
                         "{uname} expects 1 argument"
                     )));
                 }
-                let fv = arg_vals[0].into_float_value();
+                let fv = self.ensure_float(arg_vals[0])?;
                 let target = match uname.as_str() {
                     "LREAL_TO_INT" => self.context.i16_type(),
                     "LREAL_TO_DINT" => self.context.i32_type(),
@@ -1314,11 +1300,7 @@ impl<'ctx> Compiler<'ctx> {
                         "LINT_TO_REAL expects 1 argument".into(),
                     ));
                 }
-                let iv = arg_vals[0].into_int_value();
-                let result = self
-                    .builder
-                    .build_signed_int_to_float(iv, self.context.f32_type(), "lint_to_real")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                let result = self.to_float_of(arg_vals[0], self.context.f32_type(), false, &uname)?;
                 Ok(Some(result.into()))
             }
 
@@ -1329,11 +1311,7 @@ impl<'ctx> Compiler<'ctx> {
                         "{uname} expects 1 argument"
                     )));
                 }
-                let iv = arg_vals[0].into_int_value();
-                let result = self
-                    .builder
-                    .build_unsigned_int_to_float(iv, self.context.f32_type(), &uname.to_lowercase())
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                let result = self.to_float_of(arg_vals[0], self.context.f32_type(), true, &uname)?;
                 Ok(Some(result.into()))
             }
 
@@ -1344,17 +1322,14 @@ impl<'ctx> Compiler<'ctx> {
                         "{uname} expects 1 argument"
                     )));
                 }
-                let iv = arg_vals[0].into_int_value();
+                let iv = self.int_operand(arg_vals[0], &uname)?;
                 let target = match uname.as_str() {
                     "BOOL_TO_BYTE" => self.context.i8_type(),
                     "BOOL_TO_WORD" => self.context.i16_type(),
                     "BOOL_TO_DINT" => self.context.i32_type(),
                     _ => unreachable!(),
                 };
-                let result = self
-                    .builder
-                    .build_int_z_extend(iv, target, &uname.to_lowercase())
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                let result = self.resize_int(iv, target, false)?;
                 Ok(Some(result.into()))
             }
 
@@ -1365,7 +1340,7 @@ impl<'ctx> Compiler<'ctx> {
                         "{uname} expects 1 argument"
                     )));
                 }
-                let iv = arg_vals[0].into_int_value();
+                let iv = self.int_operand(arg_vals[0], &uname)?;
                 let zero = iv.get_type().const_zero();
                 let cmp = self
                     .builder
@@ -1434,8 +1409,8 @@ impl<'ctx> Compiler<'ctx> {
                         "ADD_TIME expects 2 arguments".into(),
                     ));
                 }
-                let t1 = arg_vals[0].into_int_value();
-                let t2 = arg_vals[1].into_int_value();
+                let t1 = self.int_operand(arg_vals[0], &uname)?;
+                let t2 = self.int_operand(arg_vals[1], &uname)?;
                 let result = self
                     .builder
                     .build_int_add(t1, t2, "add_time")
@@ -1448,8 +1423,8 @@ impl<'ctx> Compiler<'ctx> {
                         "SUB_TIME expects 2 arguments".into(),
                     ));
                 }
-                let t1 = arg_vals[0].into_int_value();
-                let t2 = arg_vals[1].into_int_value();
+                let t1 = self.int_operand(arg_vals[0], &uname)?;
+                let t2 = self.int_operand(arg_vals[1], &uname)?;
                 let result = self
                     .builder
                     .build_int_sub(t1, t2, "sub_time")
@@ -1462,8 +1437,8 @@ impl<'ctx> Compiler<'ctx> {
                         "MUL_TIME expects 2 arguments".into(),
                     ));
                 }
-                let t1 = arg_vals[0].into_int_value();
-                let factor = arg_vals[1].into_int_value();
+                let t1 = self.int_operand(arg_vals[0], &uname)?;
+                let factor = self.int_operand(arg_vals[1], &uname)?;
                 // Extend factor to i64 if needed
                 let i64_ty = self.context.i64_type();
                 let factor_i64 = if factor.get_type().get_bit_width() < 64 {
@@ -1485,8 +1460,8 @@ impl<'ctx> Compiler<'ctx> {
                         "DIV_TIME expects 2 arguments".into(),
                     ));
                 }
-                let t1 = arg_vals[0].into_int_value();
-                let divisor = arg_vals[1].into_int_value();
+                let t1 = self.int_operand(arg_vals[0], &uname)?;
+                let divisor = self.int_operand(arg_vals[1], &uname)?;
                 // Extend divisor to i64 if needed
                 let i64_ty = self.context.i64_type();
                 let divisor_i64 = if divisor.get_type().get_bit_width() < 64 {
@@ -2685,10 +2660,7 @@ impl<'ctx> Compiler<'ctx> {
         arg_vals: &[BasicValueEnum<'ctx>],
     ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
         match arg_vals {
-            [BasicValueEnum::IntValue(iv)] => Ok(*iv),
-            [_] => Err(CodegenError::LlvmError(format!(
-                "{uname} expects an integer argument"
-            ))),
+            [v] => self.int_operand(*v, uname),
             _ => Err(CodegenError::LlvmError(format!(
                 "{uname} expects 1 argument"
             ))),
@@ -3128,7 +3100,7 @@ impl<'ctx> Compiler<'ctx> {
                     .compile_expression(&args[1].value, function)?
                     .ok_or_else(|| self.no_value_error("argument 2 of `LEFT`", &args[1].value))?;
                 let n_i32 = if n_val.is_int_value() {
-                    let iv = n_val.into_int_value();
+                    let iv = self.int_operand(n_val, "the length argument of a string function")?;
                     if iv.get_type().get_bit_width() < 32 {
                         self.builder
                             .build_int_s_extend(iv, i32_ty, "n_ext")
@@ -3167,7 +3139,7 @@ impl<'ctx> Compiler<'ctx> {
                     .compile_expression(&args[1].value, function)?
                     .ok_or_else(|| self.no_value_error("argument 2 of `RIGHT`", &args[1].value))?;
                 let n_i32 = if n_val.is_int_value() {
-                    let iv = n_val.into_int_value();
+                    let iv = self.int_operand(n_val, "the length argument of a string function")?;
                     if iv.get_type().get_bit_width() < 32 {
                         self.builder
                             .build_int_s_extend(iv, i32_ty, "n_ext")
@@ -3211,7 +3183,7 @@ impl<'ctx> Compiler<'ctx> {
                     .compile_expression(&args[2].value, function)?
                     .ok_or_else(|| self.no_value_error("argument 3 of `MID`", &args[2].value))?;
                 let len_i32 = if len_val.is_int_value() {
-                    let iv = len_val.into_int_value();
+                    let iv = self.int_operand(len_val, "MID")?;
                     if iv.get_type().get_bit_width() < 32 {
                         self.builder
                             .build_int_s_extend(iv, i32_ty, "len_ext")
@@ -3223,7 +3195,7 @@ impl<'ctx> Compiler<'ctx> {
                     return Err(CodegenError::LlvmError("MID: len must be integer".into()));
                 };
                 let pos_i32 = if pos_val.is_int_value() {
-                    let iv = pos_val.into_int_value();
+                    let iv = self.int_operand(pos_val, "MID")?;
                     if iv.get_type().get_bit_width() < 32 {
                         self.builder
                             .build_int_s_extend(iv, i32_ty, "pos_ext")
@@ -3262,10 +3234,84 @@ impl<'ctx> Compiler<'ctx> {
         if val.is_float_value() {
             Ok(val.into_float_value())
         } else {
+            let iv = self.int_operand(val, "a floating-point operand")?;
             self.builder
-                .build_signed_int_to_float(val.into_int_value(), self.context.f32_type(), "itof")
+                .build_signed_int_to_float(iv, self.context.f32_type(), "itof")
                 .map_err(|e| CodegenError::LlvmError(e.to_string()))
         }
+    }
+
+    /// The integer type an address is converted to when a POINTER is used as a
+    /// number (`pt + 1`, `DWORD_TO_X(pt)`, comparing two pointers). 64 bits holds an
+    /// address on every target plcc emits for; narrower uses truncate from there.
+    fn addr_int_type(&self) -> inkwell::types::IntType<'ctx> {
+        self.context.i64_type()
+    }
+
+    /// An operand that must be an integer, with no `into_int_value` panic behind it.
+    ///
+    /// * An integer is returned as is.
+    /// * A POINTER is its address, as an integer — CODESYS treats a pointer as an
+    ///   address word, and OSCAT relies on it (`pt := pt + 1`, `ADR(x) + n`).
+    /// * A REAL/LREAL is a type error: IEC has no implicit REAL→integer conversion,
+    ///   so it is reported, naming `what` (the operator or builtin), rather than
+    ///   silently truncated.
+    /// * An aggregate (ARRAY/STRUCT) value is reported the same way.
+    fn int_operand(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        what: &str,
+    ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+        match val {
+            BasicValueEnum::IntValue(iv) => Ok(iv),
+            BasicValueEnum::PointerValue(pv) => self
+                .builder
+                .build_ptr_to_int(pv, self.addr_int_type(), "addr")
+                .map_err(|e| CodegenError::LlvmError(e.to_string())),
+            BasicValueEnum::FloatValue(_) => Err(CodegenError::UnsupportedType(format!(
+                "{what} needs an integer operand but got a REAL/LREAL value; IEC 61131-3 \
+                 has no implicit REAL-to-integer conversion — use an explicit one such \
+                 as REAL_TO_DINT or TRUNC"
+            ))),
+            BasicValueEnum::ArrayValue(_) => Err(CodegenError::UnsupportedType(format!(
+                "{what} needs an integer operand but got an ARRAY value"
+            ))),
+            BasicValueEnum::StructValue(_) => Err(CodegenError::UnsupportedType(format!(
+                "{what} needs an integer operand but got a STRUCT or FB instance value"
+            ))),
+            _ => Err(CodegenError::UnsupportedType(format!(
+                "{what} needs an integer operand but got a vector value"
+            ))),
+        }
+    }
+
+    /// Source operand of an `X_TO_REAL`/`X_TO_LREAL` conversion: an integer
+    /// converts (signed or unsigned as `unsigned` says), and a value that is already
+    /// floating point is only resized. The latter is how a non-IEC builtin such as
+    /// `FLOOR` (which returns REAL here) can feed `INT_TO_REAL(FLOOR(x) - n)`.
+    fn to_float_of(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        target: inkwell::types::FloatType<'ctx>,
+        unsigned: bool,
+        what: &str,
+    ) -> Result<inkwell::values::FloatValue<'ctx>, CodegenError> {
+        if let BasicValueEnum::FloatValue(fv) = val {
+            if fv.get_type() == target {
+                return Ok(fv);
+            }
+            return self
+                .builder
+                .build_float_cast(fv, target, "fcast")
+                .map_err(|e| CodegenError::LlvmError(e.to_string()));
+        }
+        let iv = self.int_operand(val, what)?;
+        if unsigned {
+            self.builder.build_unsigned_int_to_float(iv, target, "uitof")
+        } else {
+            self.builder.build_signed_int_to_float(iv, target, "itof")
+        }
+        .map_err(|e| CodegenError::LlvmError(e.to_string()))
     }
 
     /// Match two float values to the same (wider) type.
@@ -4200,6 +4246,21 @@ impl<'ctx> Compiler<'ctx> {
                     .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                 Ok(i.into())
             }
+            // An address held in an integer (`pt := ADR(x) + INT_TO_DWORD(n)`, or a
+            // literal 0 for "no pointer") stored into a POINTER, and a POINTER stored
+            // into an address-sized integer (`dw := pt`), as CODESYS allows.
+            (BasicValueEnum::IntValue(iv), BasicTypeEnum::PointerType(pt)) => {
+                let iv = self.resize_int(iv, self.addr_int_type(), false)?;
+                Ok(self
+                    .builder
+                    .build_int_to_ptr(iv, pt, "inttoptr")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                    .into())
+            }
+            (BasicValueEnum::PointerValue(_), BasicTypeEnum::IntType(it)) => {
+                let iv = self.int_operand(val, "a pointer-to-integer store")?;
+                Ok(self.resize_int(iv, it, false)?.into())
+            }
             _ => Ok(val),
         }
     }
@@ -4609,13 +4670,21 @@ impl<'ctx> Compiler<'ctx> {
         ty: &IecType,
     ) -> Option<BasicValueEnum<'ctx>> {
         match self.iec_to_llvm_type(ty) {
+            // Mismatched kinds (a REAL literal in an ARRAY OF INT initializer) are
+            // not coerced here; `None` sends them down the runtime-store path.
             BasicTypeEnum::IntType(target) => {
-                let v = val.into_int_value();
+                let BasicValueEnum::IntValue(v) = val else {
+                    return None;
+                };
                 let raw = v.get_sign_extended_constant()?;
                 Some(target.const_int(raw as u64, true).into())
             }
             BasicTypeEnum::FloatType(target) => {
-                let (raw, _) = val.into_float_value().get_constant()?;
+                let raw = match val {
+                    BasicValueEnum::FloatValue(f) => f.get_constant()?.0,
+                    BasicValueEnum::IntValue(i) => i.get_sign_extended_constant()? as f64,
+                    _ => return None,
+                };
                 Some(target.const_float(raw).into())
             }
             _ => None,
@@ -5477,7 +5546,19 @@ impl<'ctx> Compiler<'ctx> {
                                 Self::describe_lvalue(target)
                             ))
                         })?;
-                    if let Some(val) = self.compile_expression(value, function)? {
+                    // A right-hand side that yields no value is a diagnostic, like an
+                    // unaddressable target. Skipping the store instead made
+                    // `pt := ADR(bin);` compile to nothing and leave `pt` unset.
+                    let Some(val) = self.compile_expression(value, function)? else {
+                        return Err(self.no_value_error(
+                            format!(
+                                "right-hand side of the assignment to `{}`",
+                                Self::describe_lvalue(target)
+                            ),
+                            value,
+                        ));
+                    };
+                    {
                         // Match the store width to the destination. Without this a
                         // narrow RHS (integer literals default to INT/i16) stored
                         // into a wider slot wrote only part of it.
@@ -5887,7 +5968,7 @@ impl<'ctx> Compiler<'ctx> {
 
         if elsif_branches.is_empty() && else_body.is_none() {
             self.builder
-                .build_conditional_branch(self.to_i1(cond_val.into_int_value())?, then_bb, merge_bb)
+                .build_conditional_branch(self.to_i1(self.int_operand(cond_val, "a condition")?)?, then_bb, merge_bb)
                 .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
 
             self.builder.position_at_end(then_bb);
@@ -5898,7 +5979,7 @@ impl<'ctx> Compiler<'ctx> {
         } else {
             let else_bb = self.context.append_basic_block(function, "else");
             self.builder
-                .build_conditional_branch(self.to_i1(cond_val.into_int_value())?, then_bb, else_bb)
+                .build_conditional_branch(self.to_i1(self.int_operand(cond_val, "a condition")?)?, then_bb, else_bb)
                 .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
 
             self.builder.position_at_end(then_bb);
@@ -5925,7 +6006,7 @@ impl<'ctx> Compiler<'ctx> {
 
                     self.builder
                         .build_conditional_branch(
-                            self.to_i1(elsif_cond.into_int_value())?,
+                            self.to_i1(self.int_operand(elsif_cond, "an ELSIF condition")?)?,
                             elsif_then,
                             elsif_else,
                         )
@@ -5997,7 +6078,7 @@ impl<'ctx> Compiler<'ctx> {
                 let val = self
                     .compile_expression(by_expr, function)?
                     .ok_or_else(|| self.no_value_error("FOR step (BY)", by_expr))?;
-                (val.into_int_value(), self.rvalue_iec_type(by_expr))
+                (self.int_operand(val, "a FOR step (BY)")?, self.rvalue_iec_type(by_expr))
             }
             None => (
                 llvm_ty.into_int_type().const_int(1, false),
@@ -6057,9 +6138,9 @@ impl<'ctx> Compiler<'ctx> {
         // `FOR i := 100 TO lim` with `i, lim : BYTE` and `lim := 200` ran no
         // iterations at all.
         let (cur_i, to_i, unsigned) = self.prepare_int_operands(
-            cur_val.into_int_value(),
+            self.int_operand(cur_val, "a FOR control variable")?,
             Some(&var_ty),
-            to_val.into_int_value(),
+            self.int_operand(to_val, "a FOR bound (TO)")?,
             to_ty.as_ref(),
         )?;
         let (le, ge) = if unsigned {
@@ -6111,7 +6192,7 @@ impl<'ctx> Compiler<'ctx> {
         // Same rule for the step: `BY st` with `st : BYTE := 16#C8` is +200, and
         // sign-extending it to -56 walked the control variable downward forever.
         let (cur_i, step_i) = self.match_int_widths_typed(
-            cur_val2.into_int_value(),
+            self.int_operand(cur_val2, "a FOR control variable")?,
             Some(&var_ty),
             step,
             step_ty.as_ref(),
@@ -6160,7 +6241,7 @@ impl<'ctx> Compiler<'ctx> {
             .compile_expression(condition, function)?
             .ok_or_else(|| self.no_value_error("WHILE condition", condition))?;
         // BOOL is an i8 in this ABI; a branch condition must be i1.
-        let cond_bool = self.to_i1(cond_val.into_int_value())?;
+        let cond_bool = self.to_i1(self.int_operand(cond_val, "a condition")?)?;
         self.builder
             .build_conditional_branch(cond_bool, body_bb, end_bb)
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
@@ -6212,7 +6293,7 @@ impl<'ctx> Compiler<'ctx> {
         let cond_val = self
             .compile_expression(until, function)?
             .ok_or_else(|| self.no_value_error("UNTIL condition", until))?;
-        let cond_bool = self.to_i1(cond_val.into_int_value())?;
+        let cond_bool = self.to_i1(self.int_operand(cond_val, "a condition")?)?;
         // UNTIL means: exit when true, loop when false
         self.builder
             .build_conditional_branch(cond_bool, end_bb, body_bb)
@@ -6243,7 +6324,7 @@ impl<'ctx> Compiler<'ctx> {
         };
 
         // Build switch — case label constants must match the selector's integer type
-        let sel_int_ty = sel_val.into_int_value().get_type();
+        let sel_int_ty = self.int_operand(sel_val, "a CASE selector")?.get_type();
         let mut cases: Vec<(
             inkwell::values::IntValue<'ctx>,
             inkwell::basic_block::BasicBlock<'ctx>,
@@ -6279,7 +6360,7 @@ impl<'ctx> Compiler<'ctx> {
 
         let switch = self
             .builder
-            .build_switch(sel_val.into_int_value(), else_bb, &cases)
+            .build_switch(self.int_operand(sel_val, "a CASE selector")?, else_bb, &cases)
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
 
         // Compile branch bodies
@@ -6433,6 +6514,7 @@ impl<'ctx> Compiler<'ctx> {
                     "SHL" | "SHR" | "ROL" | "ROR" => arg_ty(0),
                     // ABS never changes its argument's type.
                     "ABS" => arg_ty(0),
+                    "TRUNC" => Some(IecType::Dint),
                     // MIN/MAX return one of their operands, so the result type is the
                     // one the comparison was performed in.
                     "MIN" | "MAX" => Self::arith_result_type(arg_ty(0), arg_ty(1)),
@@ -6714,7 +6796,7 @@ impl<'ctx> Compiler<'ctx> {
                             })?;
 
                     let lo = ranges[0].0;
-                    let idx_int = idx_val.into_int_value();
+                    let idx_int = self.int_operand(idx_val, "an array index")?;
                     let adjusted = if lo != 0 {
                         let lo_val = idx_int.get_type().const_int(lo as u64, true);
                         self.builder
@@ -6758,7 +6840,7 @@ impl<'ctx> Compiler<'ctx> {
                                 })?;
 
                         let lo = ranges[dim].0;
-                        let idx_int = idx_val.into_int_value();
+                        let idx_int = self.int_operand(idx_val, "an array index")?;
                         let idx_i32 = if idx_int.get_type().get_bit_width() < 32 {
                             self.builder
                                 .build_int_s_extend(idx_int, self.context.i32_type(), "idx_ext")
@@ -7065,6 +7147,17 @@ impl<'ctx> Compiler<'ctx> {
         right: BasicValueEnum<'ctx>,
         right_ty: Option<&IecType>,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        if left.is_pointer_value() || right.is_pointer_value() {
+            return self.compile_pointer_binary_op(op, left, left_ty, right, right_ty);
+        }
+        for v in [left, right] {
+            if !(v.is_int_value() || v.is_float_value()) {
+                return Err(CodegenError::UnsupportedType(format!(
+                    "operator {op:?} needs scalar operands, but one operand is an ARRAY, \
+                     STRUCT or FB instance value"
+                )));
+            }
+        }
         // Check if we're dealing with integers or floats
         let is_float = left.is_float_value() || right.is_float_value();
 
@@ -7307,6 +7400,84 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
+    /// A binary operator with at least one POINTER operand.
+    ///
+    /// Pointer arithmetic follows CODESYS, which OSCAT is written against: a pointer
+    /// is an address counted in **bytes**, whatever it points to. `pt := pt + 1`
+    /// steps a `POINTER TO BYTE` to the next byte, and `ADR(str) + pos - 1` is the
+    /// address of a character. So `ptr ± int` offsets the address by that many bytes
+    /// and stays a pointer; `ptr - ptr` is the byte distance; comparisons compare
+    /// addresses (unsigned). Any other operator works on the address as an unsigned
+    /// integer (LWORD).
+    fn compile_pointer_binary_op(
+        &self,
+        op: BinaryOp,
+        left: BasicValueEnum<'ctx>,
+        left_ty: Option<&IecType>,
+        right: BasicValueEnum<'ctx>,
+        right_ty: Option<&IecType>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let byte_offset = |ptr: PointerValue<'ctx>,
+                           off: BasicValueEnum<'ctx>,
+                           off_ty: Option<&IecType>,
+                           negate: bool|
+         -> Result<BasicValueEnum<'ctx>, CodegenError> {
+            let what = format!("the offset in pointer arithmetic ({op:?})");
+            let off = self.int_operand(off, &what)?;
+            let off = self.widen_to(off, Self::signedness_of(off_ty), self.addr_int_type())?;
+            let off = if negate {
+                self.builder
+                    .build_int_neg(off, "neg_off")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+            } else {
+                off
+            };
+            let p = unsafe {
+                self.builder
+                    .build_gep(self.context.i8_type(), ptr, &[off], "ptr_off")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+            };
+            Ok(p.into())
+        };
+        match (op, left, right) {
+            (BinaryOp::Add, BasicValueEnum::PointerValue(p), off)
+                if !off.is_pointer_value() =>
+            {
+                byte_offset(p, off, right_ty, false)
+            }
+            (BinaryOp::Add, off, BasicValueEnum::PointerValue(p))
+                if !off.is_pointer_value() =>
+            {
+                byte_offset(p, off, left_ty, false)
+            }
+            (BinaryOp::Sub, BasicValueEnum::PointerValue(p), off)
+                if !off.is_pointer_value() =>
+            {
+                byte_offset(p, off, right_ty, true)
+            }
+            _ => {
+                // Everything else works on the addresses as unsigned integers:
+                // `p1 - p2`, `pt < pend`, `pt = 0`, `ADR(x) AND 16#3`.
+                let as_addr = |v: BasicValueEnum<'ctx>, ty: Option<&IecType>| {
+                    if v.is_pointer_value() {
+                        self.int_operand(v, "pointer arithmetic")
+                            .map(|iv| (BasicValueEnum::from(iv), Some(IecType::Lword)))
+                    } else {
+                        Ok((v, ty.cloned()))
+                    }
+                };
+                let (l, lt) = as_addr(left, left_ty)?;
+                let (r, rt) = as_addr(right, right_ty)?;
+                if l.is_float_value() || r.is_float_value() {
+                    return Err(CodegenError::UnsupportedType(format!(
+                        "operator {op:?} between a POINTER and a REAL/LREAL value"
+                    )));
+                }
+                self.compile_binary_op(op, l, lt.as_ref(), r, rt.as_ref())
+            }
+        }
+    }
+
     fn compile_unary_op(
         &self,
         op: UnaryOp,
@@ -7320,16 +7491,21 @@ impl<'ctx> Compiler<'ctx> {
                         .build_float_neg(operand.into_float_value(), "fneg")
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?
                         .into())
-                } else {
+                } else if operand.is_int_value() {
                     Ok(self
                         .builder
                         .build_int_neg(operand.into_int_value(), "neg")
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?
                         .into())
+                } else {
+                    Err(CodegenError::UnsupportedType(
+                        "unary minus needs a numeric operand, not a POINTER or aggregate value"
+                            .into(),
+                    ))
                 }
             }
             UnaryOp::Not => {
-                let int_val = operand.into_int_value();
+                let int_val = self.int_operand(operand, "NOT")?;
                 let bit_width = int_val.get_type().get_bit_width();
                 if bit_width <= 8 {
                     // Boolean NOT: compare equal to zero, then extend back to i8
