@@ -218,6 +218,19 @@ in this document of each divergence, which way we went, and why. Strict mode sho
 where the two differ, since that is exactly the portability question strict mode exists
 to answer.
 
+## Decided behaviours
+
+Each row is a place where behaviour was a choice. The rule: do what CODESYS (and
+TwinCAT, which is CODESYS-based; Siemens SCL where relevant) does, provided it agrees
+with IEC 61131-3 3rd edition. Every row has a regression test.
+
+| Behaviour | Decision | Source | Test |
+|---|---|---|---|
+| Output binding `fb(Q => x)` | `x` receives the output **after** the call, with ordinary assignment conversion. Works on FB, FUNCTION and METHOD calls; targets may be any assignable location (`arr[i]`, `s.f`). FUNCTION/METHOD VAR_OUTPUTs are passed as a pointer to a caller temporary and start each call at their initial value. | IEC 61131-3 §6.6.1.4 (`=>` connects an output to a variable); CODESYS help, "Function" object: `fun(in1 := 1, in2 := 2, out1 => loc1, out2 => loc2);`. | `crates/plcc-codegen/tests/output_bindings.rs` |
+| `NOT Q => x` | Accepted; `x := NOT Q`. | IEC 61131-3 3rd ed. Annex A, `param_assign ::= ['NOT'] variable_name '=>' variable`. | same |
+| `=>` on a VAR_INPUT / VAR_IN_OUT / local, `:=` on a VAR_OUTPUT | Compile error. | CODESYS rejects assigning an output in a call; IEC defines `=>` only for outputs. | same |
+| `F(a, o => x)` | Compile error: a call names all its arguments or none. A positional call (`F(a)`) leaves outputs unconnected. | CODESYS help, "Function" object: "You cannot mix explicit and implicit parameter assignments in function calls in CODESYS 3" ([link](https://content.helpme-codesys.com/en/CODESYS%20Development%20System/_cds_obj_function.html)). | same |
+
 ## Testing
 
 - `parse_oscat` runs in default (permissive) mode and should approach 100%.

@@ -363,6 +363,9 @@ struct Param {
     /// VAR_IN_OUT. IEC 61131-3 defines these as pass-by-reference, so the LLVM
     /// parameter is a pointer to the caller's variable rather than a copy of it.
     is_in_out: bool,
+    /// VAR_OUTPUT of a FUNCTION or METHOD. Passed as a pointer to a caller-owned
+    /// temporary; the caller copies it to the `=>` target after the call.
+    is_output: bool,
 }
 
 /// Information about a compiled method on an FB/Class.
@@ -387,6 +390,9 @@ struct PouField {
     /// IEC 61131-3 defines VAR_IN_OUT as pass-by-reference.
     stored: IecType,
     is_in_out: bool,
+    /// The variable block the field was declared in; `None` for a STRUCT member.
+    /// Decides which of `:=` / `=>` a call may bind it with.
+    block: Option<VarBlockKind>,
     /// `AT %..`: the variable lives at this process-image location. Its slot in the
     /// state struct is kept (so field indices do not shift) but never used.
     at: Option<crate::direct_address::DirectAddress>,
@@ -400,6 +406,7 @@ impl PouField {
             declared: ty.clone(),
             stored: ty,
             is_in_out: false,
+            block: None,
             at: None,
         }
     }
@@ -466,6 +473,8 @@ pub struct Compiler<'ctx> {
     /// is for. Duplicate `TYPE` names are rejected before this is populated, so the
     /// mapping is unambiguous.
     type_specs: HashMap<String, TypeSpec>,
+    /// Counter for the synthetic names `copy_output` binds an output slot to.
+    output_copy_seq: u32,
     /// Declared parameters of every user FUNCTION, keyed by lowercased name.
     ///
     /// Recorded before any body is compiled so a call site can bind its arguments by
@@ -511,6 +520,7 @@ impl<'ctx> Compiler<'ctx> {
             compiled_fbs: HashMap::new(),
             type_specs: HashMap::new(),
             fn_signatures: HashMap::new(),
+            output_copy_seq: 0,
             fn_return_types: HashMap::new(),
             current_struct_type: None,
             current_state_ptr: None,
@@ -4047,6 +4057,7 @@ impl<'ctx> Compiler<'ctx> {
                     declared,
                     stored,
                     is_in_out,
+                    block: Some(block.kind),
                     at,
                 });
             }
@@ -4068,6 +4079,7 @@ impl<'ctx> Compiler<'ctx> {
         for (kind, is_in_out) in [
             (VarBlockKind::VarInput, false),
             (VarBlockKind::VarInOut, true),
+            (VarBlockKind::VarOutput, false),
         ] {
             for block in var_blocks.iter().filter(|b| b.kind == kind) {
                 for decl in &block.declarations {
@@ -4076,6 +4088,7 @@ impl<'ctx> Compiler<'ctx> {
                         name: decl.name.name.clone(),
                         ty,
                         is_in_out,
+                        is_output: kind == VarBlockKind::VarOutput,
                     });
                 }
             }
@@ -4090,7 +4103,7 @@ impl<'ctx> Compiler<'ctx> {
         params
             .iter()
             .map(|p| {
-                if p.is_in_out {
+                if p.is_in_out || p.is_output {
                     ptr_ty.into()
                 } else {
                     self.iec_to_llvm_type(&p.ty).into()
@@ -5491,7 +5504,7 @@ impl<'ctx> Compiler<'ctx> {
             let incoming = function
                 .get_nth_param(first + i as u32)
                 .ok_or_else(|| CodegenError::LlvmError(format!("missing param {}", param.name)))?;
-            let ptr = if param.is_in_out {
+            let ptr = if param.is_in_out || param.is_output {
                 incoming.into_pointer_value()
             } else {
                 let llvm_ty = self.iec_to_llvm_type(&param.ty);
@@ -5595,10 +5608,22 @@ impl<'ctx> Compiler<'ctx> {
                 for decl in &block.declarations {
                     let iec_ty = self.resolve_type_spec(&decl.type_spec);
                     let llvm_ty = self.iec_to_llvm_type(&iec_ty);
-                    let alloca = self
-                        .builder
-                        .build_alloca(llvm_ty, &decl.name.name)
-                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    // A VAR_OUTPUT is a parameter (the caller's temporary), bound by
+                    // `bind_params`; it is initialized here like any local.
+                    let bound_output = if block.kind == VarBlockKind::VarOutput {
+                        self.variables
+                            .get(&decl.name.name.to_uppercase())
+                            .map(|(p, _)| *p)
+                    } else {
+                        None
+                    };
+                    let alloca = match bound_output {
+                        Some(p) => p,
+                        None => self
+                            .builder
+                            .build_alloca(llvm_ty, &decl.name.name)
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?,
+                    };
                     // IEC: a FUNCTION/METHOD local starts every call at its type's
                     // initial value (0 unless declared otherwise). An alloca left
                     // uninitialized made `F := SHL(F, 1) OR 1` accumulate garbage.
@@ -5869,66 +5894,181 @@ impl<'ctx> Compiler<'ctx> {
     /// positionally is a silent wrong answer: `SUB2(b := 3, a := 10)` on
     /// `SUB2 := a - b` returned -7 instead of 7.
     ///
-    /// The rule matches the one METHOD calls already use — a call is either wholly
-    /// named or wholly positional. Mixing the two has no unambiguous reading (does the
-    /// first positional argument fill the first parameter, or the first *unnamed* one?)
-    /// so it is rejected rather than guessed at.
+    /// A call either names every argument or none, as CODESYS 3 requires. Positional
+    /// arguments fill the VAR_INPUT / VAR_IN_OUT parameters in declaration order; a
+    /// positional call leaves every VAR_OUTPUT unconnected.
+    ///
+    /// The result has one slot per parameter. Every input and in-out must be given;
+    /// a VAR_OUTPUT slot is `Some` only when the call binds it with `=>`. Binding an
+    /// input with `=>`, or an output with `:=`, is an error — CODESYS rejects both.
     fn bind_args<'a>(
         callee: &str,
         params: &[Param],
         args: &'a [CallArg],
-    ) -> Result<Vec<&'a Expression>, CodegenError> {
+    ) -> Result<Vec<Option<&'a CallArg>>, CodegenError> {
         let err = |problem: String| CodegenError::ArgumentBinding {
             callee: callee.to_string(),
             problem,
         };
 
-        let named = args.iter().filter(|a| a.name.is_some()).count();
-        if named == 0 {
-            return Ok(args.iter().map(|a| &a.value).collect());
-        }
-        if named != args.len() {
-            return Err(err(
-                "named and positional arguments cannot be mixed — name every argument \
-                 or none of them"
-                    .into(),
-            ));
-        }
-
-        // Every argument names a declared parameter…
+        let mut bound: Vec<Option<&'a CallArg>> = vec![None; params.len()];
+        let mut seen_named = false;
+        let mut next_positional = params.iter().enumerate().filter(|(_, p)| !p.is_output);
         for arg in args {
-            let Some(name) = &arg.name else { continue };
-            if !params
-                .iter()
-                .any(|p| p.name.eq_ignore_ascii_case(&name.name))
-            {
-                return Err(err(format!("there is no parameter named `{}`", name.name)));
+            let Some(name) = &arg.name else {
+                if seen_named {
+                    return Err(err(
+                        "a positional argument cannot follow a named one".into(),
+                    ));
+                }
+                let Some((i, _)) = next_positional.next() else {
+                    return Err(err(format!(
+                        "too many arguments: it takes {} input(s)",
+                        params.iter().filter(|p| !p.is_output).count()
+                    )));
+                };
+                bound[i] = Some(arg);
+                continue;
+            };
+            seen_named = true;
+            // `F(10, b := 3)`: does 10 fill `a`, or the first parameter not named
+            // later? CODESYS 3 rejects every mix of named and positional arguments,
+            // `F(10, o => x)` included, so a call names all its arguments or none.
+            if args.iter().any(|a| a.name.is_none()) {
+                return Err(err(
+                    "named and positional arguments cannot be mixed — name every \
+                     argument or none of them (to read an output, name the inputs too: \
+                     `F(a := 10, o => x)`)"
+                        .into(),
+                ));
             }
-        }
-        // …at most once…
-        for (i, arg) in args.iter().enumerate() {
-            let Some(name) = &arg.name else { continue };
-            if args[..i]
+            let Some(i) = params
                 .iter()
-                .any(|a| a.name.as_ref().is_some_and(|n| n.name == name.name))
-            {
+                .position(|p| p.name.eq_ignore_ascii_case(&name.name))
+            else {
+                return Err(err(format!("there is no parameter named `{}`", name.name)));
+            };
+            let param = &params[i];
+            Self::check_binding_direction(callee, &param.name, Self::param_block(param), arg)?;
+            if bound[i].is_some() {
                 return Err(err(format!("`{}` is given more than once", name.name)));
             }
+            bound[i] = Some(arg);
         }
-        // …and every declared parameter is given.
-        params
-            .iter()
-            .map(|p| {
-                args.iter()
-                    .find(|a| {
-                        a.name
-                            .as_ref()
-                            .is_some_and(|n| n.name.eq_ignore_ascii_case(&p.name))
-                    })
-                    .map(|a| &a.value)
-                    .ok_or_else(|| err(format!("no value for parameter `{}`", p.name)))
-            })
-            .collect()
+        for (p, b) in params.iter().zip(&bound) {
+            if b.is_none() && !p.is_output {
+                return Err(err(format!("no value for parameter `{}`", p.name)));
+            }
+        }
+        Ok(bound)
+    }
+
+    fn param_block(param: &Param) -> VarBlockKind {
+        if param.is_output {
+            VarBlockKind::VarOutput
+        } else if param.is_in_out {
+            VarBlockKind::VarInOut
+        } else {
+            VarBlockKind::VarInput
+        }
+    }
+
+    /// `name => v` binds only a VAR_OUTPUT; `name := v` never binds one.
+    ///
+    /// Treating `=>` as `:=` stored the target into the output before the call and
+    /// never copied the result back. Assigning an output with `:=` in a call is an
+    /// error in CODESYS, and IEC 61131-3 §6.6.1.4 only defines `=>` for outputs.
+    fn check_binding_direction(
+        callee: &str,
+        param: &str,
+        block: VarBlockKind,
+        arg: &CallArg,
+    ) -> Result<(), CodegenError> {
+        let kind = match block {
+            VarBlockKind::VarInput => "VAR_INPUT",
+            VarBlockKind::VarOutput => "VAR_OUTPUT",
+            VarBlockKind::VarInOut => "VAR_IN_OUT",
+            _ => "not a parameter (a local variable)",
+        };
+        let problem = if arg.is_output && block != VarBlockKind::VarOutput {
+            format!(
+                "`{param}` is {kind}; `=>` binds only a VAR_OUTPUT — pass it with `{param} := ...`"
+            )
+        } else if !arg.is_output && block == VarBlockKind::VarOutput {
+            format!(
+                "`{param}` is VAR_OUTPUT and cannot be assigned in a call; \
+                 read it with `{param} => variable`"
+            )
+        } else {
+            return Ok(());
+        };
+        Err(CodegenError::ArgumentBinding {
+            callee: callee.to_string(),
+            problem,
+        })
+    }
+
+    /// Allocate a stack slot in `function`'s entry block, whatever block the builder
+    /// is in, so a call inside a loop does not grow the stack every iteration.
+    fn entry_alloca(
+        &self,
+        function: FunctionValue<'ctx>,
+        ty: BasicTypeEnum<'ctx>,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let entry = function
+            .get_first_basic_block()
+            .ok_or_else(|| CodegenError::LlvmError("function has no entry block".into()))?;
+        let b = self.context.create_builder();
+        match entry.get_first_instruction() {
+            Some(i) => b.position_before(&i),
+            None => b.position_at_end(entry),
+        }
+        b.build_alloca(ty, name)
+            .map_err(|e| CodegenError::LlvmError(e.to_string()))
+    }
+
+    /// After a call, copy one output (at `src`, of type `src_ty`) to the `=>` target,
+    /// inverted for `NOT q => x`.
+    ///
+    /// The copy is compiled as the assignment `target := [NOT] <output>` so it gets
+    /// exactly the assignment semantics — width and signedness coercion, bounded
+    /// STRING copies, STRUCT copies, any addressable target (`arr[i]`, `s.f`, `%QX0.0`).
+    fn copy_output(
+        &mut self,
+        arg: &CallArg,
+        src: PointerValue<'ctx>,
+        src_ty: &IecType,
+        function: FunctionValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let tmp_name = format!("__PLCC_OUT{}", self.output_copy_seq);
+        self.output_copy_seq += 1;
+        self.variables
+            .insert(tmp_name.clone(), (src, src_ty.clone()));
+        let span = arg.span;
+        let mut value = Expression {
+            kind: ExpressionKind::Identifier(Ident::new(tmp_name.clone(), span)),
+            span,
+        };
+        if arg.negated {
+            value = Expression {
+                kind: ExpressionKind::UnaryOp {
+                    op: UnaryOp::Not,
+                    operand: Box::new(value),
+                },
+                span,
+            };
+        }
+        let stmt = Statement {
+            kind: StatementKind::Assignment {
+                target: arg.value.clone(),
+                value,
+            },
+            span,
+        };
+        let result = self.compile_statement(&stmt, function);
+        self.variables.remove(&tmp_name);
+        result
     }
 
     fn layout_pou_methods(&mut self, unit: &CompilationUnit) {
@@ -5992,10 +6132,22 @@ impl<'ctx> Compiler<'ctx> {
                 for decl in &block.declarations {
                     let iec_ty = self.resolve_type_spec(&decl.type_spec);
                     let llvm_ty = self.iec_to_llvm_type(&iec_ty);
-                    let alloca = self
-                        .builder
-                        .build_alloca(llvm_ty, &decl.name.name)
-                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                    // A VAR_OUTPUT is a parameter (the caller's temporary), bound by
+                    // `bind_params`; it is initialized here like any local.
+                    let bound_output = if block.kind == VarBlockKind::VarOutput {
+                        self.variables
+                            .get(&decl.name.name.to_uppercase())
+                            .map(|(p, _)| *p)
+                    } else {
+                        None
+                    };
+                    let alloca = match bound_output {
+                        Some(p) => p,
+                        None => self
+                            .builder
+                            .build_alloca(llvm_ty, &decl.name.name)
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?,
+                    };
                     // IEC: a FUNCTION/METHOD local starts every call at its type's
                     // initial value (0 unless declared otherwise). An alloca left
                     // uninitialized made `F := SHL(F, 1) OR 1` accumulate garbage.
@@ -6418,7 +6570,9 @@ impl<'ctx> Compiler<'ctx> {
         function: FunctionValue<'ctx>,
         label: &str,
     ) -> Result<(), CodegenError> {
-        // Write named arguments (inputs) to the FB struct fields
+        // Write named arguments (inputs) to the FB struct fields. Output bindings
+        // (`q => x`) are collected and copied out after the call.
+        let mut outputs = Vec::new();
         for arg in args {
             if let Some(arg_name) = &arg.name {
                 // Find the field index in the FB's struct
@@ -6432,10 +6586,18 @@ impl<'ctx> Compiler<'ctx> {
                         ))
                     })?;
                 let field = fields[field_idx].clone();
+                if let Some(block) = field.block {
+                    Self::check_binding_direction(label, &field.name, block, arg)?;
+                }
                 let field_ptr = self
                     .builder
                     .build_struct_gep(struct_type, fb_ptr, field_idx as u32, &arg_name.name)
                     .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+
+                if arg.is_output {
+                    outputs.push((arg, field_ptr, field.declared.clone()));
+                    continue;
+                }
 
                 if field.is_in_out {
                     // Bind the reference: the slot holds the *address* of the caller's
@@ -6485,6 +6647,9 @@ impl<'ctx> Compiler<'ctx> {
             .build_call(scan_fn, &[fb_ptr.into()], "fb_call")
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
 
+        for (arg, field_ptr, ty) in outputs {
+            self.copy_output(arg, field_ptr, &ty, function)?;
+        }
         Ok(())
     }
 
@@ -6523,8 +6688,25 @@ impl<'ctx> Compiler<'ctx> {
             &method_info.params,
             args,
         )?;
-        for (i, arg) in ordered.iter().enumerate() {
+        let mut outputs = Vec::new();
+        for (i, bound) in ordered.iter().enumerate() {
             let param = method_info.params.get(i);
+            if let Some(p) = param.filter(|p| p.is_output) {
+                let llvm_ty = self.iec_to_llvm_type(&p.ty);
+                let tmp = self.entry_alloca(function, llvm_ty, &p.name)?;
+                if let Some(a) = bound {
+                    outputs.push((*a, tmp, p.ty.clone()));
+                }
+                call_args.push(tmp.into());
+                continue;
+            }
+            let Some(bound) = bound else {
+                return Err(CodegenError::ArgumentBinding {
+                    callee: format!("{instance_name}.{method_name}"),
+                    problem: format!("no value for argument {}", i + 1),
+                });
+            };
+            let arg = &bound.value;
             if param.is_some_and(|p| p.is_in_out) {
                 call_args.push(
                     self.compile_argument_reference(
@@ -6562,6 +6744,9 @@ impl<'ctx> Compiler<'ctx> {
             .builder
             .build_call(method_fn, &call_args_meta, "method_call")
             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+        for (a, tmp, ty) in outputs {
+            self.copy_output(a, tmp, &ty, function)?;
+        }
 
         match call.try_as_basic_value() {
             inkwell::values::ValueKind::Basic(v) => Ok(Some(v)),
@@ -7744,13 +7929,32 @@ impl<'ctx> Compiler<'ctx> {
                         // order. A callee with no recorded signature (not a FUNCTION in
                         // this unit) has no parameter names to bind against, so it stays
                         // positional rather than being rejected for naming them.
-                        let ordered = match &signature {
+                        let ordered: Vec<Option<&CallArg>> = match &signature {
                             Some(params) => Self::bind_args(&ident.name, params, args)?,
-                            None => args.iter().map(|a| &a.value).collect(),
+                            None => args.iter().map(Some).collect(),
                         };
                         let mut compiled_args = Vec::new();
-                        for (i, arg) in ordered.iter().enumerate() {
+                        let mut outputs = Vec::new();
+                        for (i, bound) in ordered.iter().enumerate() {
                             let param = params.get(i);
+                            // A VAR_OUTPUT parameter points at a temporary that is
+                            // copied to its `=>` target after the call.
+                            if let Some(p) = param.filter(|p| p.is_output) {
+                                let llvm_ty = self.iec_to_llvm_type(&p.ty);
+                                let tmp = self.entry_alloca(function, llvm_ty, &p.name)?;
+                                if let Some(a) = bound {
+                                    outputs.push((*a, tmp, p.ty.clone()));
+                                }
+                                compiled_args.push(tmp.into());
+                                continue;
+                            }
+                            let Some(bound) = bound else {
+                                return Err(CodegenError::ArgumentBinding {
+                                    callee: ident.name.clone(),
+                                    problem: format!("no value for argument {}", i + 1),
+                                });
+                            };
+                            let arg = &bound.value;
                             // A VAR_IN_OUT parameter takes the caller's address.
                             if param.is_some_and(|p| p.is_in_out) {
                                 let ptr = self.compile_argument_reference(
@@ -7778,6 +7982,9 @@ impl<'ctx> Compiler<'ctx> {
                             .builder
                             .build_call(fn_val, &compiled_args, "call")
                             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                        for (a, tmp, ty) in outputs {
+                            self.copy_output(a, tmp, &ty, function)?;
+                        }
                         match call.try_as_basic_value() {
                             inkwell::values::ValueKind::Basic(v) => Ok(Some(v)),
                             inkwell::values::ValueKind::Instruction(_) => self.no_value_here(expr),

@@ -295,6 +295,10 @@ pub struct CallArg {
     pub name: Option<Ident>,
     pub value: Expression,
     pub is_output: bool,
+    /// `NOT Q => x`: the output is inverted on its way to `x` (IEC 61131-3 §6.6.1.4).
+    /// Only meaningful with `is_output`.
+    #[serde(default)]
+    pub negated: bool,
     pub span: Span,
 }
 

@@ -1951,6 +1951,29 @@ impl<'s> Parser<'s> {
             let start = self.ts.peek_span();
             // Check for named argument: name := value or name => value
             let checkpoint = self.ts.pos;
+            // `NOT name => variable`: an inverted output binding (IEC 61131-3
+            // §6.6.1.4). Anything else starting with NOT is an ordinary expression.
+            if self.ts.eat(&Token::Not).is_some() {
+                if matches!(self.ts.peek(), Some(Token::Identifier)) {
+                    let ident = self.expect_ident();
+                    if self.ts.eat(&Token::OutputAssign).is_some() {
+                        let value = self.parse_expression();
+                        let span = start.merge(value.span);
+                        args.push(CallArg {
+                            name: Some(ident),
+                            value,
+                            is_output: true,
+                            negated: true,
+                            span,
+                        });
+                        if self.ts.eat(&Token::Comma).is_none() {
+                            break;
+                        }
+                        continue;
+                    }
+                }
+                self.ts.pos = checkpoint;
+            }
             if matches!(self.ts.peek(), Some(Token::Identifier)) {
                 let ident = self.expect_ident();
                 if self.ts.eat(&Token::Assign).is_some() {
@@ -1960,6 +1983,7 @@ impl<'s> Parser<'s> {
                         name: Some(ident),
                         value,
                         is_output: false,
+                        negated: false,
                         span,
                     });
                     if self.ts.eat(&Token::Comma).is_none() {
@@ -1973,6 +1997,7 @@ impl<'s> Parser<'s> {
                         name: Some(ident),
                         value,
                         is_output: true,
+                        negated: false,
                         span,
                     });
                     if self.ts.eat(&Token::Comma).is_none() {
@@ -1990,6 +2015,7 @@ impl<'s> Parser<'s> {
                 name: None,
                 value,
                 is_output: false,
+                negated: false,
                 span,
             });
             if self.ts.eat(&Token::Comma).is_none() {
