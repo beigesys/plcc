@@ -506,11 +506,30 @@ impl TypeChecker {
                     IecType::Void
                 }
             }
+            // `**` is EXPT (IEC 61131-3 Table 23/29): IN1 ANY_REAL, IN2 ANY_NUM, result
+            // IN1's type. An integer base is implicitly converted — 8/16-bit to REAL,
+            // wider to LREAL (Table 11) — so the result is never an integer. This
+            // matches codegen's `compile_expt`.
             BinaryOp::Power => {
-                if left.is_any_real() || right.is_any_num() {
+                if !(left.is_any_num() && right.is_any_num()) {
+                    self.errors.push(CheckError::TypeMismatch {
+                        expected: "ANY_NUM ** ANY_NUM".into(),
+                        found: format!("{left} and {right}"),
+                        span: span.into(),
+                    });
+                    return IecType::Void;
+                }
+                let base = if left.is_any_real() {
+                    left.clone()
+                } else if left.bit_size().is_some_and(|b| b <= 16) {
+                    IecType::Real
+                } else {
+                    IecType::Lreal
+                };
+                if base == IecType::Lreal || *right == IecType::Lreal {
                     IecType::Lreal
                 } else {
-                    IecType::Void
+                    IecType::Real
                 }
             }
             BinaryOp::Equal

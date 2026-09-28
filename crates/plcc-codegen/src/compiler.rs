@@ -556,31 +556,12 @@ impl<'ctx> Compiler<'ctx> {
                         arg_vals.len()
                     )));
                 }
-                let base = self.ensure_float(arg_vals[0])?;
-                let exp_val = self.ensure_float(arg_vals[1])?;
-                let (base, exp_val) = self.match_float_widths(base, exp_val)?;
-                let fty = base.get_type();
-                let intr = Intrinsic::find("llvm.pow").ok_or_else(|| {
-                    CodegenError::LlvmError("intrinsic llvm.pow not found".into())
-                })?;
-                let fn_val = intr
-                    .get_declaration(&self.module, &[fty.into()])
-                    .ok_or_else(|| {
-                        CodegenError::LlvmError("failed to get llvm.pow declaration".into())
-                    })?;
-                let result = self
-                    .builder
-                    .build_call(fn_val, &[base.into(), exp_val.into()], "expt")
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                    .try_as_basic_value();
-                let result = match result {
-                    inkwell::values::ValueKind::Basic(v) => v,
-                    _ => {
-                        return Err(CodegenError::LlvmError(
-                            "expected return value from intrinsic".into(),
-                        ));
-                    }
-                };
+                let result = self.compile_expt(
+                    arg_vals[0],
+                    arg_tys.first().and_then(|t| t.as_ref()),
+                    arg_vals[1],
+                    arg_tys.get(1).and_then(|t| t.as_ref()),
+                )?;
                 Ok(Some(result))
             }
 
@@ -3354,6 +3335,116 @@ impl<'ctx> Compiler<'ctx> {
                 .build_float_ext(a, self.context.f64_type(), "fext")
                 .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
             Ok((a_ext, b))
+        }
+    }
+
+    /// The REAL type an EXPT operand of IEC type `ty` is evaluated in.
+    ///
+    /// IEC 61131-3 (3rd ed., Table 23 no. 7 and Table 29) defines `**` as EXPT:
+    /// `IN1 : ANY_REAL`, `IN2 : ANY_NUM`, result the type of IN1. An integer base
+    /// reaches IN1 through the implicit conversions of Table 11: SINT/INT/USINT/UINT
+    /// (and the 8/16-bit ANY_BIT) to REAL, the 32/64-bit integers to LREAL. A bare
+    /// integer literal has no type of its own here, so it takes LREAL, which is exact
+    /// for every integer result up to 2**53.
+    fn expt_float_type(&self, ty: Option<&IecType>) -> inkwell::types::FloatType<'ctx> {
+        match ty {
+            Some(IecType::Real) => self.context.f32_type(),
+            Some(t) if t.bit_size().is_some_and(|b| b <= 16) => self.context.f32_type(),
+            _ => self.context.f64_type(),
+        }
+    }
+
+    /// Integer to floating point, honouring the source's signedness: a BYTE holding
+    /// 200 is 200.0, not -56.0.
+    fn int_to_float(
+        &self,
+        iv: inkwell::values::IntValue<'ctx>,
+        ty: Option<&IecType>,
+        fty: inkwell::types::FloatType<'ctx>,
+    ) -> Result<inkwell::values::FloatValue<'ctx>, CodegenError> {
+        if iv.get_type().get_bit_width() == 1 || Self::widens_unsigned_opt(ty) {
+            self.builder.build_unsigned_int_to_float(iv, fty, "uitof")
+        } else {
+            self.builder.build_signed_int_to_float(iv, fty, "itof")
+        }
+        .map_err(|e| CodegenError::LlvmError(e.to_string()))
+    }
+
+    /// `base ** exp` and `EXPT(base, exp)`: always a REAL/LREAL result, per the
+    /// standard (see [`Self::expt_float_type`]).
+    ///
+    /// Integer operands are converted, not truncated to an integer power: `2 ** -1`
+    /// is 0.5, `0 ** 0` is 1.0, `0 ** -1` is +inf (C `pow` semantics). Assigning the
+    /// result to an integer variable converts it back, exactly for every integer
+    /// result an LREAL holds exactly.
+    fn compile_expt(
+        &self,
+        base: BasicValueEnum<'ctx>,
+        base_ty: Option<&IecType>,
+        exp: BasicValueEnum<'ctx>,
+        exp_ty: Option<&IecType>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let base = if base.is_float_value() {
+            base.into_float_value()
+        } else {
+            let iv = self.int_operand(base, "the base of EXPT / **")?;
+            self.int_to_float(iv, base_ty, self.expt_float_type(base_ty))?
+        };
+        let exp = if exp.is_float_value() {
+            exp.into_float_value()
+        } else {
+            let iv = self.int_operand(exp, "the exponent of EXPT / **")?;
+            self.int_to_float(iv, exp_ty, base.get_type())?
+        };
+        let (base, exp) = self.match_float_widths(base, exp)?;
+        let fty = base.get_type();
+        let intr = Intrinsic::find("llvm.pow")
+            .ok_or_else(|| CodegenError::LlvmError("intrinsic llvm.pow not found".into()))?;
+        let fn_val = intr
+            .get_declaration(&self.module, &[fty.into()])
+            .ok_or_else(|| CodegenError::LlvmError("failed to get llvm.pow declaration".into()))?;
+        match self
+            .builder
+            .build_call(fn_val, &[base.into(), exp.into()], "expt")
+            .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+            .try_as_basic_value()
+        {
+            inkwell::values::ValueKind::Basic(v) => Ok(v),
+            _ => Err(CodegenError::LlvmError(
+                "expected return value from llvm.pow".into(),
+            )),
+        }
+    }
+
+    /// Static IEC type of `l ** r`, mirroring what [`Self::compile_expt`] produces.
+    fn expt_result_type(&self, l: &Expression, r: &Expression) -> IecType {
+        let float_of = |e: &Expression| -> Option<IecType> {
+            match self.rvalue_iec_type(e) {
+                Some(t @ (IecType::Real | IecType::Lreal)) => Some(t),
+                _ if Self::is_real_literal(e) => Some(IecType::Real),
+                _ => None,
+            }
+        };
+        let base = float_of(l).unwrap_or_else(|| {
+            if self.expt_float_type(self.rvalue_iec_type(l).as_ref()) == self.context.f32_type()
+            {
+                IecType::Real
+            } else {
+                IecType::Lreal
+            }
+        });
+        match (base, float_of(r)) {
+            (IecType::Lreal, _) | (_, Some(IecType::Lreal)) => IecType::Lreal,
+            _ => IecType::Real,
+        }
+    }
+
+    fn is_real_literal(e: &Expression) -> bool {
+        match &e.kind {
+            ExpressionKind::RealLiteral(_) => true,
+            ExpressionKind::Parenthesized(inner) => Self::is_real_literal(inner),
+            ExpressionKind::UnaryOp { operand, .. } => Self::is_real_literal(operand),
+            _ => false,
         }
     }
 
@@ -6616,6 +6707,7 @@ impl<'ctx> Compiler<'ctx> {
                 | BinaryOp::LessEqual
                 | BinaryOp::Greater
                 | BinaryOp::GreaterEqual => Some(IecType::Bool),
+                BinaryOp::Power => Some(self.expt_result_type(left, right)),
                 // The wider operand's type governs — except when the two disagree
                 // about signedness, where the operator runs in a wider signed type
                 // and the result has to say so. A literal operand contributes nothing,
@@ -6651,6 +6743,9 @@ impl<'ctx> Compiler<'ctx> {
                     // ABS never changes its argument's type.
                     "ABS" => arg_ty(0),
                     "TRUNC" => Some(IecType::Dint),
+                    "EXPT" if args.len() == 2 => {
+                        Some(self.expt_result_type(&args[0].value, &args[1].value))
+                    }
                     // The address of the argument, typed as a pointer to it.
                     "ADR" if self.module.get_function("adr").is_none() => args
                         .first()
@@ -7511,6 +7606,11 @@ impl<'ctx> Compiler<'ctx> {
                 )));
             }
         }
+        // `**` is EXPT, whose result is always ANY_REAL — never an integer power.
+        if op == BinaryOp::Power {
+            return self.compile_expt(left, left_ty, right, right_ty);
+        }
+
         // Check if we're dealing with integers or floats
         let is_float = left.is_float_value() || right.is_float_value();
 
@@ -7745,8 +7845,9 @@ impl<'ctx> Compiler<'ctx> {
                         .into());
                 }
                 BinaryOp::Power => {
-                    // Integer power — not directly supported, return left for now
-                    l
+                    return Err(CodegenError::LlvmError(
+                        "internal: `**` reached the integer operator path".into(),
+                    ));
                 }
             };
             Ok(result.into())

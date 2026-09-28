@@ -101,6 +101,7 @@ Complete IEC 61131-3:2013 (3rd edition) Structured Text:
 | CONFIGURATION, RESOURCE, TASK | Parsed |
 | Direct representation (%I, %Q, %M) | Parsed |
 | Typed literals (INT#5, REAL#3.14) | Full |
+| Exponentiation `**` / EXPT | Full — per IEC Table 23/29 the result is ANY_REAL even for integer operands: an integer base converts to REAL (8/16-bit) or LREAL (32/64-bit, and bare literals), so `2 ** -1` is 0.5, `0 ** 0` is 1.0, `0 ** -1` is +inf; `plcc compile` converts the result back when it is assigned to an integer variable (exact up to 2**53), while `plcc check` reports that as the REAL-into-integer mismatch it is |
 | POINTER TO, dereference (^), ADR, SIZEOF | Full — `pt^` as a value and a target, `pt^[i]`, `pt^.f`; CODESYS byte-addressed pointer arithmetic (`pt := pt + 1`) |
 | Pragmas, block/line comments | Full |
 

@@ -310,3 +310,56 @@ fn non_bool_if_condition_rejected() {
         "expected TypeMismatch with expected=BOOL, got: {errors:?}"
     );
 }
+
+#[test]
+fn power_result_is_real_per_expt() {
+    // IEC 61131-3 Table 23/29: `**` is EXPT, IN1 ANY_REAL, so an INT base is
+    // converted to REAL and a DINT base to LREAL. The result is never an integer.
+    let ok = r#"
+        PROGRAM test
+        VAR
+            i : INT;
+            d : DINT;
+            r : REAL;
+            l : LREAL;
+        END_VAR
+            r := i ** 2;
+            r := r ** i;
+            l := d ** 2;
+            l := i ** d;
+        END_PROGRAM
+    "#;
+    let errors = check_src(ok);
+    assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
+
+    let into_int = r#"
+        PROGRAM test
+        VAR
+            i : INT;
+        END_VAR
+            i := i ** 2;
+        END_PROGRAM
+    "#;
+    assert!(
+        check_src(into_int)
+            .iter()
+            .any(|e| matches!(e, CheckError::TypeMismatch { .. })),
+        "INT := INT ** INT assigns a REAL to an INT"
+    );
+
+    let on_bool = r#"
+        PROGRAM test
+        VAR
+            b : BOOL;
+            r : REAL;
+        END_VAR
+            r := b ** 2;
+        END_PROGRAM
+    "#;
+    assert!(
+        check_src(on_bool)
+            .iter()
+            .any(|e| matches!(e, CheckError::TypeMismatch { .. })),
+        "BOOL is not ANY_NUM"
+    );
+}

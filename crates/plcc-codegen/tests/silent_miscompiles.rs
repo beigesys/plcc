@@ -493,3 +493,119 @@ END_PROGRAM
     let w = u16::from_ne_bytes([state[8], state[9]]);
     assert_eq!(w, 0xFF0F);
 }
+
+// ---------------------------------------------------------------------------
+// `**` is EXPT: ANY_REAL result (IEC 61131-3 Table 23/29)
+// ---------------------------------------------------------------------------
+
+fn lreal(state: &[u8], idx: usize) -> f64 {
+    let o = idx * 8;
+    f64::from_ne_bytes(state[o..o + 8].try_into().unwrap())
+}
+
+fn real(state: &[u8], idx: usize) -> f32 {
+    let o = idx * 4;
+    f32::from_ne_bytes(state[o..o + 4].try_into().unwrap())
+}
+
+#[test]
+fn integer_power_into_integer_variables() {
+    let src = r#"
+PROGRAM p
+VAR
+    r1 : DINT;
+    r2 : DINT;
+    r3 : DINT;
+    r4 : DINT;
+    r5 : DINT;
+    r6 : DINT;
+    r7 : DINT;
+    i : INT := 3;
+    n : DINT := 4;
+    d : DINT := 3;
+END_VAR
+    r1 := 2 ** 10;
+    r2 := i ** 2;
+    r3 := d ** 19;
+    r4 := 10 ** n;
+    r5 := (-2) ** 3;
+    r6 := 0 ** 0;
+    r7 := 7 ** 1 + 1;
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(dint(&state, 0), 1024);
+    assert_eq!(dint(&state, 1), 9);
+    assert_eq!(dint(&state, 2), 1_162_261_467, "3**19 exact: DINT base goes via LREAL");
+    assert_eq!(dint(&state, 3), 10_000);
+    assert_eq!(dint(&state, 4), -8);
+    assert_eq!(dint(&state, 5), 1, "0 ** 0 = 1");
+    assert_eq!(dint(&state, 6), 8);
+}
+
+#[test]
+fn power_negative_exponent_is_real() {
+    let src = r#"
+PROGRAM p
+VAR
+    a : LREAL;
+    b : LREAL;
+    c : LREAL;
+    k : INT := -2;
+END_VAR
+    a := 2 ** -1;
+    b := 10 ** k;
+    c := 0 ** -1;
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(lreal(&state, 0), 0.5);
+    assert!((lreal(&state, 1) - 0.01).abs() < 1e-7, "10 ** -2 = 0.01");
+    assert!(lreal(&state, 2).is_infinite(), "0 ** -1 = +inf");
+}
+
+#[test]
+fn real_and_mixed_power() {
+    let src = r#"
+PROGRAM p
+VAR
+    a : REAL;
+    b : REAL;
+    c : REAL;
+    d : REAL;
+    x : REAL := 9.0;
+    e : REAL;
+    bb : BYTE := 200;
+END_VAR
+    a := x ** 0.5;
+    b := 1.5 ** 2;
+    c := x ** 2;
+    d := 2 ** 0.5;
+    e := bb ** 1;
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(real(&state, 0), 3.0);
+    assert_eq!(real(&state, 1), 2.25);
+    assert_eq!(real(&state, 2), 81.0);
+    assert!((real(&state, 3) - std::f32::consts::SQRT_2).abs() < 1e-6);
+    assert_eq!(real(&state, 5), 200.0, "BYTE 200 is 200.0, not -56.0");
+}
+
+#[test]
+fn expt_function_matches_operator() {
+    let src = r#"
+PROGRAM p
+VAR
+    r1 : DINT;
+    r2 : REAL;
+    b : BYTE := 200;
+END_VAR
+    r1 := EXPT(3, 4);
+    r2 := EXPT(b, 1);
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(dint(&state, 0), 81);
+    assert_eq!(real(&state, 1), 200.0);
+}
