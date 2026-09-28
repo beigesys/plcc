@@ -22,6 +22,7 @@ mod bits;
 mod convert;
 mod enums;
 mod image;
+mod oop;
 mod strings;
 pub use contract::{RuntimeContract, TaskOptions};
 
@@ -473,6 +474,11 @@ pub struct Compiler<'ctx> {
     rt: image::ContractState<'ctx>,
     /// Enumerators of every enumeration in the unit (see `enums.rs`).
     enums: enums::EnumTable,
+    /// `EXTENDS`: bases and inherited-method origins (see `oop.rs`).
+    hierarchy: oop::Hierarchy,
+    /// Uppercase name of the FB/CLASS whose body or method is being compiled, for
+    /// calls to its methods written without `THIS^.`.
+    current_pou: Option<String>,
 }
 
 impl<'ctx> Compiler<'ctx> {
@@ -501,6 +507,8 @@ impl<'ctx> Compiler<'ctx> {
             no_value_cause: None,
             rt: image::ContractState::default(),
             enums: enums::EnumTable::default(),
+            hierarchy: oop::Hierarchy::default(),
+            current_pou: None,
         }
     }
 
@@ -2656,6 +2664,10 @@ impl<'ctx> Compiler<'ctx> {
         // CONFIGURATION / RESOURCE VAR_GLOBAL blocks become ordinary VAR_GLOBALs.
         let hoisted = contract::hoist_configuration_globals(unit);
         let unit = hoisted.as_ref().unwrap_or(unit);
+        // EXTENDS: every derived FB/CLASS gets its base's variables and methods.
+        let (flattened, hierarchy) = oop::flatten_inheritance(unit)?;
+        self.hierarchy = hierarchy;
+        let unit = flattened.as_ref().unwrap_or(unit);
         self.register_standard_functions();
 
         // Register types and POUs
@@ -4804,11 +4816,13 @@ impl<'ctx> Compiler<'ctx> {
         self.current_struct_type = Some(struct_type);
         self.current_state_ptr = Some(state_ptr);
         self.bind_state_fields(struct_type, state_ptr, &fields)?;
+        self.bind_this_super(&fb.name.name, None, state_ptr, function)?;
 
         // Add global variables
         self.add_globals_to_variables()?;
 
         self.compile_pou_body(&fb.body, function, None)?;
+        self.current_pou = None;
 
         self.builder
             .build_return(None)
@@ -5183,6 +5197,8 @@ impl<'ctx> Compiler<'ctx> {
         self.current_state_ptr = Some(instance_ptr);
 
         self.bind_state_fields(fb_struct_type, instance_ptr, fb_fields)?;
+        let saved_pou = self.current_pou.take();
+        self.bind_this_super(fb_name, Some(&method.name.name), instance_ptr, function)?;
 
         // Method params. Param 0 is instance_ptr, so formals start at index 1.
         self.bind_params(function, 1, &params)?;
@@ -5273,6 +5289,7 @@ impl<'ctx> Compiler<'ctx> {
 
         // Restore saved state
         self.variables = saved_vars;
+        self.current_pou = saved_pou;
         self.current_struct_type = saved_struct_type;
         self.current_state_ptr = saved_state_ptr;
 
@@ -5387,6 +5404,17 @@ impl<'ctx> Compiler<'ctx> {
                 self.compile_case(selector, branches, else_body, function)?;
             }
             StatementKind::FunctionCall { callee, args } => {
+                // `M(..)` inside an FB/CLASS is `THIS^.M(..)` when M is its method.
+                if let Some(method) = self.implicit_method_call(callee) {
+                    let stmt = Statement {
+                        kind: StatementKind::FunctionCall {
+                            callee: method,
+                            args: args.clone(),
+                        },
+                        span: stmt.span,
+                    };
+                    return self.compile_statement(&stmt, function);
+                }
                 let as_expression = |this: &mut Self| -> Result<(), CodegenError> {
                     let call_expr = Expression {
                         kind: ExpressionKind::FunctionCall {
@@ -6469,6 +6497,16 @@ impl<'ctx> Compiler<'ctx> {
             // sign-extended it to -4 in any wider destination — the same for
             // `MAX(b, 100)` = 200.
             ExpressionKind::FunctionCall { callee, args } => {
+                if let Some(method) = self.implicit_method_call(callee) {
+                    let call = Expression {
+                        kind: ExpressionKind::FunctionCall {
+                            callee: Box::new(method),
+                            args: args.clone(),
+                        },
+                        span: expr.span,
+                    };
+                    return self.rvalue_iec_type(&call);
+                }
                 // `obj.Method(..)`: the method's declared result type.
                 if let ExpressionKind::MemberAccess { object, member } = &callee.kind {
                     return self
@@ -7058,6 +7096,16 @@ impl<'ctx> Compiler<'ctx> {
             }
             ExpressionKind::Parenthesized(inner) => self.compile_expression(inner, function),
             ExpressionKind::FunctionCall { callee, args } => {
+                if let Some(method) = self.implicit_method_call(callee) {
+                    let call = Expression {
+                        kind: ExpressionKind::FunctionCall {
+                            callee: Box::new(method),
+                            args: args.clone(),
+                        },
+                        span: expr.span,
+                    };
+                    return self.compile_expression(&call, function);
+                }
                 if let ExpressionKind::Identifier(ident) = &callee.kind {
                     // ADR and SIZEOF take their argument as a *location* or a type,
                     // not a value, so they cannot go through the value-evaluating
