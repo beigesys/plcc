@@ -166,6 +166,9 @@ pub enum TypeSpecKind {
     },
     /// POINTER TO base or REF_TO base
     Pointer(Box<TypeSpec>),
+    /// CODESYS `REFERENCE TO base`: stored as an address, but every use of the
+    /// variable means the referenced value; `r REF= x` rebinds it.
+    Reference(Box<TypeSpec>),
     /// Subrange: INT(0..100)
     Subrange {
         base: Ident,

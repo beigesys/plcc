@@ -983,6 +983,10 @@ impl TypeChecker {
                 }
             }
             TypeSpecKind::Pointer(base) => IecType::Pointer(Box::new(self.resolve_type_spec(base))),
+            // A REFERENCE is used as the value it refers to, so that is its type
+            // in every expression. (Codegen stores it as an address; see
+            // `plcc_codegen`'s reference desugaring.)
+            TypeSpecKind::Reference(base) => self.resolve_type_spec(base),
             TypeSpecKind::Subrange { base, low, high } => {
                 let base_ty = self.types.resolve(&base.name).unwrap_or(IecType::Int);
                 let lo = Self::const_int_expr(low).unwrap_or(0);

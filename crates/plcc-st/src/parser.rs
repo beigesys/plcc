@@ -917,13 +917,20 @@ impl<'s> Parser<'s> {
     }
 
     fn parse_pointer_type(&mut self) -> TypeSpec {
-        let start = self.ts.advance().unwrap().1; // consume POINTER/REF_TO/REFERENCE
+        let (tok, start) = self.ts.advance().unwrap(); // consume POINTER/REF_TO/REFERENCE
         // POINTER TO <type> or REF_TO <type> or REFERENCE TO <type>
         self.ts.eat(&Token::To); // consume optional TO
         let base = self.parse_type_spec();
         let end = base.span;
+        // REF_TO (IEC) is dereferenced explicitly, like a POINTER. A CODESYS
+        // REFERENCE is dereferenced implicitly, so it has to stay distinguishable.
+        let kind = if tok == Token::Reference {
+            TypeSpecKind::Reference(Box::new(base))
+        } else {
+            TypeSpecKind::Pointer(Box::new(base))
+        };
         TypeSpec {
-            kind: TypeSpecKind::Pointer(Box::new(base)),
+            kind,
             span: start.merge(end),
         }
     }
@@ -1135,6 +1142,40 @@ impl<'s> Parser<'s> {
                 // Assignment or function call
                 let expr = self.parse_expression();
 
+                if self.ts.eat(&Token::RefAssign).is_some() {
+                    // `r REF= x;` — the reference is bound to x's address. Lowered
+                    // as an assignment of `__REF_OF(x)`, which codegen treats as
+                    // ADR and the reference desugaring leaves un-dereferenced.
+                    let value = self.parse_expression();
+                    let end = self.expect_statement_end();
+                    let span = value.span;
+                    let value = Expression {
+                        kind: ExpressionKind::FunctionCall {
+                            callee: Box::new(Expression {
+                                kind: ExpressionKind::Identifier(Ident::new(
+                                    "__REF_OF".to_string(),
+                                    span,
+                                )),
+                                span,
+                            }),
+                            args: vec![CallArg {
+                                name: None,
+                                value,
+                                is_output: false,
+                                negated: false,
+                                span,
+                            }],
+                        },
+                        span,
+                    };
+                    return Some(Statement {
+                        kind: StatementKind::Assignment {
+                            target: expr,
+                            value,
+                        },
+                        span: start.merge(end),
+                    });
+                }
                 if self.ts.eat(&Token::Assign).is_some() {
                     // Assignment
                     let value = self.parse_expression();

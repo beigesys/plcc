@@ -134,6 +134,9 @@ pub enum Token {
     RefTo,
     #[token("REFERENCE", ignore(case))]
     Reference,
+    /// CODESYS reference assignment: `r REF= x;` binds reference `r` to `x`.
+    #[token("REF=", ignore(case))]
+    RefAssign,
     #[token("STRING", ignore(case))]
     StringType,
     #[token("WSTRING", ignore(case))]

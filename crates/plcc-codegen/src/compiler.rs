@@ -23,6 +23,7 @@ mod convert;
 mod enums;
 mod image;
 mod oop;
+mod refs;
 mod stdfns;
 mod strings;
 pub use contract::{RuntimeContract, TaskOptions};
@@ -482,6 +483,9 @@ pub struct Compiler<'ctx> {
     enums: enums::EnumTable,
     /// `EXTENDS`: bases and inherited-method origins (see `oop.rs`).
     hierarchy: oop::Hierarchy,
+    /// (uppercase FB/CLASS, uppercase input) for every `REFERENCE TO` input: a
+    /// call binds it to its argument's address (see refs.rs).
+    reference_inputs: std::collections::HashSet<(String, String)>,
     /// Uppercase name of the FB/CLASS whose body or method is being compiled, for
     /// calls to its methods written without `THIS^.`.
     current_pou: Option<String>,
@@ -514,6 +518,7 @@ impl<'ctx> Compiler<'ctx> {
             rt: image::ContractState::default(),
             enums: enums::EnumTable::default(),
             hierarchy: oop::Hierarchy::default(),
+            reference_inputs: std::collections::HashSet::new(),
             current_pou: None,
         }
     }
@@ -2703,6 +2708,10 @@ impl<'ctx> Compiler<'ctx> {
         let (flattened, hierarchy) = oop::flatten_inheritance(unit)?;
         self.hierarchy = hierarchy;
         let unit = flattened.as_ref().unwrap_or(unit);
+        // REFERENCE TO: every use of a reference means the referenced value.
+        let dereffed = refs::desugar_references(unit);
+        let unit = dereffed.as_ref().unwrap_or(unit);
+        self.reference_inputs = refs::reference_inputs(unit);
         self.register_standard_functions();
 
         // Register types and POUs
@@ -4551,6 +4560,10 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     fn resolve_type_spec(&mut self, spec: &TypeSpec) -> IecType {
+        // A REFERENCE is stored as the address of what it refers to (see refs.rs).
+        if let TypeSpecKind::Reference(base) = &spec.kind {
+            return IecType::Pointer(Box::new(self.resolve_type_spec(base)));
+        }
         let ty = self.type_checker.resolve_type_spec(spec);
         // An inline enumeration (`x : (A, B, C);`) declares its enumerators here.
         if matches!(spec.kind, TypeSpecKind::Enum(_)) {
@@ -5778,10 +5791,15 @@ impl<'ctx> Compiler<'ctx> {
                     continue;
                 }
 
-                if field.is_in_out {
+                let is_reference_input = self
+                    .reference_inputs
+                    .contains(&(fb_type_name.to_uppercase(), field.name.to_uppercase()));
+                if field.is_in_out || is_reference_input {
                     // Bind the reference: the slot holds the *address* of the caller's
                     // variable, so the FB reads and writes it directly. Passing a copy
-                    // is why `f(t := v)` never wrote anything back to v.
+                    // is why `f(t := v)` never wrote anything back to v. A
+                    // `REFERENCE TO` input is bound the same way (`fb(r := x)` is an
+                    // implicit `r REF= x` in CODESYS).
                     let target = self.compile_argument_reference(
                         &arg.value,
                         fb_type_name,
@@ -6605,7 +6623,8 @@ impl<'ctx> Compiler<'ctx> {
                         Some(self.expt_result_type(&args[0].value, &args[1].value))
                     }
                     // The address of the argument, typed as a pointer to it.
-                    "ADR" if self.module.get_function("adr").is_none() => args
+                    "__ISVALIDREF" => Some(IecType::Bool),
+                    "ADR" | "__REF_OF" if self.module.get_function("adr").is_none() => args
                         .first()
                         .and_then(|a| self.lvalue_iec_type(&a.value))
                         .map(|t| IecType::Pointer(Box::new(t))),
@@ -7191,6 +7210,27 @@ impl<'ctx> Compiler<'ctx> {
                     let lname = ident.name.to_lowercase();
                     if lname == "adr" && self.module.get_function("adr").is_none() {
                         return self.compile_adr(args, function).map(Some);
+                    }
+                    // `r REF= x` (see refs.rs).
+                    if lname == "__ref_of" {
+                        return self.compile_adr(args, function).map(Some);
+                    }
+                    // `__ISVALIDREF(r)`: the reference is bound (not NULL).
+                    if lname == "__isvalidref" && args.len() == 1 {
+                        let Some(v) = self.compile_expression(&args[0].value, function)? else {
+                            return Err(self.no_value_error("argument of `__ISVALIDREF`", &args[0].value));
+                        };
+                        let iv = self.int_operand(v, "__ISVALIDREF")?;
+                        let nz = self
+                            .builder
+                            .build_int_compare(IntPredicate::NE, iv, iv.get_type().const_zero(), "isvalid")
+                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                        return Ok(Some(
+                            self.builder
+                                .build_int_z_extend(nz, self.context.i8_type(), "isvalid8")
+                                .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                                .into(),
+                        ));
                     }
                     if lname == "sizeof" && self.module.get_function("sizeof").is_none() {
                         return self.compile_sizeof(args).map(Some);
