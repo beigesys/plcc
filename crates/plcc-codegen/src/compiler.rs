@@ -6901,6 +6901,10 @@ impl<'ctx> Compiler<'ctx> {
                     return None;
                 };
                 let arg_ty = |i: usize| args.get(i).and_then(|a| self.rvalue_iec_type(&a.value));
+                // A FUNCTION of this unit takes precedence over a builtin name.
+                if let Some(t) = self.fn_return_types.get(&name.name.to_lowercase()) {
+                    return Some(t.clone());
+                }
                 match name.name.to_uppercase().as_str() {
                     // Result is the type of IN; N is only a count.
                     "SHL" | "SHR" | "ROL" | "ROR" => arg_ty(0),
@@ -7453,9 +7457,19 @@ impl<'ctx> Compiler<'ctx> {
                     if lname == "sizeof" && self.module.get_function("sizeof").is_none() {
                         return self.compile_sizeof(args).map(Some);
                     }
-                    // Try standard library functions first (case-insensitive)
-                    if let Some(result) = self.compile_stdlib_call(&ident.name, args, function)? {
-                        return Ok(Some(result));
+                    // A FUNCTION declared in this unit wins over a builtin of the same
+                    // name. Trying the builtin first was wrong twice over: a non-IEC
+                    // builtin (FLOOR) shadowed the program's own FUNCTION, and the
+                    // builtin dispatcher compiles every argument before it knows
+                    // whether it handles the name, so a user FUNCTION's arguments were
+                    // emitted twice and a side-effecting argument ran twice.
+                    let user_fn = self.fn_signatures.contains_key(&lname);
+                    if !user_fn {
+                        if let Some(result) =
+                            self.compile_stdlib_call(&ident.name, args, function)?
+                        {
+                            return Ok(Some(result));
+                        }
                     }
 
                     // Fall back to user-defined functions

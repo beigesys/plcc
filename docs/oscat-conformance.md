@@ -43,9 +43,6 @@ CODESYS bit-access dialect question.
 Found along the way and **not** fixed here (each is a silent wrong result, not a
 diagnostic):
 
-- Non-standard builtins (`FLOOR`, `CEIL`, `ROUND`) return REAL and shadow OSCAT's own
-  `FLOOR : DINT` when both are compiled together, because builtins are tried before
-  user FUNCTIONs.
 
 The sections below are the history of the earlier measurements.
 

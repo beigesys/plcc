@@ -816,6 +816,65 @@ END_PROGRAM
     assert_eq!(dint(&state, 52 / 4), 77, "FB input STRING[4] did not overrun");
 }
 
+#[test]
+fn user_function_arguments_are_evaluated_once() {
+    // The builtin dispatcher compiled every argument before finding out the callee
+    // was not a builtin, and the user-FUNCTION path then compiled them again: a
+    // side-effecting argument ran twice.
+    let src = r#"
+VAR_GLOBAL
+    calls : DINT;
+END_VAR
+
+FUNCTION BUMP : DINT
+    calls := calls + 1;
+    BUMP := calls;
+END_FUNCTION
+
+FUNCTION ID : DINT
+VAR_INPUT
+    x : DINT;
+END_VAR
+    ID := x;
+END_FUNCTION
+
+PROGRAM p
+VAR
+    r : DINT;
+    c : DINT;
+END_VAR
+    r := ID(BUMP());
+    c := calls;
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(dint(&state, 0), 1);
+    assert_eq!(dint(&state, 1), 1, "BUMP ran exactly once");
+}
+
+#[test]
+fn user_function_wins_over_nonstandard_builtin() {
+    // FLOOR is not an IEC standard function; a FUNCTION the program declares with
+    // that name is the one that must be called.
+    let src = r#"
+FUNCTION FLOOR : DINT
+VAR_INPUT
+    x : REAL;
+END_VAR
+    FLOOR := 99;
+END_FUNCTION
+
+PROGRAM p
+VAR
+    r : DINT;
+END_VAR
+    r := FLOOR(2.5);
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(dint(&state, 0), 99);
+}
+
 // ---------------------------------------------------------------------------
 // Unsigned integers convert to REAL by their own signedness
 // ---------------------------------------------------------------------------
