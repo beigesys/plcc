@@ -3716,7 +3716,16 @@ impl<'ctx> Compiler<'ctx> {
                 // initialize contributes nothing, so the common case costs one walk
                 // instead of one per element.
                 let mut probe = Vec::new();
-                self.collect_field_inits(base, &mut Vec::new(), visiting, &mut probe);
+                if let IecType::FbInstance(fb) = self.resolve_type_spec(base) {
+                    // An ARRAY OF <FB>: every element is an instance whose `_init`
+                    // must run. The element probe below starts at an empty path,
+                    // where an FB is taken to be the caller's own variable, so the
+                    // elements' declared input/output/local defaults were skipped:
+                    // `fbs : ARRAY[1..3] OF Counter` ran with `inc := 1` as 0.
+                    probe.push((Vec::new(), FieldInit::InitFb(fb)));
+                } else {
+                    self.collect_field_inits(base, &mut Vec::new(), visiting, &mut probe);
+                }
                 if probe.is_empty() {
                     return;
                 }
