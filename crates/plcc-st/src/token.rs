@@ -365,7 +365,8 @@ pub enum Token {
     // standard's `day_second` is likewise not required to be present. Hour /
     // minute / second / month / day accept one or two digits (they are plain
     // integers in the grammar, not fixed-width fields).
-    #[regex(r"(LTIME|TIME|LT|T)#[0-9a-zA-Z_.]+", ignore(case))]
+    // A duration may be negative: `T#-14ms` (IEC 61131-3 Table 8).
+    #[regex(r"(LTIME|TIME|LT|T)#-?[0-9a-zA-Z_.]+", ignore(case))]
     TimeLiteral,
 
     #[regex(r"(LDATE|DATE|LD|D)#[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}", ignore(case))]

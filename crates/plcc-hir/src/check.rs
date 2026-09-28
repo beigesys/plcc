@@ -158,6 +158,11 @@ fn literal_fits(lit: Literal, ty: &IecType) -> bool {
     }
 }
 
+/// Whether a date/time literal is written with an `L` (64-bit) prefix.
+fn long_prefix(literal: &str) -> bool {
+    literal.trim_start().starts_with(['L', 'l'])
+}
+
 /// Numeric in the loose sense CODESYS arithmetic uses: ANY_NUM plus the bit strings
 /// wider than BOOL (`BYTE + 1`, `DWORD * 2` are accepted and computed unsigned).
 fn is_arith(ty: &IecType) -> bool {
@@ -629,10 +634,20 @@ impl TypeChecker {
             ExpressionKind::BoolLiteral(_) => IecType::Bool,
             ExpressionKind::StringLiteral(_) => IecType::StringType { max_len: None },
             ExpressionKind::WstringLiteral(_) => IecType::WstringType { max_len: None },
-            ExpressionKind::TimeLiteral(_) => IecType::Time,
-            ExpressionKind::DateLiteral(_) => IecType::Date,
-            ExpressionKind::TodLiteral(_) => IecType::Tod,
-            ExpressionKind::DtLiteral(_) => IecType::Dt,
+            // The `L` prefixes (`LTIME#`, `LT#`, `LDATE#`, `LD#`, `LTOD#`,
+            // `LTIME_OF_DAY#`, `LDT#`, `LDATE_AND_TIME#`) are the 64-bit types.
+            ExpressionKind::TimeLiteral(s) => {
+                if long_prefix(s) { IecType::Ltime } else { IecType::Time }
+            }
+            ExpressionKind::DateLiteral(s) => {
+                if long_prefix(s) { IecType::Ldate } else { IecType::Date }
+            }
+            ExpressionKind::TodLiteral(s) => {
+                if long_prefix(s) { IecType::Ltod } else { IecType::Tod }
+            }
+            ExpressionKind::DtLiteral(s) => {
+                if long_prefix(s) { IecType::Ldt } else { IecType::Dt }
+            }
             ExpressionKind::DirectVariable(_) => IecType::Void, // Needs context
             ExpressionKind::Identifier(ident) => {
                 if let Some(info) = scope.lookup(&ident.name) {

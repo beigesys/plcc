@@ -177,7 +177,8 @@ fn parse_date_time_literal_ns(kind: &ExpressionKind) -> Option<i64> {
     }
 }
 
-fn parse_time_literal_ns(s: &str) -> i64 {
+/// Nanoseconds of a TIME/LTIME literal, or why it is malformed.
+fn parse_time_literal_ns(s: &str) -> Result<i64, String> {
     let s = s.trim();
     // Strip the duration prefix. IEC 61131-3 Annex A B.1.2.3 allows T#, LT#,
     // TIME# and LTIME#; the lexer accepts all four, so all four must be
@@ -189,6 +190,11 @@ fn parse_time_literal_ns(s: &str) -> i64 {
             (s.len() > p.len() && s[..p.len()].eq_ignore_ascii_case(p)).then(|| &s[p.len()..])
         })
         .unwrap_or(s);
+    // `T#-14ms`: the sign applies to the whole duration.
+    let (negative, s) = match s.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, s),
+    };
     let mut ns: i64 = 0;
     let mut num_buf = String::new();
     let mut chars = s.chars().peekable();
@@ -212,12 +218,9 @@ fn parse_time_literal_ns(s: &str) -> i64 {
                 }
             }
             if unit.is_empty() {
-                // `c` is neither a digit nor a letter (e.g. a stray `#` or `-`).
-                // Consume it so the loop always makes progress — otherwise this
-                // spins forever.
-                chars.next();
-                continue;
+                return Err(format!("unexpected `{c}` in a duration"));
             }
+            // An unknown unit was read as 0 — `T#5x` was a silent T#0s.
             let multiplier: f64 = match unit.to_lowercase().as_str() {
                 "d" => 86_400_000_000_000.0,
                 "h" => 3_600_000_000_000.0,
@@ -226,17 +229,19 @@ fn parse_time_literal_ns(s: &str) -> i64 {
                 "ms" => 1_000_000.0,
                 "us" => 1_000.0,
                 "ns" => 1.0,
-                _ => 0.0,
+                other => return Err(format!("`{other}` is not a duration unit (d, h, m, s, ms, us, ns)")),
             };
-            ns += (val * multiplier) as i64;
+            // Rounded, not truncated: `1.1 * 1e9` is 1100000000.0000002 and
+            // `0.3 * 1e3` is 299.99999999999994.
+            ns += (val * multiplier).round() as i64;
         }
     }
     // Handle trailing number with no unit (assume ms for bare numbers)
     if !num_buf.is_empty() {
         let val: f64 = num_buf.parse().unwrap_or(0.0);
-        ns += (val * 1_000_000.0) as i64; // default ms
+        ns += (val * 1_000_000.0).round() as i64; // default ms
     }
-    ns
+    Ok(if negative { -ns } else { ns })
 }
 
 #[derive(Debug, Error)]
@@ -7252,7 +7257,9 @@ impl<'ctx> Compiler<'ctx> {
                 }
             }
             ExpressionKind::TimeLiteral(s) => {
-                let ns = parse_time_literal_ns(s);
+                let ns = parse_time_literal_ns(s).map_err(|why| {
+                    CodegenError::UnsupportedType(format!("malformed duration `{s}`: {why}"))
+                })?;
                 Ok(Some(
                     self.context.i64_type().const_int(ns as u64, true).into(),
                 ))

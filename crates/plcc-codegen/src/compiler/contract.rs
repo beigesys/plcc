@@ -42,7 +42,7 @@ pub fn parse_duration_ns(text: &str) -> Option<i64> {
         return None;
     }
     let with_prefix = if t.contains('#') { t.to_string() } else { format!("T#{t}") };
-    let ns = super::parse_time_literal_ns(&with_prefix);
+    let ns = super::parse_time_literal_ns(&with_prefix).ok()?;
     (ns >= 0).then_some(ns)
 }
 
@@ -179,7 +179,7 @@ impl<'ctx> Compiler<'ctx> {
     /// Evaluate a TASK property to an integer constant.
     fn task_property_int(&self, expr: &Expression, ty: &IecType) -> Option<i64> {
         match &expr.kind {
-            ExpressionKind::TimeLiteral(s) => Some(super::parse_time_literal_ns(s)),
+            ExpressionKind::TimeLiteral(s) => super::parse_time_literal_ns(s).ok(),
             ExpressionKind::Parenthesized(inner) => self.task_property_int(inner, ty),
             _ => {
                 let v = self.eval_const_initializer(expr, ty)?;
