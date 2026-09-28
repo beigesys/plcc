@@ -1,21 +1,35 @@
 // SPDX-License-Identifier: MPL-2.0
 
 //! Standard functions written in ST and compiled into a module only when it uses
-//! them: REAL/LREAL ⇄ STRING (`real_string.st`). Written in ST because they are
-//! string manipulation, which the compiler already lowers; compiled on demand so
-//! a program that does not use them carries none of their code; given internal
-//! linkage so two plcc objects linked together do not clash.
+//! them: REAL/LREAL ⇄ STRING (`real_string.st`) and TIME/date → STRING
+//! (`time_string.st`). Written in ST because they are string manipulation,
+//! which the compiler already lowers; compiled on demand so a program that does
+//! not use them carries none of their code; given internal linkage so two plcc
+//! objects linked together do not clash.
 
 use super::*;
 
-const REAL_STRING_SRC: &str = include_str!("real_string.st");
-
-/// The names the on-demand sources define that user code may call.
-const PUBLIC: &[&str] = &[
-    "REAL_TO_STRING",
-    "LREAL_TO_STRING",
-    "STRING_TO_REAL",
-    "STRING_TO_LREAL",
+/// Each on-demand source and the names in it that user code may call.
+const SOURCES: &[(&str, &[&str])] = &[
+    (
+        include_str!("real_string.st"),
+        &[
+            "REAL_TO_STRING",
+            "LREAL_TO_STRING",
+            "STRING_TO_REAL",
+            "STRING_TO_LREAL",
+        ],
+    ),
+    (
+        include_str!("time_string.st"),
+        &[
+            "TIME_TO_STRING",
+            "LTIME_TO_STRING",
+            "DATE_TO_STRING",
+            "TOD_TO_STRING",
+            "DT_TO_STRING",
+        ],
+    ),
 ];
 
 fn declared_name(d: &Declaration) -> Option<String> {
@@ -38,31 +52,32 @@ pub(super) fn add_on_demand_helpers(
         .to_uppercase();
     let user: std::collections::HashSet<String> =
         unit.declarations.iter().filter_map(declared_name).collect();
-    let wanted: Vec<&str> = PUBLIC
-        .iter()
-        .copied()
-        .filter(|n| text.contains(&format!("\"{n}\"")) && !user.contains(*n))
-        .collect();
-    if wanted.is_empty() {
-        return Ok(None);
-    }
-    let (helpers, errors) = plcc_st::parse(REAL_STRING_SRC);
-    if !errors.is_empty() {
-        return Err(CodegenError::LlvmError(format!(
-            "internal: the on-demand REAL/STRING helpers failed to parse: {errors:?}"
-        )));
-    }
-    let mut out = unit.clone();
+    let mut out: Option<CompilationUnit> = None;
     let mut added = Vec::new();
-    for d in helpers.declarations {
-        let Some(name) = declared_name(&d) else {
-            continue;
-        };
-        if user.contains(&name) {
+    for (src, public) in SOURCES {
+        let wanted = public
+            .iter()
+            .any(|n| text.contains(&format!("\"{n}\"")) && !user.contains(*n));
+        if !wanted {
             continue;
         }
-        added.push(name.to_lowercase());
-        out.declarations.push(d);
+        let (helpers, errors) = plcc_st::parse(src);
+        if !errors.is_empty() {
+            return Err(CodegenError::LlvmError(format!(
+                "internal: an on-demand standard-function source failed to parse: {errors:?}"
+            )));
+        }
+        let target = out.get_or_insert_with(|| unit.clone());
+        for d in helpers.declarations {
+            let Some(name) = declared_name(&d) else {
+                continue;
+            };
+            if user.contains(&name) || added.contains(&name.to_lowercase()) {
+                continue;
+            }
+            added.push(name.to_lowercase());
+            target.declarations.push(d);
+        }
     }
-    Ok(Some((out, added)))
+    Ok(out.map(|u| (u, added)))
 }

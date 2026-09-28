@@ -17,10 +17,9 @@ another method from inside `Base.M` reaches `Base`'s version even when `Derived`
 overrides it. CODESYS would call the override. Direct calls, `THIS^.M()` and
 plain `M()` calls, and inherited methods are all late-bound correctly.
 
-## TIME and date values to and from STRING
+## STRING to TIME and date values
 
-`TIME_TO_STRING`, `DT_TO_STRING`, `STRING_TO_TIME` (and the other date/time
-forms) are not implemented: each is a compile error ("unknown function"). The
-integer, bit-string, BOOL, REAL and LREAL forms are. Expected, per CODESYS:
-`TIME_TO_STRING(T#1500ms)` = `'T#1s500ms'`, `DT_TO_STRING(DT#2024-03-15-13:45:30)`
-= `'DT#2024-03-15-13:45:30'`.
+`STRING_TO_TIME`, `STRING_TO_DATE`, `STRING_TO_TOD`, `STRING_TO_DT` are not
+implemented (a compile error, "unknown function"). The opposite direction is:
+`TIME_TO_STRING(T#1500ms)` = `'T#1s500ms'`, `DT_TO_STRING(..)` =
+`'DT#2024-12-31-23:59:59'`.
