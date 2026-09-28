@@ -1,0 +1,161 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- ST bodies inside PLCopen XML, with data types, AT addresses and a configuration.
+     (The Mode enum is declared but not used: codegen does not resolve bare
+     enumerator names yet.) -->
+<project xmlns="http://www.plcopen.org/xml/tc6_0201" xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <fileHeader companyName="plcc" productName="plcc tests" productVersion="1" creationDateTime="2026-09-27T00:00:00"/>
+  <contentHeader name="st_project">
+    <coordinateInfo>
+      <fbd><scaling x="1" y="1"/></fbd>
+      <ld><scaling x="1" y="1"/></ld>
+      <sfc><scaling x="1" y="1"/></sfc>
+    </coordinateInfo>
+  </contentHeader>
+  <types>
+    <dataTypes>
+      <dataType name="Mode">
+        <baseType>
+          <enum>
+            <values>
+              <value name="Idle"/>
+              <value name="Running"/>
+              <value name="Fault"/>
+            </values>
+          </enum>
+        </baseType>
+      </dataType>
+      <dataType name="Percent">
+        <baseType>
+          <subrangeSigned>
+            <range lower="0" upper="100"/>
+            <baseType><INT/></baseType>
+          </subrangeSigned>
+        </baseType>
+      </dataType>
+      <dataType name="Counts">
+        <baseType>
+          <array>
+            <dimension lower="1" upper="4"/>
+            <baseType><DINT/></baseType>
+          </array>
+        </baseType>
+      </dataType>
+      <dataType name="Speed">
+        <baseType><REAL/></baseType>
+      </dataType>
+      <dataType name="Motor">
+        <baseType>
+          <struct>
+            <variable name="speed"><type><derived name="Speed"/></type></variable>
+            <variable name="starts">
+              <type><UDINT/></type>
+              <initialValue><simpleValue value="7"/></initialValue>
+            </variable>
+            <variable name="label"><type><string length="16"/></type></variable>
+          </struct>
+        </baseType>
+      </dataType>
+    </dataTypes>
+    <pous>
+      <pou name="Clamp" pouType="function">
+        <interface>
+          <returnType><INT/></returnType>
+          <inputVars>
+            <variable name="v"><type><INT/></type></variable>
+            <variable name="hi"><type><INT/></type></variable>
+          </inputVars>
+        </interface>
+        <body>
+          <ST>
+            <xhtml:p><![CDATA[
+IF v > hi THEN
+    Clamp := hi;
+ELSE
+    Clamp := v;
+END_IF;
+]]></xhtml:p>
+          </ST>
+        </body>
+      </pou>
+      <pou name="Accumulator" pouType="functionBlock">
+        <interface>
+          <inputVars>
+            <variable name="add"><type><DINT/></type></variable>
+          </inputVars>
+          <outputVars>
+            <variable name="total"><type><DINT/></type></variable>
+          </outputVars>
+        </interface>
+        <body>
+          <ST>
+            <xhtml:p>total := total + add; (* entities: a &lt; b &amp;&amp; c *)</xhtml:p>
+          </ST>
+        </body>
+      </pou>
+      <pou name="Main" pouType="program">
+        <interface>
+          <localVars>
+            <variable name="start" address="%IX0.0"><type><BOOL/></type></variable>
+            <variable name="raw" address="%IW1"><type><INT/></type></variable>
+            <variable name="running" address="%QX0.1"><type><BOOL/></type></variable>
+            <variable name="level" address="%QW1"><type><INT/></type></variable>
+            <variable name="mode"><type><INT/></type></variable>
+            <variable name="pct"><type><derived name="Percent"/></type>
+              <initialValue><simpleValue value="42"/></initialValue>
+            </variable>
+            <variable name="hist"><type><derived name="Counts"/></type>
+              <initialValue>
+                <arrayValue>
+                  <value repetitionValue="2"><simpleValue value="10"/></value>
+                  <value><simpleValue value="20"/></value>
+                  <value><simpleValue value="30"/></value>
+                </arrayValue>
+              </initialValue>
+            </variable>
+            <variable name="m"><type><derived name="Motor"/></type></variable>
+            <variable name="acc"><type><derived name="Accumulator"/></type></variable>
+            <variable name="scans"><type><DINT/></type></variable>
+            <variable name="histsum"><type><DINT/></type></variable>
+          </localVars>
+          <localVars constant="true">
+            <variable name="LIMIT_HI"><type><INT/></type>
+              <initialValue><simpleValue value="1000"/></initialValue>
+            </variable>
+          </localVars>
+          <localVars retain="true">
+            <variable name="boots"><type><UDINT/></type></variable>
+          </localVars>
+        </interface>
+        <body>
+          <ST>
+            <xhtml:p><![CDATA[
+scans := scans + 1;
+IF start THEN
+    mode := 1;
+ELSE
+    mode := 0;
+END_IF;
+running := mode = 1;
+level := Clamp(v := raw * 2, hi := LIMIT_HI);
+acc(add := 1);
+histsum := hist[1] + hist[2] + hist[3] + hist[4] + INT_TO_DINT(pct);
+m.starts := m.starts + 1;
+]]></xhtml:p>
+          </ST>
+        </body>
+      </pou>
+    </pous>
+  </types>
+  <instances>
+    <configurations>
+      <configuration name="Plant">
+        <resource name="Cpu">
+          <task name="Fast" interval="T#10ms" priority="1">
+            <pouInstance name="main1" typeName="Main"/>
+          </task>
+        </resource>
+      </configuration>
+    </configurations>
+  </instances>
+</project>

@@ -1,0 +1,190 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!--
+  Jumps, labels and return.
+
+  y=10   |==| Skip |==>>SKIP                 forward jump
+  y=60   |== EN[ADD Count, 1] => Count       skipped while Skip
+  y=110  SKIP:
+  y=160  |==( Always )
+  y=210  AGAIN:
+  y=260  |== EN[ADD Loops, 1] => Loops
+  y=310  [LT Loops, Limit] ==>>AGAIN         backward jump: loops until Loops >= Limit
+  y=360  |==| Quit |==<RETURN>
+  y=410  |==( AfterReturn )
+-->
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <fileHeader companyName="plcc" productName="plcc tests" productVersion="1" creationDateTime="2026-09-27T00:00:00"/>
+  <contentHeader name="jumps">
+    <coordinateInfo>
+      <fbd><scaling x="1" y="1"/></fbd>
+      <ld><scaling x="1" y="1"/></ld>
+      <sfc><scaling x="1" y="1"/></sfc>
+    </coordinateInfo>
+  </contentHeader>
+  <types>
+    <dataTypes/>
+    <pous>
+      <pou name="Jumps" pouType="program">
+        <interface>
+          <localVars>
+            <variable name="Skip"><type><BOOL/></type></variable>
+            <variable name="Count"><type><INT/></type></variable>
+            <variable name="Always"><type><BOOL/></type></variable>
+            <variable name="Loops"><type><INT/></type></variable>
+            <variable name="Limit"><type><INT/></type>
+              <initialValue><simpleValue value="5"/></initialValue>
+            </variable>
+            <variable name="Quit"><type><BOOL/></type></variable>
+            <variable name="AfterReturn"><type><BOOL/></type></variable>
+          </localVars>
+        </interface>
+        <body>
+          <LD>
+            <leftPowerRail localId="1" width="3" height="20">
+              <position x="10" y="10"/>
+              <connectionPointOut formalParameter=""/>
+            </leftPowerRail>
+            <contact localId="2" width="21" height="20">
+              <position x="50" y="10"/>
+              <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+              <variable>Skip</variable>
+            </contact>
+            <jump localId="3" label="SKIP" width="40" height="20">
+              <position x="150" y="10"/>
+              <connectionPointIn><connection refLocalId="2"/></connectionPointIn>
+            </jump>
+
+            <leftPowerRail localId="11" width="3" height="20">
+              <position x="10" y="60"/>
+              <connectionPointOut formalParameter=""/>
+            </leftPowerRail>
+            <inVariable localId="12" width="40" height="20">
+              <position x="40" y="80"/>
+              <expression>Count</expression>
+            </inVariable>
+            <inVariable localId="13" width="40" height="20">
+              <position x="40" y="100"/>
+              <expression>1</expression>
+            </inVariable>
+            <block localId="14" typeName="ADD" width="60" height="60">
+              <position x="100" y="60"/>
+              <inputVariables>
+                <variable formalParameter="EN"><connectionPointIn><connection refLocalId="11"/></connectionPointIn></variable>
+                <variable formalParameter="IN1"><connectionPointIn><connection refLocalId="12"/></connectionPointIn></variable>
+                <variable formalParameter="IN2"><connectionPointIn><connection refLocalId="13"/></connectionPointIn></variable>
+              </inputVariables>
+              <inOutVariables/>
+              <outputVariables>
+                <variable formalParameter="ENO"><connectionPointOut/></variable>
+                <variable formalParameter="OUT"><connectionPointOut/></variable>
+              </outputVariables>
+            </block>
+            <outVariable localId="15" width="40" height="20">
+              <position x="200" y="80"/>
+              <connectionPointIn><connection refLocalId="14" formalParameter="OUT"/></connectionPointIn>
+              <expression>Count</expression>
+            </outVariable>
+
+            <label localId="20" label="SKIP" width="40" height="20">
+              <position x="10" y="110"/>
+            </label>
+
+            <leftPowerRail localId="21" width="3" height="20">
+              <position x="10" y="160"/>
+              <connectionPointOut formalParameter=""/>
+            </leftPowerRail>
+            <coil localId="22" width="21" height="20">
+              <position x="150" y="160"/>
+              <connectionPointIn><connection refLocalId="21"/></connectionPointIn>
+              <variable>Always</variable>
+            </coil>
+
+            <label localId="30" label="AGAIN" width="40" height="20">
+              <position x="10" y="210"/>
+            </label>
+
+            <leftPowerRail localId="31" width="3" height="20">
+              <position x="10" y="260"/>
+              <connectionPointOut formalParameter=""/>
+            </leftPowerRail>
+            <inVariable localId="32" width="40" height="20">
+              <position x="40" y="280"/>
+              <expression>Loops</expression>
+            </inVariable>
+            <inVariable localId="33" width="40" height="20">
+              <position x="40" y="300"/>
+              <expression>1</expression>
+            </inVariable>
+            <block localId="34" typeName="ADD" width="60" height="60">
+              <position x="100" y="260"/>
+              <inputVariables>
+                <variable formalParameter="EN"><connectionPointIn><connection refLocalId="31"/></connectionPointIn></variable>
+                <variable formalParameter="IN1"><connectionPointIn><connection refLocalId="32"/></connectionPointIn></variable>
+                <variable formalParameter="IN2"><connectionPointIn><connection refLocalId="33"/></connectionPointIn></variable>
+              </inputVariables>
+              <inOutVariables/>
+              <outputVariables>
+                <variable formalParameter="ENO"><connectionPointOut/></variable>
+                <variable formalParameter="OUT"><connectionPointOut/></variable>
+              </outputVariables>
+            </block>
+            <outVariable localId="35" width="40" height="20">
+              <position x="200" y="280"/>
+              <connectionPointIn><connection refLocalId="34" formalParameter="OUT"/></connectionPointIn>
+              <expression>Loops</expression>
+            </outVariable>
+
+            <inVariable localId="41" width="40" height="20">
+              <position x="40" y="310"/>
+              <expression>Loops</expression>
+            </inVariable>
+            <inVariable localId="42" width="40" height="20">
+              <position x="40" y="330"/>
+              <expression>Limit</expression>
+            </inVariable>
+            <block localId="43" typeName="LT" width="60" height="60">
+              <position x="100" y="310"/>
+              <inputVariables>
+                <variable formalParameter="IN1"><connectionPointIn><connection refLocalId="41"/></connectionPointIn></variable>
+                <variable formalParameter="IN2"><connectionPointIn><connection refLocalId="42"/></connectionPointIn></variable>
+              </inputVariables>
+              <inOutVariables/>
+              <outputVariables>
+                <variable formalParameter="OUT"><connectionPointOut/></variable>
+              </outputVariables>
+            </block>
+            <jump localId="44" label="AGAIN" width="40" height="20">
+              <position x="200" y="310"/>
+              <connectionPointIn><connection refLocalId="43" formalParameter="OUT"/></connectionPointIn>
+            </jump>
+
+            <leftPowerRail localId="51" width="3" height="20">
+              <position x="10" y="360"/>
+              <connectionPointOut formalParameter=""/>
+            </leftPowerRail>
+            <contact localId="52" width="21" height="20">
+              <position x="50" y="360"/>
+              <connectionPointIn><connection refLocalId="51"/></connectionPointIn>
+              <variable>Quit</variable>
+            </contact>
+            <return localId="53" width="40" height="20">
+              <position x="150" y="360"/>
+              <connectionPointIn><connection refLocalId="52"/></connectionPointIn>
+            </return>
+
+            <leftPowerRail localId="61" width="3" height="20">
+              <position x="10" y="410"/>
+              <connectionPointOut formalParameter=""/>
+            </leftPowerRail>
+            <coil localId="62" width="21" height="20">
+              <position x="150" y="410"/>
+              <connectionPointIn><connection refLocalId="61"/></connectionPointIn>
+              <variable>AfterReturn</variable>
+            </coil>
+          </LD>
+        </body>
+      </pou>
+    </pous>
+  </types>
+</project>

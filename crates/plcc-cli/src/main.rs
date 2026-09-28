@@ -5,7 +5,10 @@ use miette::{IntoDiagnostic, NamedSource, Result};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "plcc", about = "IEC 61131-3 Structured Text compiler")]
+#[command(
+    name = "plcc",
+    about = "IEC 61131-3 compiler: Structured Text, and LD/FBD/ST in PLCopen XML"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -13,26 +16,27 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Parse a Structured Text file and optionally dump the AST
+    /// Parse a Structured Text or PLCopen XML file and optionally dump the AST
+    /// (for XML: the AST its LD/FBD/ST bodies lower to)
     Parse {
-        /// Input .st file
+        /// Input .st file, or PLCopen .xml
         input: PathBuf,
         /// Dump AST as JSON
         #[arg(long)]
         dump_ast: bool,
     },
-    /// Parse and type-check Structured Text files — exactly the check `compile`
-    /// runs before code generation
+    /// Parse and type-check Structured Text / PLCopen XML files — exactly the
+    /// check `compile` runs before code generation
     Check {
-        /// Input .st file(s)
+        /// Input .st and/or PLCopen .xml file(s)
         inputs: Vec<PathBuf>,
         /// Standard function block library to check against (as `compile` does)
         #[arg(long, value_enum, default_value_t = StdlibOpt::BundledSt)]
         stdlib: StdlibOpt,
     },
-    /// Compile one or more Structured Text files
+    /// Compile one or more Structured Text / PLCopen XML files
     Compile {
-        /// Input .st file(s)
+        /// Input .st and/or PLCopen .xml file(s)
         inputs: Vec<PathBuf>,
         /// Output file
         #[arg(short, long)]
@@ -65,7 +69,7 @@ enum Commands {
     },
     /// Compile and JIT-run ST programs, optionally with Modbus TCP for SCADA
     Sim {
-        /// Input .st file(s)
+        /// Input .st and/or PLCopen .xml file(s)
         inputs: Vec<PathBuf>,
         /// Number of scan cycles (0 = run forever)
         #[arg(long, default_value = "20")]
@@ -102,6 +106,26 @@ fn read_source(path: &std::path::Path) -> Result<String> {
     match String::from_utf8(bytes.clone()) {
         Ok(s) => Ok(s),
         Err(_) => Ok(bytes.iter().map(|&b| b as char).collect()),
+    }
+}
+
+/// Parse one input: PLCopen XML (a `.xml` file, or any file whose root element
+/// is `<project>`) is lowered to the ST AST by `plcc-plcopen`; anything else is
+/// Structured Text. Diagnostics carry spans into `source` and no source code.
+fn parse_file(
+    path: &std::path::Path,
+    source: &str,
+) -> (plcc_st::ast::CompilationUnit, Vec<miette::Report>) {
+    let is_xml = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("xml"))
+        || plcc_plcopen::is_plcopen(source);
+    if is_xml {
+        let (unit, errors) = plcc_plcopen::parse(source);
+        (unit, errors.into_iter().map(miette::Report::new).collect())
+    } else {
+        let (unit, errors) = plcc_st::parse(source);
+        (unit, errors.into_iter().map(miette::Report::new).collect())
     }
 }
 
@@ -142,12 +166,11 @@ fn parse_inputs(inputs: &[PathBuf], stdlib: StdlibOpt) -> Result<Parsed> {
     let mut origins = Vec::new();
     for input in inputs {
         let source = read_source(input)?;
-        let (unit, errors) = plcc_st::parse(&source);
+        let (unit, errors) = parse_file(input, &source);
         if !errors.is_empty() {
             let file_name = input.display().to_string();
-            for err in &errors {
-                let report = miette::Report::new(err.clone())
-                    .with_source_code(NamedSource::new(&file_name, source.clone()));
+            for report in errors {
+                let report = report.with_source_code(NamedSource::new(&file_name, source.clone()));
                 eprintln!("{:?}", report);
             }
             std::process::exit(1);
@@ -265,26 +288,27 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Parse { input, dump_ast } => {
             let source = read_source(&input)?;
-            let (unit, errors) = plcc_st::parse(&source);
+            let (unit, errors) = parse_file(&input, &source);
+            let error_count = errors.len();
 
             if !errors.is_empty() {
                 let file_name = input.display().to_string();
-                for err in &errors {
-                    let report = miette::Report::new(err.clone())
-                        .with_source_code(NamedSource::new(&file_name, source.clone()));
+                for report in errors {
+                    let report =
+                        report.with_source_code(NamedSource::new(&file_name, source.clone()));
                     eprintln!("{:?}", report);
                 }
-                eprintln!("{} error(s)", errors.len());
+                eprintln!("{error_count} error(s)");
             }
 
             if dump_ast {
                 let json = serde_json::to_string_pretty(&unit).into_diagnostic()?;
                 println!("{json}");
-            } else if errors.is_empty() {
+            } else if error_count == 0 {
                 println!("OK: {} declaration(s) parsed", unit.declarations.len());
             }
 
-            if errors.is_empty() {
+            if error_count == 0 {
                 Ok(())
             } else {
                 std::process::exit(1);
