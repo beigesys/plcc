@@ -5681,6 +5681,21 @@ impl<'ctx> Compiler<'ctx> {
             StatementKind::Repeat { body, until } => {
                 self.compile_repeat(body, until, function)?;
             }
+            // EXIT / CONTINUE outside a loop are errors (as in CODESYS); they used
+            // to be dropped without a word.
+            StatementKind::Exit | StatementKind::Continue
+                if self.loop_exit_bb.is_none() || self.loop_continue_bb.is_none() =>
+            {
+                return Err(CodegenError::UnsupportedType(format!(
+                    "{} outside a FOR, WHILE or REPEAT loop (source offset {})",
+                    if matches!(stmt.kind, StatementKind::Exit) {
+                        "EXIT"
+                    } else {
+                        "CONTINUE"
+                    },
+                    stmt.span.start
+                )));
+            }
             StatementKind::Exit => {
                 if let Some(exit_bb) = self.loop_exit_bb {
                     self.builder
