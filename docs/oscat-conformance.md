@@ -1,6 +1,6 @@
 # What blocks OSCAT
 
-Measured with the debug `plcc` (803 workspace tests passing), 20 s timeout per
+Measured with the debug `plcc` (816 workspace tests passing), 20 s timeout per
 invocation, 4 GiB cap (16 GiB for the merged run), default `--stdlib`.
 
 ```
