@@ -1,13 +1,18 @@
 # What blocks OSCAT
 
-Measured with the debug `plcc` (599 workspace tests passing), compiling each of the 559
+Measured with the debug `plcc` (634 workspace tests passing), compiling each of the 559
 `tests/external/oscat/*.EXP` files individually with the default `--stdlib`, 20s timeout,
 4 GiB cap, sequentially.
 
 ```
 parse:    559 / 559   (100%)
-compile:  241 / 559   (43%)   no panics (exit 101): 0, was 13
+compile:  242 / 559   (43%)   no panics (exit 101): 0
 ```
+
+242 after the silent-miscompile fixes below (was 241): `MESSAGE_8` now compiles because
+`M := '';` is a string-literal store. No file that compiled before fails now, although
+initializers, arguments and call statements that produce no code are now diagnostics
+rather than silently dropped.
 
 Parsing has been solved for a while. Compilation is the real number.
 
@@ -40,8 +45,28 @@ OSCAT is a library of siblings and globals), and the real compiler gaps left are
 DATE/TOD/DT conversions (needs a units decision), STRING values in expressions, and the
 CODESYS bit-access dialect question.
 
-Found along the way and **not** fixed here (each is a silent wrong result, not a
-diagnostic):
+### Silent wrong results
+
+Fixed, each with JIT tests in `crates/plcc-codegen/tests/silent_miscompiles.rs` that fail
+without the fix: `RETURN` did nothing; `NOT` on BYTE/SINT was a boolean NOT; USINT/UINT
+were stored one size up and never wrapped; integer `**` returned its left operand (now
+EXPT with a REAL result, per the standard); STRING initial values, string literal
+assignments and string literal FB inputs were dropped; non-literal VAR_GLOBAL initializers
+were zeroed; a longer STRING assigned to a shorter one overwrote the following variables;
+BYTE/WORD/USINT values converted to REAL as signed; DATE/TOD/DT literals were 0; user
+FUNCTION arguments were evaluated twice (and builtins shadowed user FUNCTIONs); `$`
+escapes were not decoded; a call statement to an unknown function compiled to nothing.
+
+Found and **not** fixed (semantics decisions, not one-liners):
+
+- `REAL_TO_INT` / `REAL_TO_DINT` / `LREAL_TO_*` / assignment of a REAL to an integer
+  **truncate**. IEC 61131-3 (and CODESYS, which OSCAT targets) **round** to nearest:
+  `REAL_TO_INT(2.7)` is 3, plcc gives 2. `TRUNC` is the truncating function.
+- Float-to-integer conversion uses a plain `fptosi`, which is LLVM *poison* for an
+  out-of-range value (`REAL_TO_INT(1.0E6)`), not a wrap or a saturation. Under
+  optimization that is undefined behaviour. `llvm.fptosi.sat` would pin it down.
+- `plcc compile` never runs the HIR type checker; `plcc check` does. The checker types a
+  REAL literal as LREAL, so `x : REAL; x := 2.0 * x;` fails `plcc check` but compiles.
 
 
 The sections below are the history of the earlier measurements.
