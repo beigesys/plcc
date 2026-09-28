@@ -4695,6 +4695,34 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
+    /// Declare (or fetch) a FUNCTION's LLVM prototype.
+    ///
+    /// Done for every FUNCTION before any body is compiled, so a FUNCTION can call
+    /// one declared *later* in the unit. Only FB scan functions and methods were
+    /// declared up front; a call to a later FUNCTION was "unknown function", which
+    /// is what stopped the merged OSCAT compile at its first forward reference
+    /// (`SIGN_R`).
+    fn declare_function_prototype(&mut self, func: &FunctionDecl) -> FunctionValue<'ctx> {
+        let name = func.name.name.to_lowercase();
+        if let Some(f) = self.module.get_function(&name) {
+            return f;
+        }
+        let ret_iec_ty = func
+            .return_type
+            .as_ref()
+            .map(|t| self.resolve_type_spec(t))
+            .unwrap_or(IecType::Void);
+        let params = self.resolve_params(&func.var_blocks);
+        let param_types = self.param_llvm_types(&params);
+        let fn_type = if ret_iec_ty == IecType::Void {
+            self.context.void_type().fn_type(&param_types, false)
+        } else {
+            let ret_llvm = self.iec_to_llvm_type(&ret_iec_ty);
+            ret_llvm.fn_type(&param_types, false)
+        };
+        self.module.add_function(&name, fn_type, None)
+    }
+
     fn compile_function(&mut self, func: &FunctionDecl) -> Result<(), CodegenError> {
         let ret_iec_ty = func
             .return_type
@@ -4704,18 +4732,14 @@ impl<'ctx> Compiler<'ctx> {
 
         // Collect params: VAR_INPUT by value, then VAR_IN_OUT by reference.
         let params = self.resolve_params(&func.var_blocks);
-        let param_types = self.param_llvm_types(&params);
 
-        let fn_type = if ret_iec_ty == IecType::Void {
-            self.context.void_type().fn_type(&param_types, false)
-        } else {
-            let ret_llvm = self.iec_to_llvm_type(&ret_iec_ty);
-            ret_llvm.fn_type(&param_types, false)
-        };
-
-        let function = self
-            .module
-            .add_function(&func.name.name.to_lowercase(), fn_type, None);
+        let function = self.declare_function_prototype(func);
+        if function.count_basic_blocks() > 0 {
+            return Err(CodegenError::LlvmError(format!(
+                "duplicate FUNCTION definition '{}'",
+                func.name.name
+            )));
+        }
         let entry = self.context.append_basic_block(function, "entry");
         self.builder.position_at_end(entry);
 
@@ -5001,6 +5025,7 @@ impl<'ctx> Compiler<'ctx> {
             let params = self.resolve_params(&func.var_blocks);
             self.fn_signatures
                 .insert(func.name.name.to_lowercase(), params);
+            self.declare_function_prototype(func);
             if let Some(rt) = &func.return_type {
                 let rt = self.resolve_type_spec(rt);
                 if rt != IecType::Void {
