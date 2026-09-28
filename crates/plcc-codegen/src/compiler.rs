@@ -22,6 +22,7 @@ mod bits;
 mod convert;
 mod enums;
 mod image;
+mod ondemand;
 mod oop;
 mod refs;
 mod stdfns;
@@ -2716,6 +2717,13 @@ impl<'ctx> Compiler<'ctx> {
         let dereffed = refs::desugar_references(unit);
         let unit = dereffed.as_ref().unwrap_or(unit);
         self.reference_inputs = refs::reference_inputs(unit);
+        // REAL/LREAL <-> STRING, written in ST, only when the unit uses them.
+        let with_helpers = ondemand::add_on_demand_helpers(unit)?;
+        let unit = with_helpers.as_ref().map(|(u, _)| u).unwrap_or(unit);
+        let helper_fns: Vec<String> = with_helpers
+            .as_ref()
+            .map(|(_, names)| names.clone())
+            .unwrap_or_default();
         self.register_standard_functions();
 
         // Register types and POUs
@@ -2854,6 +2862,12 @@ impl<'ctx> Compiler<'ctx> {
         // Program instances, task table, `plcc_init`/`plcc_run_task`, and the sized
         // process image: the runtime contract (docs/process-image.md).
         self.finish_runtime_contract(unit)?;
+
+        for name in &helper_fns {
+            if let Some(f) = self.module.get_function(name) {
+                f.set_linkage(inkwell::module::Linkage::Internal);
+            }
+        }
 
         // Structurally malformed IR must never escape this function. `emit_object`
         // runs LLVM at OptimizationLevel::Default; the execution tests JIT at
