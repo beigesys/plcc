@@ -219,8 +219,8 @@ END_PROGRAM
 
     let ir = compiler.emit_ir();
     assert!(
-        ir.contains("plcc_concat"),
-        "plcc_concat function should be in IR"
+        ir.contains("plcc_strlcat"),
+        "CONCAT appends with plcc_strlcat"
     );
 }
 

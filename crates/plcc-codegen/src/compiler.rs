@@ -22,6 +22,7 @@ mod bits;
 mod convert;
 mod enums;
 mod image;
+mod strings;
 pub use contract::{RuntimeContract, TaskOptions};
 
 /// Name of the generated function that initializes VAR_GLOBAL FB instances.
@@ -1260,51 +1261,41 @@ impl<'ctx> Compiler<'ctx> {
             }
 
             "LEN" => {
-                if arg_vals.len() != 1 {
+                if args.len() != 1 {
                     return Err(CodegenError::LlvmError("LEN expects 1 argument".into()));
                 }
-                // LEN needs the pointer to the string array, not the loaded value.
-                // Re-evaluate the argument as an lvalue to get the pointer.
-                if let Some(str_ptr) = self.compile_lvalue_with_fn(&args[0].value, function)? {
-                    let strlen_fn = self.get_or_create_strlen_fn();
-                    let result = self
-                        .builder
-                        .build_call(strlen_fn, &[str_ptr.into()], "len_result")
-                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                        .try_as_basic_value();
-                    match result {
-                        inkwell::values::ValueKind::Basic(v) => Ok(Some(v)),
-                        _ => Err(CodegenError::LlvmError("LEN: expected return value".into())),
-                    }
-                } else {
-                    Ok(Some(self.context.i16_type().const_zero().into()))
+                // A pointer to the bytes, not the loaded value; any STRING
+                // expression (`LEN('abc')`, `LEN(CONCAT(a, b))`) has one. Anything
+                // else is a diagnostic — it used to be a silent 0.
+                let (str_ptr, _) = self.string_operand(&args[0].value, "LEN", function)?;
+                let strlen_fn = self.get_or_create_strlen_fn();
+                let result = self
+                    .builder
+                    .build_call(strlen_fn, &[str_ptr.into()], "len_result")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                    .try_as_basic_value();
+                match result {
+                    inkwell::values::ValueKind::Basic(v) => Ok(Some(v)),
+                    _ => Err(CodegenError::LlvmError("LEN: expected return value".into())),
                 }
             }
 
             "FIND" => {
-                if arg_vals.len() != 2 {
+                if args.len() != 2 {
                     return Err(CodegenError::LlvmError("FIND expects 2 arguments".into()));
                 }
-                // FIND(s1, s2) — returns 1-based position of s2 in s1, 0 if not found.
-                // Need pointers to the string arrays.
-                if let (Some(s1_ptr), Some(s2_ptr)) = (
-                    self.compile_lvalue_with_fn(&args[0].value, function)?,
-                    self.compile_lvalue_with_fn(&args[1].value, function)?,
-                ) {
-                    let find_fn = self.get_or_create_find_fn();
-                    let result = self
-                        .builder
-                        .build_call(find_fn, &[s1_ptr.into(), s2_ptr.into()], "find_result")
-                        .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                        .try_as_basic_value();
-                    match result {
-                        inkwell::values::ValueKind::Basic(v) => Ok(Some(v)),
-                        _ => Err(CodegenError::LlvmError(
-                            "FIND: expected return value".into(),
-                        )),
-                    }
-                } else {
-                    Ok(Some(self.context.i16_type().const_zero().into()))
+                // FIND(s1, s2) — 1-based position of s2 in s1, 0 if not found.
+                let (s1_ptr, _) = self.string_operand(&args[0].value, "FIND", function)?;
+                let (s2_ptr, _) = self.string_operand(&args[1].value, "FIND", function)?;
+                let find_fn = self.get_or_create_find_fn();
+                let result = self
+                    .builder
+                    .build_call(find_fn, &[s1_ptr.into(), s2_ptr.into()], "find_result")
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?
+                    .try_as_basic_value();
+                match result {
+                    inkwell::values::ValueKind::Basic(v) => Ok(Some(v)),
+                    _ => Err(CodegenError::LlvmError("FIND: expected return value".into())),
                 }
             }
 
@@ -1691,227 +1682,6 @@ impl<'ctx> Compiler<'ctx> {
             self.builder.position_at_end(bb);
         }
 
-        function
-    }
-
-    /// Get or create `plcc_concat(dest: *i8, s1: *i8, s2: *i8, max_len: i32)`.
-    /// Copies s1 then s2 into dest, null-terminates, respecting max_len.
-    fn get_or_create_concat_fn(&self) -> FunctionValue<'ctx> {
-        if let Some(f) = self.module.get_function("plcc_concat") {
-            return f;
-        }
-
-        let void_ty = self.context.void_type();
-        let i8_ty = self.context.i8_type();
-        let i32_ty = self.context.i32_type();
-        let ptr_ty = self.context.ptr_type(AddressSpace::default());
-        let fn_type = void_ty.fn_type(
-            &[ptr_ty.into(), ptr_ty.into(), ptr_ty.into(), i32_ty.into()],
-            false,
-        );
-        let function = self.module.add_function("plcc_concat", fn_type, None);
-
-        let saved_block = self.builder.get_insert_block();
-
-        let entry = self.context.append_basic_block(function, "entry");
-        let copy1_loop = self.context.append_basic_block(function, "copy1_loop");
-        let copy1_body = self.context.append_basic_block(function, "copy1_body");
-        let copy2_start = self.context.append_basic_block(function, "copy2_start");
-        let copy2_loop = self.context.append_basic_block(function, "copy2_loop");
-        let copy2_body = self.context.append_basic_block(function, "copy2_body");
-        let done = self.context.append_basic_block(function, "done");
-
-        let dest = function.get_nth_param(0).unwrap().into_pointer_value();
-        let s1 = function.get_nth_param(1).unwrap().into_pointer_value();
-        let s2 = function.get_nth_param(2).unwrap().into_pointer_value();
-        let max_len = function.get_nth_param(3).unwrap().into_int_value();
-
-        // entry: alloca dest_idx, src_idx
-        self.builder.position_at_end(entry);
-        let dest_idx = self.builder.build_alloca(i32_ty, "dest_idx").unwrap();
-        let src_idx = self.builder.build_alloca(i32_ty, "src_idx").unwrap();
-        self.builder
-            .build_store(dest_idx, i32_ty.const_zero())
-            .unwrap();
-        self.builder
-            .build_store(src_idx, i32_ty.const_zero())
-            .unwrap();
-        let max_minus1 = self
-            .builder
-            .build_int_sub(max_len, i32_ty.const_int(1, false), "max_m1")
-            .unwrap();
-        self.builder.build_unconditional_branch(copy1_loop).unwrap();
-
-        // copy1_loop: check s1[src_idx] != 0 && dest_idx < max_len - 1
-        self.builder.position_at_end(copy1_loop);
-        let si = self
-            .builder
-            .build_load(i32_ty, src_idx, "si")
-            .unwrap()
-            .into_int_value();
-        let si_i64 = self
-            .builder
-            .build_int_s_extend(si, self.context.i64_type(), "si64")
-            .unwrap();
-        let ch_ptr = unsafe {
-            self.builder
-                .build_in_bounds_gep(i8_ty, s1, &[si_i64], "ch_ptr")
-                .unwrap()
-        };
-        let ch = self
-            .builder
-            .build_load(i8_ty, ch_ptr, "ch")
-            .unwrap()
-            .into_int_value();
-        let not_null = self
-            .builder
-            .build_int_compare(IntPredicate::NE, ch, i8_ty.const_zero(), "not_null")
-            .unwrap();
-        let di = self
-            .builder
-            .build_load(i32_ty, dest_idx, "di")
-            .unwrap()
-            .into_int_value();
-        let in_bounds = self
-            .builder
-            .build_int_compare(IntPredicate::SLT, di, max_minus1, "in_bounds")
-            .unwrap();
-        let cont = self.builder.build_and(not_null, in_bounds, "cont").unwrap();
-        self.builder
-            .build_conditional_branch(cont, copy1_body, copy2_start)
-            .unwrap();
-
-        // copy1_body: dest[dest_idx] = ch; dest_idx++; src_idx++
-        self.builder.position_at_end(copy1_body);
-        let di2 = self
-            .builder
-            .build_load(i32_ty, dest_idx, "di2")
-            .unwrap()
-            .into_int_value();
-        let di2_i64 = self
-            .builder
-            .build_int_s_extend(di2, self.context.i64_type(), "di264")
-            .unwrap();
-        let dest_ch_ptr = unsafe {
-            self.builder
-                .build_in_bounds_gep(i8_ty, dest, &[di2_i64], "dest_ch")
-                .unwrap()
-        };
-        self.builder.build_store(dest_ch_ptr, ch).unwrap();
-        let di_next = self
-            .builder
-            .build_int_add(di2, i32_ty.const_int(1, false), "di_next")
-            .unwrap();
-        self.builder.build_store(dest_idx, di_next).unwrap();
-        let si_next = self
-            .builder
-            .build_int_add(si, i32_ty.const_int(1, false), "si_next")
-            .unwrap();
-        self.builder.build_store(src_idx, si_next).unwrap();
-        self.builder.build_unconditional_branch(copy1_loop).unwrap();
-
-        // copy2_start: reset src_idx for s2
-        self.builder.position_at_end(copy2_start);
-        self.builder
-            .build_store(src_idx, i32_ty.const_zero())
-            .unwrap();
-        self.builder.build_unconditional_branch(copy2_loop).unwrap();
-
-        // copy2_loop: check s2[src_idx] != 0 && dest_idx < max_len - 1
-        self.builder.position_at_end(copy2_loop);
-        let si3 = self
-            .builder
-            .build_load(i32_ty, src_idx, "si3")
-            .unwrap()
-            .into_int_value();
-        let si3_i64 = self
-            .builder
-            .build_int_s_extend(si3, self.context.i64_type(), "si364")
-            .unwrap();
-        let ch2_ptr = unsafe {
-            self.builder
-                .build_in_bounds_gep(i8_ty, s2, &[si3_i64], "ch2_ptr")
-                .unwrap()
-        };
-        let ch2 = self
-            .builder
-            .build_load(i8_ty, ch2_ptr, "ch2")
-            .unwrap()
-            .into_int_value();
-        let not_null2 = self
-            .builder
-            .build_int_compare(IntPredicate::NE, ch2, i8_ty.const_zero(), "not_null2")
-            .unwrap();
-        let di3 = self
-            .builder
-            .build_load(i32_ty, dest_idx, "di3")
-            .unwrap()
-            .into_int_value();
-        let in_bounds2 = self
-            .builder
-            .build_int_compare(IntPredicate::SLT, di3, max_minus1, "in_bounds2")
-            .unwrap();
-        let cont2 = self
-            .builder
-            .build_and(not_null2, in_bounds2, "cont2")
-            .unwrap();
-        self.builder
-            .build_conditional_branch(cont2, copy2_body, done)
-            .unwrap();
-
-        // copy2_body: dest[dest_idx] = ch2; dest_idx++; src_idx++
-        self.builder.position_at_end(copy2_body);
-        let di4 = self
-            .builder
-            .build_load(i32_ty, dest_idx, "di4")
-            .unwrap()
-            .into_int_value();
-        let di4_i64 = self
-            .builder
-            .build_int_s_extend(di4, self.context.i64_type(), "di464")
-            .unwrap();
-        let dest_ch2_ptr = unsafe {
-            self.builder
-                .build_in_bounds_gep(i8_ty, dest, &[di4_i64], "dest_ch2")
-                .unwrap()
-        };
-        self.builder.build_store(dest_ch2_ptr, ch2).unwrap();
-        let di4_next = self
-            .builder
-            .build_int_add(di4, i32_ty.const_int(1, false), "di4_next")
-            .unwrap();
-        self.builder.build_store(dest_idx, di4_next).unwrap();
-        let si3_next = self
-            .builder
-            .build_int_add(si3, i32_ty.const_int(1, false), "si3_next")
-            .unwrap();
-        self.builder.build_store(src_idx, si3_next).unwrap();
-        self.builder.build_unconditional_branch(copy2_loop).unwrap();
-
-        // done: null-terminate
-        self.builder.position_at_end(done);
-        let final_di = self
-            .builder
-            .build_load(i32_ty, dest_idx, "final_di")
-            .unwrap()
-            .into_int_value();
-        let final_di_i64 = self
-            .builder
-            .build_int_s_extend(final_di, self.context.i64_type(), "fdi64")
-            .unwrap();
-        let null_ptr = unsafe {
-            self.builder
-                .build_in_bounds_gep(i8_ty, dest, &[final_di_i64], "null_ptr")
-                .unwrap()
-        };
-        self.builder
-            .build_store(null_ptr, i8_ty.const_zero())
-            .unwrap();
-        self.builder.build_return(None).unwrap();
-
-        if let Some(bb) = saved_block {
-            self.builder.position_at_end(bb);
-        }
         function
     }
 
@@ -2373,57 +2143,6 @@ impl<'ctx> Compiler<'ctx> {
         r.map_err(|e| CodegenError::LlvmError(e.to_string()))
     }
 
-    /// A STRING argument as a pointer to its bytes: a variable's storage, or a
-    /// private constant for a string literal (`REPLACE(s, '', 1, pos)`).
-    fn string_arg_ptr(
-        &mut self,
-        expr: &Expression,
-        function: FunctionValue<'ctx>,
-        func_name: &str,
-    ) -> Result<PointerValue<'ctx>, CodegenError> {
-        if let ExpressionKind::StringLiteral(s) = &expr.kind {
-            let bytes: Vec<u8> = decode_iec_string(s, false)
-                .into_iter()
-                .map(|c| c as u8)
-                .collect();
-            let init = self.context.const_string(&bytes, true);
-            let g = self.module.add_global(init.get_type(), None, "strlit");
-            g.set_initializer(&init);
-            g.set_constant(true);
-            g.set_linkage(inkwell::module::Linkage::Private);
-            return Ok(g.as_pointer_value());
-        }
-        self.compile_lvalue_with_fn(expr, function)?.ok_or_else(|| {
-            CodegenError::LlvmError(format!(
-                "{func_name}: `{}` is not a STRING variable or literal",
-                Self::describe_lvalue(expr)
-            ))
-        })
-    }
-
-    /// An integer argument of a string builtin (a length or position), as i32.
-    fn string_int_arg(
-        &mut self,
-        expr: &Expression,
-        function: FunctionValue<'ctx>,
-        func_name: &str,
-    ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
-        let v = self.compile_expression(expr, function)?.ok_or_else(|| {
-            CodegenError::LlvmError(format!(
-                "{func_name}: failed to compile `{}`",
-                Self::describe_lvalue(expr)
-            ))
-        })?;
-        let BasicValueEnum::IntValue(iv) = v else {
-            return Err(CodegenError::LlvmError(format!(
-                "{func_name}: `{}` must be an integer",
-                Self::describe_lvalue(expr)
-            )));
-        };
-        let signed = !Self::widens_unsigned_opt(self.rvalue_iec_type(expr).as_ref());
-        self.resize_int(iv, self.context.i32_type(), signed)
-    }
-
     fn widens_unsigned_opt(ty: Option<&IecType>) -> bool {
         ty.is_some_and(Self::widens_unsigned)
     }
@@ -2665,251 +2384,6 @@ impl<'ctx> Compiler<'ctx> {
             self.builder.position_at_end(bb);
         }
         Ok(function)
-    }
-
-    /// Try to handle string function assignments like `result := CONCAT(a, b)`.
-    /// Returns true if the assignment was handled as a string function call.
-    fn try_compile_string_assignment(
-        &mut self,
-        target: &Expression,
-        value: &Expression,
-        function: FunctionValue<'ctx>,
-    ) -> Result<bool, CodegenError> {
-        let (callee, args) = match &value.kind {
-            ExpressionKind::FunctionCall { callee, args } => (callee, args),
-            _ => return Ok(false),
-        };
-        let func_name = match &callee.kind {
-            ExpressionKind::Identifier(ident) => ident.name.to_uppercase(),
-            _ => return Ok(false),
-        };
-
-        // Only handle known string functions
-        if !matches!(
-            func_name.as_str(),
-            "CONCAT" | "LEFT" | "RIGHT" | "MID" | "REPLACE"
-        ) {
-            return Ok(false);
-        }
-
-        // Get the destination pointer and its max_len from the type
-        let dest_ptr = match self.compile_lvalue_with_fn(target, function)? {
-            Some(p) => p,
-            None => return Ok(false),
-        };
-
-        // Determine max_len from the target's type
-        let max_len = if let ExpressionKind::Identifier(ident) = &target.kind {
-            if let Some((_, iec_ty)) = self.variables.get(&ident.name.to_uppercase()).cloned() {
-                match iec_ty {
-                    IecType::StringType { max_len } => max_len.unwrap_or(256) as i32 + 1,
-                    _ => return Ok(false),
-                }
-            } else {
-                return Ok(false);
-            }
-        } else {
-            return Ok(false);
-        };
-
-        let i32_ty = self.context.i32_type();
-        let max_len_val = i32_ty.const_int(max_len as u64, false);
-
-        match func_name.as_str() {
-            "REPLACE" => {
-                // REPLACE(IN1, IN2, L, P)
-                if args.len() != 4 {
-                    return Err(CodegenError::LlvmError(
-                        "REPLACE expects 4 arguments (IN1, IN2, L, P)".into(),
-                    ));
-                }
-                let in1 = self.string_arg_ptr(&args[0].value, function, "REPLACE")?;
-                let in2 = self.string_arg_ptr(&args[1].value, function, "REPLACE")?;
-                let l = self.string_int_arg(&args[2].value, function, "REPLACE")?;
-                let p = self.string_int_arg(&args[3].value, function, "REPLACE")?;
-                let replace_fn = self.get_or_create_replace_fn()?;
-                self.builder
-                    .build_call(
-                        replace_fn,
-                        &[
-                            dest_ptr.into(),
-                            in1.into(),
-                            in2.into(),
-                            l.into(),
-                            p.into(),
-                            max_len_val.into(),
-                        ],
-                        "",
-                    )
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                Ok(true)
-            }
-            "CONCAT" => {
-                if args.len() != 2 {
-                    return Err(CodegenError::LlvmError("CONCAT expects 2 arguments".into()));
-                }
-                let s1_ptr = self
-                    .compile_lvalue_with_fn(&args[0].value, function)?
-                    .ok_or_else(|| {
-                        CodegenError::LlvmError("CONCAT: failed to get s1 pointer".into())
-                    })?;
-                let s2_ptr = self
-                    .compile_lvalue_with_fn(&args[1].value, function)?
-                    .ok_or_else(|| {
-                        CodegenError::LlvmError("CONCAT: failed to get s2 pointer".into())
-                    })?;
-                let concat_fn = self.get_or_create_concat_fn();
-                self.builder
-                    .build_call(
-                        concat_fn,
-                        &[
-                            dest_ptr.into(),
-                            s1_ptr.into(),
-                            s2_ptr.into(),
-                            max_len_val.into(),
-                        ],
-                        "",
-                    )
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                Ok(true)
-            }
-            "LEFT" => {
-                if args.len() != 2 {
-                    return Err(CodegenError::LlvmError("LEFT expects 2 arguments".into()));
-                }
-                let src_ptr = self
-                    .compile_lvalue_with_fn(&args[0].value, function)?
-                    .ok_or_else(|| {
-                        CodegenError::LlvmError("LEFT: failed to get src pointer".into())
-                    })?;
-                let n_val = self
-                    .compile_expression(&args[1].value, function)?
-                    .ok_or_else(|| self.no_value_error("argument 2 of `LEFT`", &args[1].value))?;
-                let n_i32 = if n_val.is_int_value() {
-                    let iv = self.int_operand(n_val, "the length argument of a string function")?;
-                    if iv.get_type().get_bit_width() < 32 {
-                        self.builder
-                            .build_int_s_extend(iv, i32_ty, "n_ext")
-                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                    } else {
-                        iv
-                    }
-                } else {
-                    return Err(CodegenError::LlvmError("LEFT: n must be integer".into()));
-                };
-                let left_fn = self.get_or_create_left_fn();
-                self.builder
-                    .build_call(
-                        left_fn,
-                        &[
-                            dest_ptr.into(),
-                            src_ptr.into(),
-                            n_i32.into(),
-                            max_len_val.into(),
-                        ],
-                        "",
-                    )
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                Ok(true)
-            }
-            "RIGHT" => {
-                if args.len() != 2 {
-                    return Err(CodegenError::LlvmError("RIGHT expects 2 arguments".into()));
-                }
-                let src_ptr = self
-                    .compile_lvalue_with_fn(&args[0].value, function)?
-                    .ok_or_else(|| {
-                        CodegenError::LlvmError("RIGHT: failed to get src pointer".into())
-                    })?;
-                let n_val = self
-                    .compile_expression(&args[1].value, function)?
-                    .ok_or_else(|| self.no_value_error("argument 2 of `RIGHT`", &args[1].value))?;
-                let n_i32 = if n_val.is_int_value() {
-                    let iv = self.int_operand(n_val, "the length argument of a string function")?;
-                    if iv.get_type().get_bit_width() < 32 {
-                        self.builder
-                            .build_int_s_extend(iv, i32_ty, "n_ext")
-                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                    } else {
-                        iv
-                    }
-                } else {
-                    return Err(CodegenError::LlvmError("RIGHT: n must be integer".into()));
-                };
-                let right_fn = self.get_or_create_right_fn();
-                self.builder
-                    .build_call(
-                        right_fn,
-                        &[
-                            dest_ptr.into(),
-                            src_ptr.into(),
-                            n_i32.into(),
-                            max_len_val.into(),
-                        ],
-                        "",
-                    )
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                Ok(true)
-            }
-            "MID" => {
-                if args.len() != 3 {
-                    return Err(CodegenError::LlvmError(
-                        "MID expects 3 arguments (string, length, position)".into(),
-                    ));
-                }
-                let src_ptr = self
-                    .compile_lvalue_with_fn(&args[0].value, function)?
-                    .ok_or_else(|| {
-                        CodegenError::LlvmError("MID: failed to get src pointer".into())
-                    })?;
-                let len_val = self
-                    .compile_expression(&args[1].value, function)?
-                    .ok_or_else(|| self.no_value_error("argument 2 of `MID`", &args[1].value))?;
-                let pos_val = self
-                    .compile_expression(&args[2].value, function)?
-                    .ok_or_else(|| self.no_value_error("argument 3 of `MID`", &args[2].value))?;
-                let len_i32 = if len_val.is_int_value() {
-                    let iv = self.int_operand(len_val, "MID")?;
-                    if iv.get_type().get_bit_width() < 32 {
-                        self.builder
-                            .build_int_s_extend(iv, i32_ty, "len_ext")
-                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                    } else {
-                        iv
-                    }
-                } else {
-                    return Err(CodegenError::LlvmError("MID: len must be integer".into()));
-                };
-                let pos_i32 = if pos_val.is_int_value() {
-                    let iv = self.int_operand(pos_val, "MID")?;
-                    if iv.get_type().get_bit_width() < 32 {
-                        self.builder
-                            .build_int_s_extend(iv, i32_ty, "pos_ext")
-                            .map_err(|e| CodegenError::LlvmError(e.to_string()))?
-                    } else {
-                        iv
-                    }
-                } else {
-                    return Err(CodegenError::LlvmError("MID: pos must be integer".into()));
-                };
-                let mid_fn = self.get_or_create_mid_fn();
-                self.builder
-                    .build_call(
-                        mid_fn,
-                        &[
-                            dest_ptr.into(),
-                            src_ptr.into(),
-                            len_i32.into(),
-                            pos_i32.into(),
-                            max_len_val.into(),
-                        ],
-                        "",
-                    )
-                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
-                Ok(true)
-            }
-            _ => Ok(false),
-        }
     }
 
     /// The one REAL/LREAL → integer conversion. Every `REAL_TO_<int>`,
@@ -5820,8 +5294,9 @@ impl<'ctx> Compiler<'ctx> {
                         })?;
                     return self.store_string_literal(ptr, &ty, value, text);
                 }
-                // Try string function assignment first (CONCAT, LEFT, RIGHT, MID)
-                if !self.try_compile_string_assignment(target, value, function)? {
+                // A STRING target from a string expression (CONCAT, MID, ... at any
+                // depth, a FUNCTION returning STRING): bounded copy.
+                if !self.try_compile_string_store(target, value, function)? {
                     // An assignment target that resolves to no address is a
                     // diagnostic, not a no-op. `compile_lvalue_inner` returns
                     // `Ok(None)` for expressions with no address at all (literals,
@@ -6917,6 +6392,9 @@ impl<'ctx> Compiler<'ctx> {
     /// sign-extension, so it is deliberately conservative: `None` means "no static
     /// type", and the caller falls back to the destination's signedness.
     fn rvalue_iec_type(&self, expr: &Expression) -> Option<IecType> {
+        if let Some(t) = self.string_expr_type(expr) {
+            return Some(t);
+        }
         if let Ok(Some((_, ty))) = self.enum_constant_of(expr) {
             return Some(ty);
         }
@@ -7512,6 +6990,20 @@ impl<'ctx> Compiler<'ctx> {
                 }
             }
             ExpressionKind::BinaryOp { op, left, right } => {
+                if matches!(
+                    op,
+                    BinaryOp::Equal
+                        | BinaryOp::NotEqual
+                        | BinaryOp::Less
+                        | BinaryOp::LessEqual
+                        | BinaryOp::Greater
+                        | BinaryOp::GreaterEqual
+                ) && (self.is_string_expr(left) || self.is_string_expr(right))
+                {
+                    return self
+                        .compile_string_compare(*op, left, right, function)
+                        .map(Some);
+                }
                 let lhs = self.compile_expression(left, function)?;
                 let rhs = self.compile_expression(right, function)?;
                 match (lhs, rhs) {
@@ -7556,6 +7048,9 @@ impl<'ctx> Compiler<'ctx> {
                     // whether it handles the name, so a user FUNCTION's arguments were
                     // emitted twice and a side-effecting argument ran twice.
                     let user_fn = self.fn_signatures.contains_key(&lname);
+                    if !user_fn && Self::is_string_builtin(&lname) {
+                        return self.compile_string_value(expr, function);
+                    }
                     if !user_fn {
                         if let Some(result) =
                             self.compile_stdlib_call(&ident.name, args, function)?
@@ -7670,8 +7165,10 @@ impl<'ctx> Compiler<'ctx> {
                     Self::describe_lvalue(expr)
                 ))),
             },
-            ExpressionKind::StringLiteral(_) | ExpressionKind::WstringLiteral(_) => {
-                // String literals — not yet supported in codegen
+            ExpressionKind::StringLiteral(_) => self.compile_string_value(expr, function),
+            ExpressionKind::WstringLiteral(_) => {
+                // A WSTRING literal as a value: not yet supported in codegen (it is
+                // supported as an initializer and as the right-hand side of `:=`).
                 self.no_value_here(expr)
             }
             ExpressionKind::DirectVariable(repr) => {
