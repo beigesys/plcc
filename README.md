@@ -17,7 +17,13 @@ plcc compile program.st -o program.o --target thumbv7em-unknown-none-eabi
 
 # Multi-file compilation
 plcc compile main.st motor.st utils.st -o system.o
+
+# Ladder / FBD / ST from a PLCopen XML project (mixes with .st files)
+plcc compile plant.xml utils.st -o plant.o
 ```
+
+Ladder Diagram and FBD come in as PLCopen XML (IEC 61131-10) and lower to the
+same AST as ST; see [docs/ladder.md](docs/ladder.md).
 
 ## What It Compiles
 
@@ -74,6 +80,7 @@ that contract runs any program -- see [Integration](#integration).
 plcc/
 ├── crates/
 │   ├── plcc-st/           Lexer (logos) + recursive-descent parser + AST
+│   ├── plcc-plcopen/      PLCopen XML reader: LD/FBD/ST bodies lowered to the ST AST
 │   ├── plcc-hir/          Type checker, name resolution, IEC type hierarchy
 │   ├── plcc-codegen/      LLVM codegen via inkwell
 │   ├── plcc-stdlib/       IEC standard FBs as bundled ST source (TON, CTU, ...)
