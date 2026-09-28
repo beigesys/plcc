@@ -5598,17 +5598,41 @@ impl<'ctx> Compiler<'ctx> {
     ) -> Result<(), CodegenError> {
         let instance_name = Self::describe_lvalue(instance);
         let (fb_ptr, layout) = self.fb_instance_at(instance, function)?;
+        let type_name = match self.lvalue_iec_type(instance) {
+            Some(IecType::FbInstance(t)) => t,
+            _ => instance_name.clone(),
+        };
 
         self.emit_fb_call(
             fb_ptr,
             layout.struct_type,
             &layout.fields,
-            &instance_name,
+            &type_name,
             &layout.scan_fn_name,
             args,
             function,
             &instance_name,
         )
+    }
+
+    /// The IEC 61131-3 name of a standard FB parameter written with its CODESYS
+    /// name. CODESYS's Standard library names them differently from the standard
+    /// the bundled blocks follow — `SR(SET1, RESET)`, `RS(SET, RESET1)`,
+    /// `CTU(CU, RESET, PV)`, `CTD(CD, LOAD, PV)`, `CTUD(.., RESET, LOAD, ..)` versus
+    /// IEC's `S1`/`R`, `S`/`R1`, `R`, `LD` — and CODESYS code uses its own names, so
+    /// both are accepted.
+    fn std_fb_param_alias(fb_type: &str, name: &str) -> Option<&'static str> {
+        let fb = fb_type.to_uppercase();
+        let name = name.to_uppercase();
+        Some(match (fb.as_str(), name.as_str()) {
+            ("SR", "SET1") => "S1",
+            ("SR", "RESET") => "R",
+            ("RS", "SET") => "S",
+            ("RS", "RESET1") => "R1",
+            ("CTU" | "CTUD", "RESET") => "R",
+            ("CTD" | "CTUD", "LOAD") => "LD",
+            _ => return None,
+        })
     }
 
     /// Give every positional argument of an FB call the name of the parameter it
@@ -5693,6 +5717,12 @@ impl<'ctx> Compiler<'ctx> {
                 let field_idx = fields
                     .iter()
                     .position(|f| f.name.eq_ignore_ascii_case(&arg_name.name))
+                    .or_else(|| {
+                        let canonical = Self::std_fb_param_alias(fb_type_name, &arg_name.name)?;
+                        fields
+                            .iter()
+                            .position(|f| f.name.eq_ignore_ascii_case(canonical))
+                    })
                     .ok_or_else(|| {
                         CodegenError::UndefinedVariable(format!(
                             "FB field '{}' not found in '{}'",
