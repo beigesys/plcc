@@ -3991,15 +3991,30 @@ impl<'ctx> Compiler<'ctx> {
         let Some((global_val, global_struct, names)) = self.global_var.clone() else {
             return Ok(());
         };
-        // The declared TypeSpecs, in the same order the global struct was built.
-        let specs: Vec<TypeSpec> = unit
+        // The declared TypeSpecs and initializers, in the same order the global
+        // struct was built.
+        let decls: Vec<VarDecl> = unit
             .declarations
             .iter()
             .filter_map(|d| match d {
                 Declaration::GlobalVarDecl(block) => Some(block),
                 _ => None,
             })
-            .flat_map(|block| block.declarations.iter().map(|d| d.type_spec.clone()))
+            .flat_map(|block| block.declarations.iter().cloned())
+            .collect();
+        let specs: Vec<TypeSpec> = decls.iter().map(|d| d.type_spec.clone()).collect();
+        // An initializer the constant folder could not turn into the global's static
+        // contents (`g : DINT := 2 * 21;`, `g : REAL := -1.5;`) is stored here at run
+        // time. It used to leave the global silently zero.
+        let runtime_inits: Vec<Option<Expression>> = decls
+            .iter()
+            .zip(names.iter())
+            .map(|(d, (_, ty))| {
+                d.initializer
+                    .as_ref()
+                    .filter(|e| self.eval_const_initializer(e, ty).is_none())
+                    .cloned()
+            })
             .collect();
 
         let any_fb = names
@@ -4010,7 +4025,8 @@ impl<'ctx> Compiler<'ctx> {
             self.collect_field_inits(spec, &mut Vec::new(), &mut Vec::new(), &mut out);
             !out.is_empty()
         });
-        if !any_fb && !any_defaults {
+        let any_runtime = runtime_inits.iter().any(Option::is_some);
+        if !any_fb && !any_defaults && !any_runtime {
             return Ok(());
         }
 
@@ -4038,6 +4054,12 @@ impl<'ctx> Compiler<'ctx> {
                 }
             } else if let Some(spec) = specs.get(i).cloned() {
                 self.emit_field_inits(ptr, &spec, func)?;
+                if let Some(Some(init)) = runtime_inits.get(i).cloned() {
+                    // Other globals are visible to the initializer by name.
+                    self.variables.clear();
+                    self.add_globals_to_variables()?;
+                    self.emit_decl_initializer(ptr, ty, &init, func)?;
+                }
             }
         }
 
@@ -4485,7 +4507,14 @@ impl<'ctx> Compiler<'ctx> {
             };
             match action {
                 FieldInit::Store(expr, ty) => {
-                    if let Some(val) = self.compile_expression(&expr, function)? {
+                    if let Some(text) = Self::string_literal_text(&expr) {
+                        self.store_string_literal(ptr, &ty, &expr, text)?;
+                    } else if let ExpressionKind::ArrayInitializer(elements) = &expr.kind {
+                        self.emit_array_aggregate_store(ptr, &ty, elements, function)?;
+                    } else {
+                        let Some(val) = self.compile_expression(&expr, function)? else {
+                            return Err(self.no_value_error("STRUCT field default", &expr));
+                        };
                         let src = self.rvalue_iec_type(&expr);
                         let val = self.coerce_value(val, src.as_ref(), &ty)?;
                         self.builder
@@ -4694,18 +4723,83 @@ impl<'ctx> Compiler<'ctx> {
                     .build_in_bounds_gep(arr_llvm_ty, ptr, &[zero, idx], "init_elem")
                     .map_err(|e| CodegenError::LlvmError(e.to_string()))?
             };
-            if let ExpressionKind::ArrayInitializer(inner) = &init_expr.kind {
-                self.emit_array_aggregate_store(elem_ptr, &element_type, inner, function)?;
-                continue;
-            }
-            let Some(val) = self.compile_expression(init_expr, function)? else {
-                continue;
-            };
-            let val = self.coerce_init_value(val, &element_type)?;
-            self.builder
-                .build_store(elem_ptr, val)
-                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+            self.emit_decl_initializer(elem_ptr, &element_type, init_expr, function)?;
         }
+        Ok(())
+    }
+
+    /// The text of a STRING/WSTRING literal, looking through parentheses.
+    fn string_literal_text(expr: &Expression) -> Option<&str> {
+        match &expr.kind {
+            ExpressionKind::StringLiteral(s) | ExpressionKind::WstringLiteral(s) => Some(s),
+            ExpressionKind::Parenthesized(inner) => Self::string_literal_text(inner),
+            _ => None,
+        }
+    }
+
+    /// A string literal as a constant of the storage type of `ty`: the full
+    /// `[N+1 x i8]` (STRING) or `[N+1 x i16]` (WSTRING) buffer, truncated to the
+    /// declared length and NUL-filled, or a single CHAR/WCHAR. `None` when `ty` is not
+    /// a character type (the caller reports it).
+    fn string_literal_const(&self, ty: &IecType, text: &str) -> Option<BasicValueEnum<'ctx>> {
+        match ty {
+            IecType::StringType { max_len } => {
+                let cap = max_len.unwrap_or(256) as usize;
+                let i8_ty = self.context.i8_type();
+                let mut vals: Vec<_> = text
+                    .bytes()
+                    .take(cap)
+                    .map(|b| i8_ty.const_int(b as u64, false))
+                    .collect();
+                vals.resize(cap + 1, i8_ty.const_zero());
+                Some(i8_ty.const_array(&vals).into())
+            }
+            IecType::WstringType { max_len } => {
+                let cap = max_len.unwrap_or(256) as usize;
+                let i16_ty = self.context.i16_type();
+                let mut vals: Vec<_> = text
+                    .encode_utf16()
+                    .take(cap)
+                    .map(|u| i16_ty.const_int(u as u64, false))
+                    .collect();
+                vals.resize(cap + 1, i16_ty.const_zero());
+                Some(i16_ty.const_array(&vals).into())
+            }
+            // `c : CHAR := 'A';` — a one-character literal.
+            IecType::Char if text.len() == 1 => Some(
+                self.context
+                    .i8_type()
+                    .const_int(text.as_bytes()[0] as u64, false)
+                    .into(),
+            ),
+            IecType::Wchar if text.encode_utf16().count() == 1 => Some(
+                self.context
+                    .i16_type()
+                    .const_int(text.encode_utf16().next()? as u64, false)
+                    .into(),
+            ),
+            _ => None,
+        }
+    }
+
+    /// Store a string literal into the STRING/WSTRING/CHAR at `ptr`, or report why
+    /// it cannot be.
+    fn store_string_literal(
+        &self,
+        ptr: PointerValue<'ctx>,
+        ty: &IecType,
+        expr: &Expression,
+        text: &str,
+    ) -> Result<(), CodegenError> {
+        let Some(val) = self.string_literal_const(ty, text) else {
+            return Err(CodegenError::UnsupportedType(format!(
+                "string literal {} cannot initialize or be assigned to a {ty}",
+                Self::describe_lvalue(expr)
+            )));
+        };
+        self.builder
+            .build_store(ptr, val)
+            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
         Ok(())
     }
 
@@ -4721,12 +4815,18 @@ impl<'ctx> Compiler<'ctx> {
         if let ExpressionKind::ArrayInitializer(elements) = &init.kind {
             return self.emit_array_aggregate_store(ptr, iec_ty, elements, function);
         }
-        if let Some(val) = self.compile_expression(init, function)? {
-            let val = self.coerce_init_value(val, iec_ty)?;
-            self.builder
-                .build_store(ptr, val)
-                .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+        if let Some(text) = Self::string_literal_text(init) {
+            return self.store_string_literal(ptr, iec_ty, init, text);
         }
+        // An initializer that yields no value is a diagnostic. Skipping the store
+        // left `s : STRING := 'abc';` silently empty.
+        let Some(val) = self.compile_expression(init, function)? else {
+            return Err(self.no_value_error("initial value", init));
+        };
+        let val = self.coerce_init_value(val, iec_ty)?;
+        self.builder
+            .build_store(ptr, val)
+            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
         Ok(())
     }
 
@@ -4746,6 +4846,9 @@ impl<'ctx> Compiler<'ctx> {
                 let lit_ty = plcc_hir::types::resolve_type_name(&type_name.name)?;
                 self.typed_literal_const(&lit_ty, value)
             }
+            ExpressionKind::StringLiteral(text) | ExpressionKind::WstringLiteral(text) => {
+                self.string_literal_const(ty, text)
+            }
             // A VAR_GLOBAL array's aggregate becomes the global's constant contents;
             // there is no init function to store it from.
             ExpressionKind::ArrayInitializer(elements) => {
@@ -4762,7 +4865,12 @@ impl<'ctx> Compiler<'ctx> {
                 let mut values: Vec<BasicValueEnum<'ctx>> = Vec::with_capacity(capacity);
                 for init_expr in flat {
                     let val = self.eval_const_initializer(init_expr, element_type)?;
-                    values.push(self.const_coerce(val, element_type)?);
+                    let val = if val.is_array_value() {
+                        val
+                    } else {
+                        self.const_coerce(val, element_type)?
+                    };
+                    values.push(val);
                 }
                 while values.len() < capacity {
                     values.push(elem_llvm_ty.const_zero());
@@ -4815,6 +4923,11 @@ impl<'ctx> Compiler<'ctx> {
             }
             BasicTypeEnum::FloatType(t) => {
                 let vs: Vec<_> = values.iter().map(|v| v.into_float_value()).collect();
+                Some(t.const_array(&vs))
+            }
+            // ARRAY OF STRING, and nested arrays.
+            BasicTypeEnum::ArrayType(t) => {
+                let vs: Vec<_> = values.iter().map(|v| v.into_array_value()).collect();
                 Some(t.const_array(&vs))
             }
             _ => None,
@@ -5734,6 +5847,20 @@ impl<'ctx> Compiler<'ctx> {
     ) -> Result<(), CodegenError> {
         match &stmt.kind {
             StatementKind::Assignment { target, value } => {
+                // `s := 'abc';` stores the literal's bytes into the STRING buffer.
+                if let (Some(text), Some(ty)) =
+                    (Self::string_literal_text(value), self.lvalue_iec_type(target))
+                {
+                    let ptr = self
+                        .compile_lvalue_with_fn(target, function)?
+                        .ok_or_else(|| {
+                            CodegenError::UnsupportedType(format!(
+                                "`{}` is not an assignable location",
+                                Self::describe_lvalue(target)
+                            ))
+                        })?;
+                    return self.store_string_literal(ptr, &ty, value, text);
+                }
                 // Try string function assignment first (CONCAT, LEFT, RIGHT, MID)
                 if !self.try_compile_string_assignment(target, value, function)? {
                     // An assignment target that resolves to no address is a

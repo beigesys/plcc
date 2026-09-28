@@ -609,3 +609,172 @@ END_PROGRAM
     assert_eq!(dint(&state, 0), 81);
     assert_eq!(real(&state, 1), 200.0);
 }
+
+// ---------------------------------------------------------------------------
+// String initial values are applied everywhere a variable comes into being
+// ---------------------------------------------------------------------------
+
+/// The NUL-terminated contents of a STRING buffer at `off`.
+fn cstr(state: &[u8], off: usize) -> String {
+    let end = state[off..].iter().position(|&b| b == 0).unwrap() + off;
+    String::from_utf8(state[off..end].to_vec()).unwrap()
+}
+
+#[test]
+fn program_string_initializer() {
+    let src = r#"
+PROGRAM p
+VAR
+    s : STRING[10] := 'abc';
+    t : STRING[3] := 'truncated';
+    d : STRING := 'default len';
+    e : STRING[4];
+END_VAR
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(cstr(&state, 0), "abc");
+    assert_eq!(cstr(&state, 11), "tru", "truncated to the declared length");
+    assert_eq!(cstr(&state, 15), "default len");
+    assert_eq!(cstr(&state, 15 + 257), "");
+}
+
+#[test]
+fn string_literal_assignment() {
+    let src = r#"
+PROGRAM p
+VAR
+    s : STRING[10] := 'initial';
+    n : DINT;
+END_VAR
+    n := n + 1;
+    IF n = 2 THEN
+        s := 'hi';
+    END_IF;
+END_PROGRAM
+"#;
+    assert_eq!(cstr(&run_scans(src, 1), 0), "initial");
+    assert_eq!(cstr(&run_scans(src, 2), 0), "hi", "old tail is cleared too");
+}
+
+#[test]
+fn fb_and_function_string_locals() {
+    let src = r#"
+FUNCTION FIRST_CHAR_CODE : DINT
+VAR
+    tmp : STRING[5] := 'Z';
+    other : STRING[5];
+END_VAR
+    other := tmp;
+    FIRST_CHAR_CODE := LEN(other);
+END_FUNCTION
+
+FUNCTION_BLOCK FB
+VAR_OUTPUT
+    name : STRING[8] := 'motor';
+END_VAR
+END_FUNCTION_BLOCK
+
+PROGRAM p
+VAR
+    out : STRING[8];
+    n : DINT;
+    f : FB;
+END_VAR
+    f();
+    out := f.name;
+    n := FIRST_CHAR_CODE();
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(cstr(&state, 0), "motor");
+    assert_eq!(dint(&state, 3), 1, "FUNCTION local STRING initialized each call");
+}
+
+#[test]
+fn global_initializers_that_are_not_plain_literals() {
+    // The VAR_GLOBAL constant folder handles only bare literals; anything else
+    // (a negative number, an expression) used to leave the global at zero.
+    let src = r#"
+VAR_GLOBAL
+    gn : DINT := 2 * 21;
+    gr : REAL := -1.5;
+    gi : INT := -7;
+END_VAR
+
+PROGRAM p
+VAR
+    n : DINT;
+    r : REAL;
+    i : DINT;
+END_VAR
+    n := gn;
+    r := gr;
+    i := gi;
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(dint(&state, 0), 42);
+    assert_eq!(real(&state, 1), -1.5);
+    assert_eq!(dint(&state, 2), -7);
+}
+
+#[test]
+fn global_struct_and_array_string_initializers() {
+    let src = r#"
+TYPE Tag : STRUCT
+    label : STRING[6] := 'pump';
+    id : DINT := 7;
+END_STRUCT
+END_TYPE
+
+VAR_GLOBAL
+    g : STRING[6] := 'global';
+    gw : WSTRING[4] := "wide";
+    gn : DINT := 2 * 21;
+    gr : REAL := -1.5;
+    ga : ARRAY[0..1] OF STRING[3] := ['ab', 'cd'];
+END_VAR
+
+PROGRAM p
+VAR
+    a : STRING[6];
+    b : STRING[6];
+    c : STRING[3];
+    d : STRING[3];
+    e : STRING[3];
+    pad : BYTE;
+    w : WSTRING[4];
+    n : DINT;
+    r : REAL;
+    t : Tag;
+    la : ARRAY[1..2] OF STRING[3] := ['xy', 'z'];
+    ch : CHAR := 'Q';
+END_VAR
+    a := g;
+    b := t.label;
+    c := ga[0];
+    d := ga[1];
+    e := la[2];
+    w := gw;
+    n := gn;
+    r := gr;
+END_PROGRAM
+"#;
+    let state = run(src);
+    assert_eq!(cstr(&state, 0), "global");
+    assert_eq!(cstr(&state, 7), "pump", "STRUCT field default");
+    assert_eq!(cstr(&state, 14), "ab", "VAR_GLOBAL ARRAY OF STRING");
+    assert_eq!(cstr(&state, 18), "cd");
+    assert_eq!(cstr(&state, 22), "z", "PROGRAM ARRAY OF STRING aggregate");
+    // w: WSTRING[4] = [5 x i16] at the next 2-aligned offset after pad (26 -> 28)
+    let w: Vec<u16> = (0..4)
+        .map(|i| u16::from_ne_bytes([state[28 + 2 * i], state[29 + 2 * i]]))
+        .collect();
+    assert_eq!(String::from_utf16(&w).unwrap(), "wide");
+    assert_eq!(dint(&state, 40 / 4), 42, "non-constant global initializer");
+    assert_eq!(real(&state, 44 / 4), -1.5, "negative REAL global initializer");
+    // t: { [7 x i8], i32 } at 48 -> id at 56; la at 60..68; ch at 68
+    assert_eq!(dint(&state, 56 / 4), 7);
+    assert_eq!(state[68], b'Q', "CHAR initializer");
+}
