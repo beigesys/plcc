@@ -1733,6 +1733,19 @@ impl<'s> Parser<'s> {
                             },
                             span,
                         };
+                    } else if matches!(self.ts.peek(), Some(Token::PartialBitAccess)) {
+                        // `x.%X3`: the same bit access as `x.3`.
+                        let (_, bit_span) = self.ts.advance().unwrap();
+                        let text = self.ts.slice(self.source, &bit_span).to_uppercase();
+                        let member = Ident::new(text, bit_span);
+                        let span = expr.span.merge(bit_span);
+                        expr = Expression {
+                            kind: ExpressionKind::MemberAccess {
+                                object: Box::new(expr),
+                                member,
+                            },
+                            span,
+                        };
                     } else {
                         let member = self.expect_ident();
                         let span = expr.span.merge(member.span);

@@ -388,6 +388,10 @@ pub enum Token {
     #[regex(r"%[IiQqMm][XxBbWwDdLl]?([0-9]+(\.[0-9]+)*|\*)")]
     DirectVariable,
 
+    /// IEC 61131-3 3rd ed. partial (bit) access after a `.`: `x.%X3` (Table 16).
+    #[regex(r"%[Xx][0-9]+")]
+    PartialBitAccess,
+
     // ── Pragmas ──
     #[regex(r"\{[^}]*\}")]
     Pragma,

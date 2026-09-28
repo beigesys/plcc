@@ -18,6 +18,7 @@ use std::path::Path;
 use thiserror::Error;
 
 pub mod contract;
+mod bits;
 mod convert;
 mod enums;
 mod image;
@@ -5801,6 +5802,10 @@ impl<'ctx> Compiler<'ctx> {
                 if self.try_compile_image_assignment(target, value, function)? {
                     return Ok(());
                 }
+                // `x.3 := b;` — CODESYS bit access, a read-modify-write of x.
+                if self.try_compile_bit_assignment(target, value, function)? {
+                    return Ok(());
+                }
                 // `s := 'abc';` stores the literal's bytes into the STRING buffer.
                 if let (Some(text), Some(ty)) =
                     (Self::string_literal_text(value), self.lvalue_iec_type(target))
@@ -6848,6 +6853,9 @@ impl<'ctx> Compiler<'ctx> {
                 _ => None,
             },
             ExpressionKind::MemberAccess { object, member } => {
+                if self.bit_access(expr).is_some() {
+                    return Some(IecType::Bool);
+                }
                 // STRUCT field or FB-instance field, at any depth: `s.i.v` and
                 // `x.f.o` both ask the type of the object first.
                 // The *declared* type: a VAR_IN_OUT field is stored as a pointer, but
@@ -7689,6 +7697,9 @@ impl<'ctx> Compiler<'ctx> {
                 Ok(Some(val))
             }
             ExpressionKind::MemberAccess { member, .. } => {
+                if let Some((object, bit)) = self.bit_access(expr) {
+                    return self.compile_bit_read(expr, object, bit, function);
+                }
                 // STRUCT or FB-instance field at any depth. The field's type comes from
                 // the same walk the lvalue path uses, so `o := s.i.v;` and
                 // `n := x.f.o;` load instead of silently producing nothing.
