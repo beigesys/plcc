@@ -169,6 +169,13 @@ pub struct TypeChecker {
     pub symbols: SymbolTable,
     pub types: TypeRegistry,
     pub errors: Vec<CheckError>,
+    /// Uppercase names that are defined outside any POU's own variables: every
+    /// VAR_GLOBAL (top level, CONFIGURATION, RESOURCE) and every enumerator. An
+    /// identifier that is none of these, not a variable in scope, not a POU and
+    /// not a type is undefined.
+    known_names: std::collections::HashSet<String>,
+    /// `FUNCTION_BLOCK X EXTENDS Y`: uppercase X → Y, so X's body sees Y's variables.
+    fb_extends: std::collections::HashMap<String, String>,
 }
 
 impl TypeChecker {
@@ -177,6 +184,8 @@ impl TypeChecker {
             symbols: SymbolTable::new(),
             types: TypeRegistry::new(),
             errors: Vec::new(),
+            known_names: std::collections::HashSet::new(),
+            fb_extends: std::collections::HashMap::new(),
         }
     }
 
@@ -233,8 +242,44 @@ impl TypeChecker {
                 let ty = self.resolve_type_spec(&td.type_spec);
                 self.types.register(td.name.name.to_uppercase(), ty);
             }
+            Declaration::GlobalVarDecl(block) => self.register_globals(block),
+            Declaration::Configuration(cfg) => {
+                for block in &cfg.global_vars {
+                    self.register_globals(block);
+                }
+                for res in &cfg.resources {
+                    for block in &res.global_vars {
+                        self.register_globals(block);
+                    }
+                }
+            }
             _ => {}
         }
+        if let Declaration::FunctionBlock(fb) = decl {
+            if let Some(base) = &fb.extends {
+                self.fb_extends
+                    .insert(fb.name.name.to_uppercase(), base.name.clone());
+            }
+        }
+    }
+
+    fn register_globals(&mut self, block: &VarBlock) {
+        for decl in &block.declarations {
+            self.known_names.insert(decl.name.name.to_uppercase());
+            // Resolving the type registers the enumerators of an inline enum.
+            self.resolve_type_spec(&decl.type_spec);
+        }
+    }
+
+    /// Whether `name` denotes something other than a variable in scope: a global,
+    /// an enumerator, a POU, or a type (`Mode.Idle`, `SIZEOF(T)`).
+    fn is_known_name(&self, name: &str) -> bool {
+        let upper = name.to_uppercase();
+        self.known_names.contains(&upper)
+            || self.symbols.lookup_pou(name).is_some()
+            || self.types.resolve(name).is_some()
+            || resolve_type_name(name).is_some()
+            || matches!(upper.as_str(), "THIS" | "SUPER")
     }
 
     fn build_pou_info(
@@ -299,6 +344,38 @@ impl TypeChecker {
             }
             Declaration::FunctionBlock(fb) => {
                 let mut scope = self.build_scope(&fb.var_blocks);
+                // Members inherited through EXTENDS, however deep.
+                let mut base = self.fb_extends.get(&fb.name.name.to_uppercase()).cloned();
+                let mut seen = 0;
+                while let Some(b) = base.take() {
+                    seen += 1;
+                    if seen > 64 {
+                        break;
+                    }
+                    if let Some(info) = self.symbols.lookup_pou(&b).cloned() {
+                        for (name, ty) in info
+                            .inputs
+                            .iter()
+                            .chain(&info.outputs)
+                            .chain(&info.in_outs)
+                            .chain(&info.locals)
+                        {
+                            if scope.lookup(name).is_none() {
+                                scope.define(
+                                    name.clone(),
+                                    VarInfo {
+                                        ty: ty.clone(),
+                                        is_constant: false,
+                                        is_input: false,
+                                        is_output: false,
+                                        is_in_out: false,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    base = self.fb_extends.get(&b.to_uppercase()).cloned();
+                }
                 self.check_statement_list(&fb.body, &mut scope);
             }
             _ => {}
@@ -446,7 +523,13 @@ impl TypeChecker {
                 }
             }
             StatementKind::FunctionCall { callee, args } => {
-                self.check_expression(callee, scope);
+                // A bare callee is a FUNCTION, an FB instance or a builtin (PRINT,
+                // MEMCPY, ...); an unknown one is reported by codegen as an unknown
+                // function, so only a callee expression (`a.b(..)`, `arr[i](..)`) is
+                // checked here.
+                if !matches!(callee.kind, ExpressionKind::Identifier(_)) {
+                    self.check_expression(callee, scope);
+                }
                 for arg in args {
                     self.check_expression(&arg.value, scope);
                 }
@@ -554,10 +637,17 @@ impl TypeChecker {
             ExpressionKind::Identifier(ident) => {
                 if let Some(info) = scope.lookup(&ident.name) {
                     info.ty.clone()
-                } else if self.symbols.lookup_pou(&ident.name).is_some() {
-                    IecType::Void // It's a POU name
+                } else if self.is_known_name(&ident.name) {
+                    // A global, an enumerator, a POU or a type name. Their types are
+                    // not tracked here yet.
+                    IecType::Void
                 } else {
-                    // Don't error for now — could be a FB instance member
+                    // CODESYS: "Identifier '<name>' not defined" (an error). Codegen
+                    // would otherwise be the first to notice, with no location.
+                    self.errors.push(CheckError::UndefinedVariable {
+                        name: ident.name.clone(),
+                        span: expr.span.into(),
+                    });
                     IecType::Void
                 }
             }
@@ -906,6 +996,7 @@ impl TypeChecker {
                         .and_then(|e| Self::enum_const(e, &values))
                         .unwrap_or(next);
                     values.push((v.name.name.clone(), val));
+                    self.known_names.insert(v.name.name.to_uppercase());
                     next = val.wrapping_add(1);
                 }
                 // `TYPE Color : DINT (Red, Green);` — the base type, INT by default
