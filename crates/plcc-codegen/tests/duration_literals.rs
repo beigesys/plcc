@@ -58,7 +58,26 @@ END_PROGRAM
 #[test]
 fn a_duration_beyond_64_bit_nanoseconds_is_an_error() {
     // i64 nanoseconds end at about 106751 days; this used to saturate silently.
-    let src = "PROGRAM p VAR t : LTIME; END_VAR t := LTIME#200000d; END_PROGRAM";
-    let e = compile_error(src);
-    assert!(e.contains("does not fit"), "{e}");
+    for src in [
+        "PROGRAM p VAR t : TIME; END_VAR t := T#200000d; END_PROGRAM",
+        // Past the unsigned LTIME range too.
+        "PROGRAM p VAR t : LTIME; END_VAR t := LTIME#300000d; END_PROGRAM",
+    ] {
+        let e = compile_error(src);
+        assert!(e.contains("does not fit"), "{e}");
+    }
+}
+
+#[test]
+fn the_largest_ltime_keeps_its_bit_pattern() {
+    // CODESYS/TwinCAT LTIME is unsigned: its largest value is 2^64 - 1 ns.
+    // TcUnit and TcOpen's tests write it; plcc holds it as the same 64 bits.
+    let s = run("PROGRAM p VAR t : LTIME; u : LTIME; same : BOOL; END_VAR
+        t := LTIME#213503D23H34M33S709MS551US615NS;
+        u := LTIME#213503D23H33M33S709MS551US615NS;
+        same := t = u;
+        END_PROGRAM");
+    assert_eq!(s.u64("t"), u64::MAX);
+    assert_eq!(s.u64("u"), u64::MAX - 60_000_000_000);
+    assert!(!s.bool("same"));
 }

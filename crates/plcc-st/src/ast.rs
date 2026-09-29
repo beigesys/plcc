@@ -228,6 +228,12 @@ pub enum TypeSpecKind {
         ranges: Vec<SubrangeSpec>,
         base: Box<TypeSpec>,
     },
+    /// A variable-length array, `ARRAY[*, *] OF base` (IEC 61131-3 ed. 3,
+    /// VAR_IN_OUT only): the bounds come from the argument.
+    VarLengthArray {
+        dimensions: usize,
+        base: Box<TypeSpec>,
+    },
     /// POINTER TO base or REF_TO base
     Pointer(Box<TypeSpec>),
     /// CODESYS `REFERENCE TO base`: stored as an address, but every use of the
@@ -322,7 +328,9 @@ pub enum StatementKind {
         else_body: Option<Vec<Statement>>,
     },
     For {
-        variable: Ident,
+        /// The control variable: a name, or (CODESYS / TwinCAT) any integer
+        /// location such as `idx[2]`.
+        variable: Expression,
         from: Expression,
         to: Expression,
         by: Option<Expression>,

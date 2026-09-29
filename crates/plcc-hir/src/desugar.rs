@@ -19,6 +19,9 @@
 //! * **Qualified names**: `GVL.x` for a global variable list `GVL` is `x`;
 //!   a library namespace (`Tc2_Standard.TON`, `Lib.F(..)`) is dropped.
 //! * **STRUCT EXTENDS**: a derived structure gets its base's fields first.
+//! * **POU constants by name**: `FB_Type.cMax`, a `VAR CONSTANT` of a POU
+//!   read from outside it, is a `VAR_GLOBAL CONSTANT` copy named
+//!   `__CONST_<POU>_<name>` (emitted only when referenced).
 
 use plcc_st::Span;
 use plcc_st::ast::*;
@@ -54,6 +57,9 @@ struct Env {
     globals: HashMap<String, TypeSpec>,
     gvls: HashSet<String>,
     functions: HashMap<String, Option<TypeSpec>>,
+    /// `VAR CONSTANT` declarations of POUs: (POU, name), both upper-case →
+    /// (POU as declared, declaration).
+    pou_consts: HashMap<(String, String), (String, VarDecl)>,
 }
 
 fn up(s: &str) -> String {
@@ -148,6 +154,21 @@ impl Env {
                 .collect()
         };
         for decl in &unit.declarations {
+            let own = match decl {
+                Declaration::FunctionBlock(fb) => Some((&fb.name, &fb.var_blocks)),
+                Declaration::Class(c) => Some((&c.name, &c.var_blocks)),
+                Declaration::Program(p) => Some((&p.name, &p.var_blocks)),
+                Declaration::Function(f) => Some((&f.name, &f.var_blocks)),
+                _ => None,
+            };
+            if let Some((pou, blocks)) = own {
+                for d in blocks.iter().filter(|b| b.is_constant).flat_map(|b| &b.declarations) {
+                    env.pou_consts.insert(
+                        (up(&pou.name), up(&d.name.name)),
+                        (pou.name.clone(), d.clone()),
+                    );
+                }
+            }
             match decl {
                 Declaration::FunctionBlock(fb) => {
                     let mut methods = methods_of(&fb.methods);
@@ -408,6 +429,8 @@ struct Rewriter<'e> {
     changed: bool,
     /// Enumerations `TO_STRING` was called on (uppercase).
     enum_strings: HashSet<String>,
+    /// POU constants read as `POU.name`: (POU, name), upper-case.
+    pou_consts: HashSet<(String, String)>,
 }
 
 impl Rewriter<'_> {
@@ -539,6 +562,21 @@ impl Rewriter<'_> {
         None
     }
 
+    /// `POU.c` for a `VAR CONSTANT` `c` of POU `POU` (not shadowed by a
+    /// variable named `POU`): the name of its global copy.
+    fn pou_constant(&mut self, object: &Expression, member: &Ident) -> Option<Ident> {
+        let ExpressionKind::Identifier(ns) = &object.kind else {
+            return None;
+        };
+        if self.is_var(&ns.name) || self.env.globals.contains_key(&up(&ns.name)) {
+            return None;
+        }
+        let key = (up(&ns.name), up(&member.name));
+        let (pou, d) = self.env.pou_consts.get(&key)?;
+        self.pou_consts.insert(key);
+        Some(Ident::new(const_global_name(pou, &d.name.name), member.span))
+    }
+
     /// The property `obj.name` refers to, if `obj`'s type has one.
     fn property_of(&self, object: &Expression, name: &str) -> Option<Prop> {
         let t = self.type_of(object)?;
@@ -624,6 +662,13 @@ impl Rewriter<'_> {
                         span,
                     };
                     return self.expr(&id);
+                }
+                if let Some(global) = self.pou_constant(object, m) {
+                    self.changed = true;
+                    return Expression {
+                        kind: ExpressionKind::Identifier(global),
+                        span,
+                    };
                 }
                 if let Some(p) = self.property_of(object, &m.name) {
                     let obj = self.expr(object);
@@ -956,13 +1001,7 @@ impl Rewriter<'_> {
                 by,
                 body,
             } => StatementKind::For {
-                variable: match self.rename(variable) {
-                    Some(v) => {
-                        self.changed = true;
-                        v
-                    }
-                    None => variable.clone(),
-                },
+                variable: self.lvalue(variable),
                 from: self.expr(from),
                 to: self.expr(to),
                 by: by.as_ref().map(|b| self.expr(b)),
@@ -1190,6 +1229,7 @@ pub fn desugar(unit: &CompilationUnit) -> (Option<CompilationUnit>, Vec<DesugarE
 
     // Bodies.
     let mut enum_strings: HashSet<String> = HashSet::new();
+    let mut pou_const_refs: HashSet<(String, String)> = HashSet::new();
     for (i, decl) in out.declarations.iter_mut().enumerate() {
         let own_stat = stat_maps.get(&(i, None)).cloned().unwrap_or_default();
         let mut rw = Rewriter {
@@ -1198,6 +1238,7 @@ pub fn desugar(unit: &CompilationUnit) -> (Option<CompilationUnit>, Vec<DesugarE
             errors: Vec::new(),
             changed: false,
             enum_strings: HashSet::new(),
+            pou_consts: HashSet::new(),
         };
         match decl {
             Declaration::Program(p) => {
@@ -1223,6 +1264,9 @@ pub fn desugar(unit: &CompilationUnit) -> (Option<CompilationUnit>, Vec<DesugarE
                 rw.ctx.stat = own_stat;
                 f.body = rw.stmts(&f.body);
                 init_exprs(&mut rw, &mut f.var_blocks);
+                if let Some(rt) = &mut f.return_type {
+                    type_exprs(&mut rw, rt);
+                }
             }
             Declaration::FunctionBlock(fb) => {
                 let pou = up(&fb.name.name);
@@ -1287,7 +1331,26 @@ pub fn desugar(unit: &CompilationUnit) -> (Option<CompilationUnit>, Vec<DesugarE
         }
         changed |= rw.changed;
         enum_strings.extend(rw.enum_strings);
+        pou_const_refs.extend(rw.pou_consts);
         errors.extend(rw.errors.into_iter().map(|(s, m)| (i, s, m)));
+    }
+
+    report_var_length_arrays(&out, &mut errors);
+
+    // Global copies of the POU constants read as `POU.name`, with the
+    // constants of the same POU they are defined from.
+    let const_globals = pou_constant_globals(&env, pou_const_refs);
+    if !const_globals.is_empty() {
+        let span = const_globals[0].span;
+        out.declarations.push(Declaration::GlobalVarDecl(VarBlock {
+            list_name: None,
+            kind: VarBlockKind::VarGlobal,
+            is_constant: true,
+            is_retain: false,
+            is_non_retain: false,
+            declarations: const_globals,
+            span,
+        }));
     }
 
     let mut helpers: Vec<String> = enum_strings.into_iter().collect();
@@ -1319,6 +1382,116 @@ pub fn desugar(unit: &CompilationUnit) -> (Option<CompilationUnit>, Vec<DesugarE
     }
 
     (changed.then_some(out), errors)
+}
+
+/// `ARRAY[*]` parses, but plcc has no array descriptors to pass the bounds
+/// with: each one is an error.
+fn report_var_length_arrays(unit: &CompilationUnit, errors: &mut Vec<DesugarError>) {
+    fn spec(s: &TypeSpec, i: usize, errors: &mut Vec<DesugarError>) {
+        match &s.kind {
+            TypeSpecKind::VarLengthArray { .. } => errors.push((
+                i,
+                s.span,
+                "variable-length arrays (`ARRAY[*]`) are not supported yet; declare \
+                 the parameter with fixed bounds"
+                    .to_string(),
+            )),
+            TypeSpecKind::Array { base, .. }
+            | TypeSpecKind::Pointer(base)
+            | TypeSpecKind::Reference(base) => spec(base, i, errors),
+            TypeSpecKind::Struct(fields) | TypeSpecKind::Union(fields) => {
+                for f in fields {
+                    spec(&f.type_spec, i, errors);
+                }
+            }
+            _ => {}
+        }
+    }
+    fn blocks(bs: &[VarBlock], i: usize, errors: &mut Vec<DesugarError>) {
+        for d in bs.iter().flat_map(|b| &b.declarations) {
+            spec(&d.type_spec, i, errors);
+        }
+    }
+    fn methods(ms: &[MethodDecl], i: usize, errors: &mut Vec<DesugarError>) {
+        for m in ms {
+            blocks(&m.var_blocks, i, errors);
+        }
+    }
+    for (i, d) in unit.declarations.iter().enumerate() {
+        match d {
+            Declaration::Program(p) => {
+                blocks(&p.var_blocks, i, errors);
+                methods(&p.methods, i, errors);
+            }
+            Declaration::Function(f) => blocks(&f.var_blocks, i, errors),
+            Declaration::FunctionBlock(fb) => {
+                blocks(&fb.var_blocks, i, errors);
+                methods(&fb.methods, i, errors);
+            }
+            Declaration::Class(c) => {
+                blocks(&c.var_blocks, i, errors);
+                methods(&c.methods, i, errors);
+            }
+            Declaration::Interface(itf) => methods(&itf.methods, i, errors),
+            Declaration::TypeDecl(t) => spec(&t.type_spec, i, errors),
+            Declaration::GlobalVarDecl(b) => blocks(std::slice::from_ref(b), i, errors),
+            Declaration::Configuration(_) => {}
+        }
+    }
+}
+
+fn const_global_name(pou: &str, name: &str) -> String {
+    format!("__CONST_{pou}_{name}")
+}
+
+/// The `VAR_GLOBAL CONSTANT` copies of the POU constants in `refs`. A copy's
+/// initializer names the copies of the same POU's constants it uses, which
+/// are emitted too.
+fn pou_constant_globals(env: &Env, refs: HashSet<(String, String)>) -> Vec<VarDecl> {
+    fn visit(e: &mut Expression, pou: &str, env: &Env, todo: &mut Vec<(String, String)>) {
+        match &mut e.kind {
+            ExpressionKind::Identifier(id) => {
+                let key = (pou.to_string(), up(&id.name));
+                if let Some((p, d)) = env.pou_consts.get(&key) {
+                    *id = Ident::new(const_global_name(p, &d.name.name), id.span);
+                    todo.push(key);
+                }
+            }
+            ExpressionKind::BinaryOp { left, right, .. } => {
+                visit(left, pou, env, todo);
+                visit(right, pou, env, todo);
+            }
+            ExpressionKind::UnaryOp { operand: x, .. }
+            | ExpressionKind::Parenthesized(x) => visit(x, pou, env, todo),
+            ExpressionKind::TypedLiteral { value, .. } => visit(value, pou, env, todo),
+            ExpressionKind::FunctionCall { args, .. } => {
+                for a in args.iter_mut().filter(|a| !a.is_output) {
+                    visit(&mut a.value, pou, env, todo);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut todo: Vec<(String, String)> = refs.into_iter().collect();
+    todo.sort();
+    let mut done: HashSet<(String, String)> = HashSet::new();
+    let mut out = Vec::new();
+    while let Some(key) = todo.pop() {
+        if !done.insert(key.clone()) {
+            continue;
+        }
+        let Some((pou, d)) = env.pou_consts.get(&key) else {
+            continue;
+        };
+        let mut g = d.clone();
+        g.name = Ident::new(const_global_name(pou, &d.name.name), d.name.span);
+        if let Some(init) = &mut g.initializer {
+            visit(init, &key.0, env, &mut todo);
+        }
+        out.push(g);
+    }
+    out.sort_by(|a, b| a.name.name.cmp(&b.name.name));
+    out
 }
 
 /// Actions become parameterless methods.
@@ -1513,6 +1686,9 @@ fn lower_members(
     rw.ctx.pou = Some(pou.to_string());
     for m in methods.iter_mut() {
         init_exprs(rw, &mut m.var_blocks);
+        if let Some(rt) = &mut m.return_type {
+            type_exprs(rw, rt);
+        }
         rw.ctx.locals = locals_of(&m.var_blocks);
         rw.ctx.getter = None;
         let mut stat = own_stat.clone();
@@ -1536,7 +1712,8 @@ fn lower_members(
                 ),
             ));
         }
-        let prop_ty = p.type_spec.clone();
+        let mut prop_ty = p.type_spec.clone();
+        type_exprs(rw, &mut prop_ty);
         if let Some(get) = p.get {
             let name = getter_name(&p.name.name);
             rw.ctx.locals = locals_of(&get.var_blocks);

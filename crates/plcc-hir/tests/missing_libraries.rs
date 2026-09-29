@@ -102,3 +102,15 @@ END_FUNCTION_BLOCK
     // Not taken as extending itself.
     assert!(errs[2].contains("'TcoCore.TcoContext'"), "{errs:?}");
 }
+
+#[test]
+fn variable_length_arrays_are_reported() {
+    let errs = errors(
+        "FUNCTION F : DINT
+        VAR_IN_OUT a : ARRAY[*] OF INT; END_VAR
+        F := 0;
+        END_FUNCTION",
+    );
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert!(errs[0].contains("variable-length arrays (`ARRAY[*]`) are not supported yet"), "{errs:?}");
+}

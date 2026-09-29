@@ -168,3 +168,30 @@ fn call_forms_twincat_accepts() {
     };
     assert_eq!(then_body.len(), 2);
 }
+
+#[test]
+fn variable_length_arrays_and_location_for_counters() {
+    let unit = parse_ok(
+        "FUNCTION F : LREAL
+        VAR_IN_OUT a : ARRAY[*, *] OF LREAL; v : ARRAY[*] OF INT; END_VAR
+        VAR idx : ARRAY[1..2] OF DINT; END_VAR
+        FOR idx[2] := 0 TO 3 DO END_FOR
+        END_FUNCTION",
+    );
+    let Declaration::Function(f) = &unit.declarations[0] else {
+        panic!("not a function");
+    };
+    let dims: Vec<usize> = f.var_blocks[0]
+        .declarations
+        .iter()
+        .map(|d| match &d.type_spec.kind {
+            TypeSpecKind::VarLengthArray { dimensions, .. } => *dimensions,
+            k => panic!("{k:?}"),
+        })
+        .collect();
+    assert_eq!(dims, [2, 1]);
+    let StatementKind::For { variable, .. } = &f.body[0].kind else {
+        panic!("not a FOR");
+    };
+    assert!(matches!(variable.kind, ExpressionKind::ArrayIndex { .. }));
+}

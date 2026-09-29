@@ -382,9 +382,7 @@ fn rename_stmts(body: &mut [Statement], map: &HashMap<String, String>) {
                 by,
                 body,
             } => {
-                if let Some(n) = map.get(&variable.name.to_uppercase()) {
-                    variable.name = n.clone();
-                }
+                rename_expr(variable, map);
                 rename_expr(from, map);
                 rename_expr(to, map);
                 if let Some(b) = by {

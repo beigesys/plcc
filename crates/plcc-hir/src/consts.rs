@@ -22,6 +22,14 @@ fn eval(e: &Expression, t: &Table) -> Option<i128> {
         ExpressionKind::Parenthesized(inner) => eval(inner, t),
         ExpressionKind::TypedLiteral { value, .. } => eval(value, t),
         ExpressionKind::Identifier(id) => t.get(&id.name.to_uppercase()).copied(),
+        // `FB_Type.cMax`: a VAR CONSTANT of a POU, reached through the POU's
+        // name (CODESYS / TwinCAT).
+        ExpressionKind::MemberAccess { object, member } => match &object.kind {
+            ExpressionKind::Identifier(pou) => t
+                .get(&format!("{}.{}", pou.name, member.name).to_uppercase())
+                .copied(),
+            _ => None,
+        },
         ExpressionKind::UnaryOp {
             op: UnaryOp::Neg,
             operand,
@@ -64,6 +72,32 @@ fn add_constants(blocks: &[&VarBlock], t: &mut Table) {
     }
 }
 
+/// The first name in `e` that belongs to a vendor library plcc does not
+/// provide, with that library.
+fn missing_library_name(e: &Expression) -> Option<(String, String)> {
+    match &e.kind {
+        ExpressionKind::Identifier(id) => {
+            crate::libraries::library_of(&id.name).map(|lib| (id.name.clone(), lib))
+        }
+        ExpressionKind::MemberAccess { object, member } => {
+            crate::libraries::library_of(&member.name)
+                .map(|lib| (member.name.clone(), lib))
+                .or_else(|| missing_library_name(object))
+        }
+        ExpressionKind::Parenthesized(x) | ExpressionKind::UnaryOp { operand: x, .. } => {
+            missing_library_name(x)
+        }
+        ExpressionKind::TypedLiteral { value, .. } => missing_library_name(value),
+        ExpressionKind::BinaryOp { left, right, .. } => {
+            missing_library_name(left).or_else(|| missing_library_name(right))
+        }
+        ExpressionKind::FunctionCall { args, .. } => {
+            args.iter().find_map(|a| missing_library_name(&a.value))
+        }
+        _ => None,
+    }
+}
+
 struct Folder {
     changed: bool,
     unresolved: Vec<(usize, Span, String)>,
@@ -80,7 +114,17 @@ impl Folder {
                 e.kind = ExpressionKind::IntegerLiteral(v);
                 self.changed = true;
             }
-            None => self.unresolved.push((self.current, e.span, what.to_string())),
+            None => {
+                // `ARRAY[0..EC_MAX_SLAVES]`: say which library the constant
+                // is from rather than that the bound is not constant.
+                let message = match missing_library_name(e) {
+                    Some((name, library)) => format!(
+                        "`{name}` is part of the {library} library, which plcc does not provide"
+                    ),
+                    None => format!("{what} is not a constant integer expression"),
+                };
+                self.unresolved.push((self.current, e.span, message))
+            }
         }
     }
 
@@ -121,7 +165,7 @@ impl Folder {
 
 /// Fold named integer constants in every type of `unit`. Returns the rewritten
 /// unit when anything was folded, and every bound that is not a constant
-/// expression (with where it is and what it is).
+/// expression (with where it is and the diagnostic for it).
 pub fn fold_type_constants(
     unit: &CompilationUnit,
 ) -> (Option<CompilationUnit>, Vec<(usize, Span, String)>) {
@@ -140,6 +184,28 @@ pub fn fold_type_constants(
         })
         .collect();
     add_constants(&global_blocks, &mut globals);
+    // Every POU's own constants, also as `POU.NAME` for use outside it.
+    let mut qualified = Table::new();
+    for d in &unit.declarations {
+        let (name, blocks) = match d {
+            Declaration::Program(p) => (&p.name, &p.var_blocks),
+            Declaration::Function(f) => (&f.name, &f.var_blocks),
+            Declaration::FunctionBlock(fb) => (&fb.name, &fb.var_blocks),
+            Declaration::Class(c) => (&c.name, &c.var_blocks),
+            _ => continue,
+        };
+        let mut t = globals.clone();
+        let refs: Vec<&VarBlock> = blocks.iter().collect();
+        add_constants(&refs, &mut t);
+        for b in blocks.iter().filter(|b| b.is_constant) {
+            for decl in &b.declarations {
+                if let Some(v) = t.get(&decl.name.name.to_uppercase()) {
+                    qualified.insert(format!("{}.{}", name.name, decl.name.name).to_uppercase(), *v);
+                }
+            }
+        }
+    }
+    globals.extend(qualified);
 
     let mut out = unit.clone();
     let mut f = Folder {

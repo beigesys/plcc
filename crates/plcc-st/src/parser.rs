@@ -1203,6 +1203,29 @@ impl<'s> Parser<'s> {
         let start = self.ts.advance().unwrap().1; // consume ARRAY
         self.ts.expect(&Token::LBracket, &mut self.errors);
 
+        // `ARRAY[*, *] OF T`: variable length.
+        if self.ts.at(&Token::Star) {
+            let mut dimensions = 0;
+            loop {
+                self.ts.expect(&Token::Star, &mut self.errors);
+                dimensions += 1;
+                if self.ts.eat(&Token::Comma).is_none() {
+                    break;
+                }
+            }
+            self.ts.expect(&Token::RBracket, &mut self.errors);
+            self.ts.expect(&Token::Of, &mut self.errors);
+            let base = self.parse_type_spec();
+            let end = base.span;
+            return TypeSpec {
+                kind: TypeSpecKind::VarLengthArray {
+                    dimensions,
+                    base: Box::new(base),
+                },
+                span: start.merge(end),
+            };
+        }
+
         let mut ranges = Vec::new();
         loop {
             let low = self.parse_expression();
@@ -1968,7 +1991,12 @@ impl<'s> Parser<'s> {
 
     fn parse_for_statement(&mut self) -> Statement {
         let start = self.ts.advance().unwrap().1; // consume FOR
-        let variable = self.expect_ident();
+        // Usually a name; TwinCAT also takes an array element or a field.
+        let id = self.expect_ident();
+        let variable = self.parse_postfix_from(Expression {
+            span: id.span,
+            kind: ExpressionKind::Identifier(id),
+        });
         self.ts.expect(&Token::Assign, &mut self.errors);
         let from = self.parse_expression();
         self.ts.expect(&Token::To, &mut self.errors);
@@ -2374,8 +2402,12 @@ impl<'s> Parser<'s> {
     }
 
     fn parse_postfix(&mut self) -> Expression {
-        let mut expr = self.parse_primary();
+        let expr = self.parse_primary();
+        self.parse_postfix_from(expr)
+    }
 
+    /// The postfix operators (`[i]`, `.m`, `(args)`, `^`) after `expr`.
+    fn parse_postfix_from(&mut self, mut expr: Expression) -> Expression {
         loop {
             match self.ts.peek() {
                 Some(Token::Dot) => {

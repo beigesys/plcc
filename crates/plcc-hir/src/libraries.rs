@@ -14,6 +14,10 @@ const LIBRARIES: &[(&str, &[&str])] = &[
     (
         "Tc2_System",
         &[
+            "E_SEEKORIGIN",
+            "SEEK_SET",
+            "SEEK_CUR",
+            "SEEK_END",
             "ADSLOGSTR",
             "ADSLOGDINT",
             "ADSLOGLREAL",
@@ -70,6 +74,14 @@ const LIBRARIES: &[(&str, &[&str])] = &[
     (
         "Tc2_Utilities",
         &[
+            "E_ENUMCMDTYPE",
+            "EENUMCMD_FIRST",
+            "EENUMCMD_NEXT",
+            "EENUMCMD_ABORT",
+            "DEFAULT_CSV_FIELD_SEP",
+            "DEFAULT_CSV_RECORD_SEP",
+            "FB_MEMRINGBUFFER",
+            "MEM_RING_BUFFER_INTERNAL_USE_PER_DATA_RECORD",
             "FB_LOCALSYSTEMTIME",
             "FB_GETTIMEZONEINFORMATION",
             "FB_SYSTEMTIMETOTZSPECIFICLOCALTIME",
@@ -108,6 +120,22 @@ const LIBRARIES: &[(&str, &[&str])] = &[
     (
         "Tc2_MC2",
         &[
+            "MC_AXISSTATE_UNDEFINED",
+            "MC_AXISSTATE_DISABLED",
+            "MC_AXISSTATE_STANDSTILL",
+            "MC_AXISSTATE_ERRORSTOP",
+            "MC_AXISSTATE_STOPPING",
+            "MC_AXISSTATE_HOMING",
+            "MC_AXISSTATE_DISCRETEMOTION",
+            "MC_AXISSTATE_CONTINOUSMOTION",
+            "MC_AXISSTATE_SYNCHRONIZEDMOTION",
+            "MC_AXISPARAMETER",
+            "MC_DIRECT",
+            "MC_RESETCALIBRATION",
+            "MC_DEFAULTHOMING",
+            "MC_DISABLEMODE",
+            "DISABLEMODEHOLD",
+            "DISABLEMODEBRAKE",
             "AXIS_REF",
             "MC_POWER",
             "MC_RESET",
@@ -144,6 +172,7 @@ const LIBRARIES: &[(&str, &[&str])] = &[
     (
         "Tc2_EtherCAT",
         &[
+            "EC_MAX_SLAVES",
             "FB_ECCOESDOREAD",
             "FB_ECCOESDOWRITE",
             "FB_ECGETALLSLAVESTATES",

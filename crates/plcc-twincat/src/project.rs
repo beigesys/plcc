@@ -45,6 +45,14 @@ pub fn project_files(project: &Path, source: &str) -> Result<Vec<PathBuf>, TwinC
         TwinCatError::new(format!("malformed .plcproj: {e}"), Span::new(at, at))
     })?;
     let dir = project.parent().unwrap_or(Path::new("."));
+    // `<Folder Include="A\B"><ExcludeFromBuild>true</ExcludeFromBuild>`:
+    // everything below the folder is left out of the build, unless a deeper
+    // folder or the file itself says otherwise.
+    let folders: Vec<(String, bool)> = doc
+        .descendants()
+        .filter(|n| n.is_element() && n.tag_name().name() == "Folder")
+        .filter_map(|n| Some((normalize_include(n.attribute("Include")?), exclude_flag(n)?)))
+        .collect();
     let mut files = Vec::new();
     for item in doc
         .descendants()
@@ -56,6 +64,9 @@ pub fn project_files(project: &Path, source: &str) -> Result<Vec<PathBuf>, TwinC
         // MSBuild paths use backslashes.
         let rel: PathBuf = include.split(['\\', '/']).collect();
         if !is_object_file(&rel) {
+            continue;
+        }
+        if excluded(&normalize_include(include), exclude_flag(item), &folders) {
             continue;
         }
         // TwinCAT runs on Windows, whose paths ignore case: `Constants.TcGVL`
@@ -71,6 +82,40 @@ pub fn project_files(project: &Path, source: &str) -> Result<Vec<PathBuf>, TwinC
         files.push(path);
     }
     Ok(files)
+}
+
+/// An MSBuild `Include` path as a comparable key: forward slashes, lowercase
+/// (TwinCAT runs on Windows), no trailing separator.
+fn normalize_include(include: &str) -> String {
+    include
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_lowercase()
+}
+
+/// The item's `<ExcludeFromBuild>` setting, when it has one.
+fn exclude_flag(item: roxmltree::Node) -> Option<bool> {
+    item.children()
+        .find(|c| c.is_element() && c.tag_name().name() == "ExcludeFromBuild")
+        .and_then(|c| c.text())
+        .map(|t| t.trim().eq_ignore_ascii_case("true"))
+}
+
+/// Whether a `<Compile>` item is left out of the build: its own
+/// `<ExcludeFromBuild>`, else that of the deepest enclosing folder that sets it.
+fn excluded(file: &str, own: Option<bool>, folders: &[(String, bool)]) -> bool {
+    if let Some(own) = own {
+        return own;
+    }
+    folders
+        .iter()
+        .filter(|(folder, _)| {
+            file.len() > folder.len()
+                && file.starts_with(folder.as_str())
+                && file.as_bytes()[folder.len()] == b'/'
+        })
+        .max_by_key(|(folder, _)| folder.len())
+        .is_some_and(|(_, flag)| *flag)
 }
 
 /// `dir/rel`, matching each component without regard to case when the exact
@@ -278,6 +323,37 @@ pub fn configuration_source(tasks: &[Task]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn excluded_files_and_folders_are_not_compiled() {
+        let dir = std::env::temp_dir().join(format!("plcc-twincat-exclude-{}", std::process::id()));
+        for sub in ["POUs/Off/Deeper", "POUs/On"] {
+            std::fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        for f in ["POUs/A.TcPOU", "POUs/B.TcPOU", "POUs/Off/C.TcPOU", "POUs/Off/Deeper/D.TcPOU", "POUs/On/E.TcPOU"] {
+            std::fs::write(dir.join(f), "").unwrap();
+        }
+        let proj = r#"<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Compile Include="POUs\A.TcPOU" />
+    <Compile Include="POUs\B.TcPOU"><ExcludeFromBuild>true</ExcludeFromBuild></Compile>
+    <Compile Include="POUs\Off\C.TcPOU" />
+    <Compile Include="POUs\Off\Deeper\D.TcPOU"><ExcludeFromBuild>false</ExcludeFromBuild></Compile>
+    <Compile Include="POUs\On\E.TcPOU" />
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="POUs\off"><ExcludeFromBuild>true</ExcludeFromBuild></Folder>
+    <Folder Include="POUs\On"><ExcludeFromBuild>false</ExcludeFromBuild></Folder>
+  </ItemGroup>
+</Project>"#;
+        let files = project_files(&dir.join("P.plcproj"), proj).unwrap();
+        let names: Vec<String> = files
+            .iter()
+            .map(|f| f.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(names, ["A.TcPOU", "D.TcPOU", "E.TcPOU"]);
+    }
 
     #[test]
     fn task_file_becomes_a_configuration() {

@@ -229,11 +229,11 @@ impl TypeChecker {
         let unit = folded.as_ref().unwrap_or(unit);
         let mut located: Vec<(usize, CheckError)> = unresolved
             .into_iter()
-            .map(|(i, span, what)| {
+            .map(|(i, span, message)| {
                 (
                     i,
                     CheckError::General {
-                        message: format!("{what} is not a constant integer expression"),
+                        message,
                         span: span.into(),
                     },
                 )
@@ -651,18 +651,18 @@ impl TypeChecker {
             } => {
                 // Variable should be an integer; CODESYS also accepts a bit string
                 // (`FOR b := 0 TO 7` with `b : BYTE`).
-                if let Some(info) = scope.lookup(&variable.name) {
-                    if !(info.ty.base().is_any_int()
-                        || (info.ty.base().is_any_bit() && *info.ty.base() != IecType::Bool)
-                        || info.ty.base().is_any_real()
-                        || Self::unknown(&info.ty))
-                    {
-                        self.errors.push(CheckError::TypeMismatch {
-                            expected: "numeric type".into(),
-                            found: info.ty.to_string(),
-                            span: variable.span.into(),
-                        });
-                    }
+                let ty = self.check_expression(variable, scope);
+                if !(ty.base().is_any_int()
+                    || (ty.base().is_any_bit() && *ty.base() != IecType::Bool)
+                    || ty.base().is_any_real()
+                    || ty == IecType::Void
+                    || Self::unknown(&ty))
+                {
+                    self.errors.push(CheckError::TypeMismatch {
+                        expected: "numeric type".into(),
+                        found: ty.to_string(),
+                        span: variable.span.into(),
+                    });
                 }
                 self.check_expression(from, scope);
                 self.check_expression(to, scope);
@@ -1186,6 +1186,8 @@ impl TypeChecker {
                 }
             }
             TypeSpecKind::Pointer(base) => IecType::Pointer(Box::new(self.resolve_type_spec(base))),
+            // Reported by `desugar`; there is no type to give it.
+            TypeSpecKind::VarLengthArray { .. } => IecType::Unresolved("ARRAY[*]".to_string()),
             // A REFERENCE is used as the value it refers to, so that is its type
             // in every expression. (Codegen stores it as an address; see
             // `plcc_codegen`'s reference desugaring.)

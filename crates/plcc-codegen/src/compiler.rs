@@ -184,9 +184,30 @@ fn parse_date_time_literal_ns(kind: &ExpressionKind) -> Option<i64> {
     }
 }
 
+/// `digits` (`213503`, `1.5`) of a unit worth `multiplier` ns, in ns. The whole
+/// part is exact (f64 is not, above 2^53 ns: `LTIME#213503d...` came out a
+/// minute short); the fraction is rounded, not truncated (`1.1 * 1e9` is
+/// 1100000000.0000002 and `0.3 * 1e3` is 299.99999999999994). `None` when
+/// it is far out of range.
+fn duration_part(digits: &str, multiplier: i128) -> Option<i128> {
+    let (whole, frac) = digits.split_once('.').unwrap_or((digits, ""));
+    let whole: i128 = if whole.is_empty() { 0 } else { whole.parse().ok()? };
+    let whole = whole.checked_mul(multiplier).filter(|v| *v <= u64::MAX as i128 * 2)?;
+    let frac = if frac.is_empty() {
+        0
+    } else {
+        let f: f64 = format!("0.{frac}").parse().ok()?;
+        (f * multiplier as f64).round() as i128
+    };
+    Some(whole + frac)
+}
+
 /// Nanoseconds of a TIME/LTIME literal, or why it is malformed.
 fn parse_time_literal_ns(s: &str) -> Result<i64, String> {
     let s = s.trim();
+    let long = ["LTIME#", "LT#"]
+        .iter()
+        .any(|p| s.len() > p.len() && s[..p.len()].eq_ignore_ascii_case(p));
     // Strip the duration prefix. IEC 61131-3 Annex A B.1.2.3 allows T#, LT#,
     // TIME# and LTIME#; the lexer accepts all four, so all four must be
     // stripped here or the prefix letters would be misread as unit suffixes.
@@ -202,7 +223,8 @@ fn parse_time_literal_ns(s: &str) -> Result<i64, String> {
         Some(rest) => (true, rest),
         None => (false, s),
     };
-    let mut ns: i64 = 0;
+    const TOO_LONG: &str = "the duration does not fit in 64-bit nanoseconds (about 106751 days)";
+    let mut ns: i128 = 0;
     let mut num_buf = String::new();
     let mut chars = s.chars().peekable();
     while let Some(&c) = chars.peek() {
@@ -212,8 +234,7 @@ fn parse_time_literal_ns(s: &str) -> Result<i64, String> {
             }
             chars.next();
         } else {
-            let val: f64 = num_buf.parse().unwrap_or(0.0);
-            num_buf.clear();
+            let digits = std::mem::take(&mut num_buf);
             // Read unit suffix
             let mut unit = String::new();
             while let Some(&u) = chars.peek() {
@@ -228,33 +249,34 @@ fn parse_time_literal_ns(s: &str) -> Result<i64, String> {
                 return Err(format!("unexpected `{c}` in a duration"));
             }
             // An unknown unit was read as 0 — `T#5x` was a silent T#0s.
-            let multiplier: f64 = match unit.to_lowercase().as_str() {
-                "d" => 86_400_000_000_000.0,
-                "h" => 3_600_000_000_000.0,
-                "m" => 60_000_000_000.0,
-                "s" => 1_000_000_000.0,
-                "ms" => 1_000_000.0,
-                "us" => 1_000.0,
-                "ns" => 1.0,
+            let multiplier: i128 = match unit.to_lowercase().as_str() {
+                "d" => 86_400_000_000_000,
+                "h" => 3_600_000_000_000,
+                "m" => 60_000_000_000,
+                "s" => 1_000_000_000,
+                "ms" => 1_000_000,
+                "us" => 1_000,
+                "ns" => 1,
                 other => return Err(format!("`{other}` is not a duration unit (d, h, m, s, ms, us, ns)")),
             };
-            // Rounded, not truncated: `1.1 * 1e9` is 1100000000.0000002 and
-            // `0.3 * 1e3` is 299.99999999999994.
-            let part = (val * multiplier).round();
-            if part >= i64::MAX as f64 {
-                return Err("the duration does not fit in 64-bit nanoseconds (about 106751 days)".into());
-            }
-            ns = ns
-                .checked_add(part as i64)
-                .ok_or("the duration does not fit in 64-bit nanoseconds (about 106751 days)")?;
+            ns += duration_part(&digits, multiplier).ok_or(TOO_LONG)?;
         }
     }
     // Handle trailing number with no unit (assume ms for bare numbers)
     if !num_buf.is_empty() {
-        let val: f64 = num_buf.parse().unwrap_or(0.0);
-        ns += (val * 1_000_000.0).round() as i64; // default ms
+        // default ms
+        ns += duration_part(&num_buf, 1_000_000).ok_or(TOO_LONG)?;
     }
-    Ok(if negative { -ns } else { ns })
+    let ns = if negative { -ns } else { ns };
+    match i64::try_from(ns) {
+        Ok(v) => Ok(v),
+        // CODESYS/TwinCAT LTIME is an unsigned 64-bit count of nanoseconds, up to
+        // LTIME#213503d23h34m33s709ms551us615ns. plcc holds durations signed:
+        // keep the bit pattern, so such a value is stored and compared for
+        // equality exactly (ordering against it is signed).
+        Err(_) if long && (0..=u64::MAX as i128).contains(&ns) => Ok(ns as u64 as i64),
+        Err(_) => Err(TOO_LONG.into()),
+    }
 }
 
 #[derive(Debug, Error)]
@@ -2756,9 +2778,9 @@ impl<'ctx> Compiler<'ctx> {
         // `ARRAY[1..N]`, `STRING(LEN)` with named constants: fold to literals. A
         // bound that is not a constant used to become a one-element array.
         let (folded, unresolved) = plcc_hir::consts::fold_type_constants(unit);
-        if let Some((_, span, what)) = unresolved.first() {
+        if let Some((_, span, message)) = unresolved.first() {
             return Err(CodegenError::UnsupportedType(format!(
-                "{what} at source offset {} is not a constant integer expression",
+                "{message} (source offset {})",
                 span.start
             )));
         }
@@ -2936,9 +2958,20 @@ impl<'ctx> Compiler<'ctx> {
         // runs LLVM at OptimizationLevel::Default; the execution tests JIT at
         // OptimizationLevel::None. Anything the verifier rejects is a codegen bug that
         // the JIT path would otherwise hide until someone ran the real `plcc compile`.
-        self.module
-            .verify()
-            .map_err(|e| CodegenError::InvalidModule(e.to_string()))?;
+        if let Err(e) = self.module.verify() {
+            // Name the functions at fault: the verifier's text does not.
+            let bad: Vec<String> = self
+                .module
+                .get_functions()
+                .filter(|f| f.count_basic_blocks() > 0 && !f.verify(false))
+                .map(|f| f.get_name().to_string_lossy().into_owned())
+                .collect();
+            let mut msg = e.to_string();
+            if !bad.is_empty() {
+                msg = format!("in {}: {msg}", bad.join(", "));
+            }
+            return Err(CodegenError::InvalidModule(msg));
+        }
         Ok(())
     }
 
@@ -5301,8 +5334,11 @@ impl<'ctx> Compiler<'ctx> {
         fb_name: &str,
         method: &MethodDecl,
     ) -> (MethodInfo, FunctionValue<'ctx>) {
+        // `fb.method`: a `.` cannot occur in an ST name, so this never meets
+        // the POU's own `fb_init` / `fb_scan` (a method named `Init` used to
+        // become a second `fb_init`), nor `A.B_C` against `A_B.C`.
         let method_fn_name = format!(
-            "{}_{}",
+            "{}.{}",
             fb_name.to_lowercase(),
             method.name.name.to_lowercase()
         );
@@ -6468,18 +6504,38 @@ impl<'ctx> Compiler<'ctx> {
 
     fn compile_for(
         &mut self,
-        variable: &Ident,
+        variable: &Expression,
         from: &Expression,
         to: &Expression,
         by: &Option<Expression>,
         body: &[Statement],
         function: FunctionValue<'ctx>,
     ) -> Result<(), CodegenError> {
-        let (var_ptr, var_ty) = self
-            .variables
-            .get(&variable.name.to_uppercase())
-            .ok_or_else(|| CodegenError::UndefinedVariable(variable.name.clone()))?
-            .clone();
+        let var_name = Self::describe_lvalue(variable);
+        // A plain name, or (TwinCAT) a location such as `idx[2]`, whose
+        // address is taken once, before the loop.
+        let (var_ptr, var_ty) = match &variable.kind {
+            ExpressionKind::Identifier(id) => self
+                .variables
+                .get(&id.name.to_uppercase())
+                .ok_or_else(|| CodegenError::UndefinedVariable(id.name.clone()))?
+                .clone(),
+            _ => {
+                let ty = self.lvalue_iec_type(variable).ok_or_else(|| {
+                    CodegenError::UnsupportedType(format!(
+                        "cannot determine the type of the FOR control variable `{var_name}`"
+                    ))
+                })?;
+                let ptr = self
+                    .compile_lvalue_inner(variable, Some(function))?
+                    .ok_or_else(|| {
+                        CodegenError::UnsupportedType(format!(
+                            "the FOR control variable `{var_name}` has no address"
+                        ))
+                    })?;
+                (ptr, ty)
+            }
+        };
 
         let from_val = self
             .compile_expression(from, function)?
@@ -6532,7 +6588,7 @@ impl<'ctx> Compiler<'ctx> {
                 Some(0) => {
                     return Err(CodegenError::UnsupportedType(format!(
                         "FOR `{}` ... BY 0 never terminates (source offset {})",
-                        variable.name, by_expr.span.start
+                        var_name, by_expr.span.start
                     )));
                 }
                 Some(v) if v < 0 => StepDir::Down,
