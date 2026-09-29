@@ -3597,6 +3597,13 @@ impl<'ctx> Compiler<'ctx> {
                         .build_call(init_fn, &[ptr.into()], "")
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                 }
+                // `g : FB := (x := 1)`: after the FB's own defaults, before
+                // FB_init (CODESYS runs FB_init once initial values are set).
+                if let Some(init) = decls.get(i).and_then(|d| d.initializer.clone()) {
+                    self.variables.clear();
+                    self.add_globals_to_variables()?;
+                    self.emit_decl_initializer(ptr, ty, &init, func)?;
+                }
                 // FB_init, with the declaration's arguments (other globals are
                 // visible to them by name).
                 if let Some(d) = decls.get(i) {
@@ -4258,6 +4265,11 @@ impl<'ctx> Compiler<'ctx> {
                             .build_call(inner_init, &[ptr.into()], "")
                             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                     }
+                    // Then the instance's own initializer, which wins over the
+                    // FB's declared defaults.
+                    if let Some(init_expr) = &decl.initializer {
+                        self.emit_decl_initializer(ptr, &iec_ty, init_expr, init_fn)?;
+                    }
                     // Then its FB_init, with the declaration's arguments.
                     let inner = inner.clone();
                     self.emit_fb_init_call(
@@ -4389,6 +4401,35 @@ impl<'ctx> Compiler<'ctx> {
         fields: &[StructInitField],
         function: FunctionValue<'ctx>,
     ) -> Result<(), CodegenError> {
+        // An FB instance (`t : TON := (PT := T#1s)`): the named inputs,
+        // outputs and locals of its state struct, applied after its `_init`.
+        if let IecType::FbInstance(fb) = iec_ty.base() {
+            let Some(layout) = self.compiled_fbs.get(&fb.to_uppercase()).cloned() else {
+                return Err(CodegenError::UnsupportedType(format!(
+                    "a structure initializer cannot initialize {iec_ty}"
+                )));
+            };
+            for f in fields {
+                let Some(idx) = layout
+                    .fields
+                    .iter()
+                    .position(|pf| pf.name.eq_ignore_ascii_case(&f.name.name))
+                    .filter(|&i| !layout.fields[i].is_in_out)
+                else {
+                    return Err(CodegenError::UndefinedVariable(format!(
+                        "structure initializer: {iec_ty} has no member `{}` to initialize",
+                        f.name.name
+                    )));
+                };
+                let field_ptr = self
+                    .builder
+                    .build_struct_gep(layout.struct_type, ptr, idx as u32, &f.name.name)
+                    .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+                let field_ty = layout.fields[idx].stored.clone();
+                self.emit_decl_initializer(field_ptr, &field_ty, &f.value, function)?;
+            }
+            return Ok(());
+        }
         let IecType::Struct {
             fields: members, ..
         } = iec_ty.base()

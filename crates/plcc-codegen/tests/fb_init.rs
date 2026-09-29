@@ -489,3 +489,46 @@ END_PROGRAM
     assert_eq!(read_i16(&state, 8), 7, "b.gain");
     assert_eq!(read_i16(&state, 12), 23, "b.level");
 }
+
+// ---------------------------------------------------------------------------
+// Instance initializers: `w : Widget := (gain := 1)`
+// ---------------------------------------------------------------------------
+
+/// A structure initializer on an FB instance applies over the FB's declared
+/// defaults (CODESYS: `tmr : TON := (PT := T#1S)`); members it does not name
+/// keep their defaults. Program-local, global, and nested in another FB.
+#[test]
+fn fb_instance_structure_initializer_overrides_defaults() {
+    let source = format!(
+        "{WIDGET_SRC}
+FUNCTION_BLOCK Holder
+VAR
+    inner : Widget := (status := 55);
+END_VAR
+    inner.level := inner.level;
+END_FUNCTION_BLOCK
+
+VAR_GLOBAL
+    g : Widget := (gain := 70, untouched := 5);
+END_VAR
+
+PROGRAM Main
+VAR
+    w : Widget := (level := -3);
+    h : Holder;
+END_VAR
+    w.level := w.level;
+END_PROGRAM
+"
+    );
+    // Main layout: { Widget(8 bytes), Holder{ Widget } (8 bytes) }.
+    let state = run_init(&source, "main_init", 32);
+    assert_eq!(read_i16(&state, 0), 7, "w.gain keeps its default");
+    assert_eq!(read_i16(&state, 4), -3, "w.level from the instance initializer");
+    assert_eq!(read_i16(&state, 10), 55, "h.inner.status from Holder's initializer");
+    assert_eq!(read_i16(&state, 12), 23, "h.inner.level keeps its default");
+    let g = run_init_with_globals(&source, "main_init", 32, 16);
+    assert_eq!(read_i16(&g, 0), 70, "g.gain");
+    assert_eq!(read_i16(&g, 2), 11, "g.status keeps its default");
+    assert_eq!(read_i16(&g, 6), 5, "g.untouched");
+}
