@@ -261,16 +261,35 @@ impl<'s> Parser<'s> {
         let name = self.expect_ident();
         let mut var_blocks = Vec::new();
         let mut body = Vec::new();
+        let mut methods = Vec::new();
+        let mut properties = Vec::new();
+        let mut actions = Vec::new();
 
+        // CODESYS/TwinCAT programs may have methods, properties and actions too.
         loop {
             match self.ts.peek() {
                 Some(Token::EndProgram) | None => break,
                 Some(t) if Self::is_var_block_start(t) => {
                     var_blocks.push(self.parse_var_block());
                 }
+                _ if self.at_member(Token::Method) => methods.push(self.parse_method()),
+                _ if self.at_member(Token::Property) => properties.push(self.parse_property()),
+                _ if self.at_action_decl() => actions.push(self.parse_action()),
                 _ => {
-                    body = self.parse_statement_list(&[Token::EndProgram]);
-                    break;
+                    let pos_before = self.ts.pos;
+                    body.extend(self.parse_statement_list(&[
+                        Token::EndProgram,
+                        Token::Method,
+                        Token::Property,
+                        Token::Action,
+                    ]));
+                    if self.ts.pos == pos_before
+                        || !(self.at_member(Token::Method)
+                            || self.at_member(Token::Property)
+                            || self.at_action_decl())
+                    {
+                        break;
+                    }
                 }
             }
         }
@@ -285,6 +304,9 @@ impl<'s> Parser<'s> {
         ProgramDecl {
             name,
             var_blocks,
+            methods,
+            properties,
+            actions,
             body,
             span: start.merge(end),
         }

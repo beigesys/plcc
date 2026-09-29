@@ -191,10 +191,16 @@ impl Env {
                     );
                 }
                 Declaration::Program(p) => {
+                    let mut methods = methods_of(&p.methods);
+                    for a in &p.actions {
+                        methods.insert(up(&a.name.name), None);
+                    }
                     env.pous.insert(
                         up(&p.name.name),
                         Pou {
                             vars: vars_of(&p.var_blocks),
+                            props: props_of(&p.properties),
+                            methods,
                             ..Pou::default()
                         },
                     );
@@ -1089,7 +1095,7 @@ pub fn desugar(unit: &CompilationUnit) -> (Option<CompilationUnit>, Vec<DesugarE
                 }
                 Declaration::Class(c) => (&c.name.name, &mut c.var_blocks, Some(&mut c.methods)),
                 Declaration::Function(f) => (&f.name.name, &mut f.var_blocks, None),
-                Declaration::Program(p) => (&p.name.name, &mut p.var_blocks, None),
+                Declaration::Program(p) => (&p.name.name, &mut p.var_blocks, Some(&mut p.methods)),
                 _ => continue,
             };
         let pou_name = pou_name.to_string();
@@ -1140,10 +1146,22 @@ pub fn desugar(unit: &CompilationUnit) -> (Option<CompilationUnit>, Vec<DesugarE
         };
         match decl {
             Declaration::Program(p) => {
-                rw.ctx.pou = Some(up(&p.name.name));
-                rw.ctx.stat = own_stat;
+                let pou = up(&p.name.name);
+                rw.ctx.pou = Some(pou.clone());
+                rw.ctx.stat = own_stat.clone();
                 p.body = rw.stmts(&p.body);
                 init_exprs(&mut rw, &mut p.var_blocks);
+                lower_members(
+                    &mut rw,
+                    &pou,
+                    &mut p.methods,
+                    std::mem::take(&mut p.properties),
+                    &own_stat,
+                    &stat_maps,
+                    i,
+                    false,
+                );
+                lower_actions(&mut rw, &mut p.methods, std::mem::take(&mut p.actions), &own_stat);
             }
             Declaration::Function(f) => {
                 rw.ctx.locals = locals_of(&f.var_blocks);
@@ -1167,24 +1185,7 @@ pub fn desugar(unit: &CompilationUnit) -> (Option<CompilationUnit>, Vec<DesugarE
                     i,
                     false,
                 );
-                for a in std::mem::take(&mut fb.actions) {
-                    rw.changed = true;
-                    rw.ctx.locals = HashMap::new();
-                    rw.ctx.getter = None;
-                    rw.ctx.stat = own_stat.clone();
-                    let body = rw.stmts(&a.body);
-                    fb.methods.push(MethodDecl {
-                        name: a.name,
-                        access: None,
-                        is_override: false,
-                        is_abstract: false,
-                        is_final: false,
-                        return_type: None,
-                        var_blocks: Vec::new(),
-                        body,
-                        span: a.span,
-                    });
-                }
+                lower_actions(&mut rw, &mut fb.methods, std::mem::take(&mut fb.actions), &own_stat);
                 for v in &mut fb.var_blocks {
                     for d in &mut v.declarations {
                         let args = std::mem::take(&mut d.init_args);
@@ -1241,6 +1242,33 @@ pub fn desugar(unit: &CompilationUnit) -> (Option<CompilationUnit>, Vec<DesugarE
     }
 
     (changed.then_some(out), errors)
+}
+
+/// Actions become parameterless methods.
+fn lower_actions(
+    rw: &mut Rewriter,
+    methods: &mut Vec<MethodDecl>,
+    actions: Vec<ActionDecl>,
+    own_stat: &HashMap<String, String>,
+) {
+    for a in actions {
+        rw.changed = true;
+        rw.ctx.locals = HashMap::new();
+        rw.ctx.getter = None;
+        rw.ctx.stat = own_stat.clone();
+        let body = rw.stmts(&a.body);
+        methods.push(MethodDecl {
+            name: a.name,
+            access: None,
+            is_override: false,
+            is_abstract: false,
+            is_final: false,
+            return_type: None,
+            var_blocks: Vec::new(),
+            body,
+            span: a.span,
+        });
+    }
 }
 
 fn init_exprs(rw: &mut Rewriter, blocks: &mut [VarBlock]) {

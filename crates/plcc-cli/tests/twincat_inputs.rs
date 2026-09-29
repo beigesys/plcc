@@ -35,7 +35,7 @@ fn parse_a_project_file_and_a_directory() {
         let o = plcc(&["parse".as_ref(), input.as_os_str()]);
         assert!(o.status.success(), "{}", text(&o));
         assert!(
-            text(&o).contains("OK: 7 declaration(s) parsed"),
+            text(&o).contains("OK: 8 declaration(s) parsed"),
             "{}",
             text(&o)
         );

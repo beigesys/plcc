@@ -29,6 +29,14 @@ pub enum Declaration {
 pub struct ProgramDecl {
     pub name: Ident,
     pub var_blocks: Vec<VarBlock>,
+    /// CODESYS/TwinCAT: a PROGRAM may have methods, properties and actions,
+    /// called as `Prg.M()` (or `M()` inside it).
+    #[serde(default)]
+    pub methods: Vec<MethodDecl>,
+    #[serde(default)]
+    pub properties: Vec<PropertyDecl>,
+    #[serde(default)]
+    pub actions: Vec<ActionDecl>,
     pub body: Vec<Statement>,
     pub span: Span,
 }

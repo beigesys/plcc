@@ -375,11 +375,22 @@ impl<'ctx> Compiler<'ctx> {
                                 pc.name.span,
                             ));
                         }
-                        let sym = unique(format!(
-                            "plcc_inst_{}_{}",
-                            c_ident(&res.name.name),
-                            c_ident(&pc.name.name)
-                        ));
+                        // `PROGRAM Main WITH t : Main;` — the one instance, named
+                        // like its program, of a program other POUs may call
+                        // (TwinCAT's model): it shares the callable instance.
+                        let callable = pc.name.name.eq_ignore_ascii_case(&pc.program_type.name)
+                            && self
+                                .program_instances
+                                .contains_key(&pc.program_type.name.to_uppercase());
+                        let sym = if callable {
+                            unique(format!("plcc_inst_{}", c_ident(&pc.program_type.name)))
+                        } else {
+                            unique(format!(
+                                "plcc_inst_{}_{}",
+                                c_ident(&res.name.name),
+                                c_ident(&pc.name.name)
+                            ))
+                        };
                         planned.push((name, pidx, sym, pc.connections.clone(), tidx));
                     }
                 }
@@ -497,6 +508,21 @@ impl<'ctx> Compiler<'ctx> {
             let init = self.declare_state_fn(&Self::init_fn_name_for(&programs[inst.program].name));
             self.builder
                 .build_call(init, &[inst.global.as_pointer_value().into()], "")
+                .map_err(llvm)?;
+        }
+        // A callable program no task runs (under a CONFIGURATION that does not
+        // instantiate it) still gets its initial values.
+        let mut callable: Vec<(String, GlobalValue<'ctx>)> = self
+            .program_instances
+            .iter()
+            .filter(|(_, g)| !instances.iter().any(|i| i.global == **g))
+            .map(|(n, g)| (n.clone(), *g))
+            .collect();
+        callable.sort_by(|a, b| a.0.cmp(&b.0));
+        for (name, g) in callable {
+            let init = self.declare_state_fn(&Self::init_fn_name_for(&name));
+            self.builder
+                .build_call(init, &[g.as_pointer_value().into()], "")
                 .map_err(llvm)?;
         }
         self.builder.build_return(None).map_err(llvm)?;

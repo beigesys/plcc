@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <POU Name="PRG_Stats" Id="{5f1c2d9e-0a6b-4c11-9d3e-7a1b2c3d4e90}" SpecialFunc="None">
+    <Declaration><![CDATA[PROGRAM PRG_Stats
+VAR_INPUT
+    nSample : DINT;
+END_VAR
+VAR_OUTPUT
+    nMax : DINT;
+END_VAR
+VAR
+    nCalls : UDINT;
+    nSum : DINT;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[nCalls := nCalls + 1;
+Accumulate(nSample);]]></ST>
+    </Implementation>
+    <Method Name="Accumulate" Id="{5f1c2d9e-0a6b-4c11-9d3e-7a1b2c3d4e91}">
+      <Declaration><![CDATA[METHOD PRIVATE Accumulate
+VAR_INPUT
+    nValue : DINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[nSum := nSum + nValue;
+IF nValue > nMax THEN
+    nMax := nValue;
+END_IF]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="Mean" Id="{5f1c2d9e-0a6b-4c11-9d3e-7a1b2c3d4e92}">
+      <Declaration><![CDATA[PROPERTY Mean : DINT]]></Declaration>
+      <Get Name="Get" Id="{5f1c2d9e-0a6b-4c11-9d3e-7a1b2c3d4e93}">
+        <Declaration><![CDATA[]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[IF nCalls > 0 THEN
+    Mean := nSum / UDINT_TO_DINT(nCalls);
+END_IF]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Action Name="Clear" Id="{5f1c2d9e-0a6b-4c11-9d3e-7a1b2c3d4e94}">
+      <Implementation>
+        <ST><![CDATA[nCalls := 0;
+nSum := 0;
+nMax := 0;]]></ST>
+      </Implementation>
+    </Action>
+  </POU>
+</TcPlcObject>

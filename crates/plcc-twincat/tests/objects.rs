@@ -127,6 +127,7 @@ fn project_lists_its_object_files_in_order() {
             "GVL_Main.TcGVL",
             "I_Counter.TcIO",
             "FB_Counter.TcPOU",
+            "PRG_Stats.TcPOU",
             "MAIN.TcPOU",
             "PlcTask.TcTTO"
         ]

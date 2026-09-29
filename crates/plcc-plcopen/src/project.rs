@@ -520,6 +520,9 @@ impl<'s> Lower<'s> {
             PouKind::Program => Declaration::Program(ProgramDecl {
                 name,
                 var_blocks,
+                methods: Vec::new(),
+                properties: Vec::new(),
+                actions: Vec::new(),
                 body,
                 span,
             }),

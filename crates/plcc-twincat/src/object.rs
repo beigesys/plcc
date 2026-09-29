@@ -151,7 +151,11 @@ impl<'a> Lower<'a> {
     fn parse(&mut self, s: &Source) -> Vec<Declaration> {
         let (unit, errors) = plcc_st::parse(&s.text);
         self.errors.extend(errors.iter().map(|e| s.error(e)));
-        s.remap(unit.declarations)
+        let mut decls = s.remap(unit.declarations);
+        for d in &mut decls {
+            unlocate_io_links(d);
+        }
+        decls
     }
 
     fn pou(&mut self, pou: Node) -> Vec<Declaration> {
@@ -159,7 +163,7 @@ impl<'a> Lower<'a> {
         let kw = first_word(&self.decl_text(pou));
         let (end_kw, members_ok) = match kw.as_str() {
             "FUNCTION_BLOCK" | "FUNCTIONBLOCK" => ("END_FUNCTION_BLOCK", true),
-            "PROGRAM" => ("END_PROGRAM", false),
+            "PROGRAM" => ("END_PROGRAM", true),
             "FUNCTION" => ("END_FUNCTION", false),
             _ => {
                 self.errors.push(TwinCatError::new(
@@ -183,8 +187,8 @@ impl<'a> Lower<'a> {
             if matches!(kind, "Method" | "Property" | "Action") && !members_ok {
                 self.errors.push(TwinCatError::new(
                     format!(
-                        "{} `{m_name}` of {owner}: methods, properties and actions are supported \
-                         in FUNCTION_BLOCKs only",
+                        "{} `{m_name}` of {owner}: a FUNCTION has no methods, properties or \
+                         actions",
                         kind.to_uppercase()
                     ),
                     m_span,
@@ -269,6 +273,26 @@ impl<'a> Lower<'a> {
         }
         s.push_synthetic("END_INTERFACE\n", itf.range().end);
         self.parse(&s)
+    }
+}
+
+/// `x AT %I* : BOOL;` / `%Q*` / `%M*`: in TwinCAT the address is assigned by
+/// linking the variable to an I/O channel in the device tree, not in source
+/// (there is no VAR_CONFIG). The variable is kept as an ordinary variable,
+/// reachable by name through the symbol table (`--emit-symbols`).
+fn unlocate_io_links(decl: &mut Declaration) {
+    let blocks: Vec<&mut plcc_st::VarBlock> = match decl {
+        Declaration::Program(p) => p.var_blocks.iter_mut().collect(),
+        Declaration::FunctionBlock(fb) => fb.var_blocks.iter_mut().collect(),
+        Declaration::GlobalVarDecl(b) => vec![b],
+        _ => Vec::new(),
+    };
+    for b in blocks {
+        for v in &mut b.declarations {
+            if v.at_address.as_ref().is_some_and(|a| a.repr.ends_with('*')) {
+                v.at_address = None;
+            }
+        }
     }
 }
 

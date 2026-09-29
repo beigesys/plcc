@@ -14,6 +14,8 @@ VAR
     bLimitReached : BOOL;
     bTimerQ : BOOL;
     nItfStep : DINT;
+    nStatsMax : DINT;
+    nStatsMean : DINT;
 END_VAR
 ]]></Declaration>
     <Implementation>
@@ -42,6 +44,15 @@ fbEdge(CLK := fbTimer.Q);
 bTimerQ := fbTimer.Q;
 IF fbEdge.Q THEN
     GVL_Main.bTimerDone := TRUE;
+END_IF
+
+// Another PROGRAM, not in any task: it runs when MAIN calls it. Its
+// method, property and action are reached through its name.
+PRG_Stats(nSample := fbCounter.nCount);
+nStatsMax := PRG_Stats.nMax;
+nStatsMean := PRG_Stats.Mean;
+IF fbCounter.nCount = 0 THEN
+    PRG_Stats.Clear();
 END_IF
 
 // DUT struct and enum.

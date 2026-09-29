@@ -40,6 +40,10 @@ fn demo_project_runs() {
         // DUT struct field and qualified enum.
         assert_eq!(plc.get("MAIN.stSample.nValue"), 3);
         assert_eq!(plc.get("MAIN.eMode"), 11, "E_Mode.Done");
+        // PRG_Stats runs only when MAIN calls it (it is in no task): samples 7,
+        // 14, 21 through its method; Mean is its property.
+        assert_eq!(plc.get("MAIN.nStatsMax"), 21);
+        assert_eq!(plc.get("MAIN.nStatsMean"), 14);
 
         for _ in 3..14 {
             plc.scan();
@@ -58,5 +62,10 @@ fn demo_project_runs() {
         // Tc2_Standard.TON with PT := T#50MS, 10 ms per scan.
         assert!(plc.get_bool("MAIN.bTimerQ"));
         assert!(plc.get_bool("bTimerDone"));
+        // Read before PRG_Stats.Clear() (its action) ran in this scan.
+        assert_eq!(plc.get("MAIN.nStatsMax"), 98);
+        plc.advance(10 * MS);
+        plc.scan();
+        assert_eq!(plc.get("MAIN.nStatsMax"), 7, "cleared, then one sample of 7");
     });
 }

@@ -3423,21 +3423,43 @@ impl<'ctx> Compiler<'ctx> {
     /// like an FB, so another POU can call it — `Sub();`, `Sub(k := 1, o => x);` —
     /// and read its variables — `Sub.o` — as CODESYS allows. A called program
     /// then runs only when called (see `finish_runtime_contract`): the implicit
-    /// task would otherwise run it a second time. With a CONFIGURATION a program
-    /// type may have several instances, and calling it by name is not supported.
+    /// task would otherwise run it a second time.
+    ///
+    /// With a CONFIGURATION, a program type is callable the same way when it has
+    /// at most one instance and that instance is named like the program
+    /// (`PROGRAM Main WITH t : Main;` — TwinCAT's model, where a program is its
+    /// own single instance): the task and the callers share that instance, and
+    /// the task still runs it. A program with several instances, or one named
+    /// differently, cannot be called by name.
     fn layout_callable_programs(&mut self, unit: &CompilationUnit) {
-        if unit
-            .declarations
-            .iter()
-            .any(|d| matches!(d, Declaration::Configuration(_)))
-        {
-            return;
+        // Uppercase program type → its instances' names, under a CONFIGURATION.
+        let mut instances: HashMap<String, Vec<String>> = HashMap::new();
+        let mut configured = false;
+        for d in &unit.declarations {
+            if let Declaration::Configuration(cfg) = d {
+                configured = true;
+                for res in &cfg.resources {
+                    for pc in &res.program_configs {
+                        instances
+                            .entry(pc.program_type.name.to_uppercase())
+                            .or_default()
+                            .push(pc.name.name.to_uppercase());
+                    }
+                }
+            }
         }
         for d in &unit.declarations {
             let Declaration::Program(p) = d else {
                 continue;
             };
             let key = p.name.name.to_uppercase();
+            if configured
+                && instances
+                    .get(&key)
+                    .is_some_and(|names| names.len() > 1 || names.iter().any(|n| *n != key))
+            {
+                continue;
+            }
             if self.compiled_fbs.contains_key(&key) {
                 continue; // an FB of the same name; not callable as a program
             }
@@ -3876,6 +3898,32 @@ impl<'ctx> Compiler<'ctx> {
             (BasicValueEnum::PointerValue(_), BasicTypeEnum::IntType(it)) => {
                 let iv = self.int_operand(val, "a pointer-to-integer store")?;
                 Ok(self.resize_int(iv, it, false)?.into())
+            }
+            // A derived STRUCT (`TYPE D EXTENDS B`, whose fields start with B's)
+            // where a B is expected: its B part, as CODESYS allows.
+            (BasicValueEnum::StructValue(sv), BasicTypeEnum::StructType(st))
+                if sv.get_type() != st
+                    && st.count_fields() <= sv.get_type().count_fields()
+                    && st
+                        .get_field_types()
+                        .iter()
+                        .zip(sv.get_type().get_field_types())
+                        .all(|(a, b)| *a == b) =>
+            {
+                let err = |e: inkwell::builder::BuilderError| CodegenError::LlvmError(e.to_string());
+                let mut out = st.get_undef();
+                for i in 0..st.count_fields() {
+                    let f = self
+                        .builder
+                        .build_extract_value(sv, i, "basefield")
+                        .map_err(err)?;
+                    out = self
+                        .builder
+                        .build_insert_value(out, f, i, "basepart")
+                        .map_err(err)?
+                        .into_struct_value();
+                }
+                Ok(out.into())
             }
             // STRING[n] into STRING[m] (and WSTRING): re-shape the buffer to the
             // destination's length. Storing the source array as is wrote n+1 bytes
@@ -4877,6 +4925,30 @@ impl<'ctx> Compiler<'ctx> {
         let struct_type = self.context.struct_type(&field_types, false);
         let state_ptr_type = self.context.ptr_type(AddressSpace::default());
 
+        // Methods (and the properties and actions lowered to methods) of a
+        // program: compiled against its single, callable instance.
+        let prog_key = prog.name.name.to_uppercase();
+        if !prog.methods.is_empty() {
+            let Some(layout) = self.compiled_fbs.get(&prog_key) else {
+                return Err(CodegenError::Located {
+                    message: format!(
+                        "PROGRAM `{}` has methods, properties or actions, which need its \
+                         single instance: give it at most one instance in the \
+                         CONFIGURATION, named `{}`",
+                        prog.name.name, prog.name.name
+                    ),
+                    span: prog.name.span,
+                });
+            };
+            let (layout_struct, layout_fields) = (layout.struct_type, layout.fields.clone());
+            for method in &prog.methods {
+                let info = self.compile_method(&prog.name.name, method, layout_struct, &layout_fields)?;
+                if let Some(l) = self.compiled_fbs.get_mut(&prog_key) {
+                    l.methods.insert(method.name.name.to_uppercase(), info);
+                }
+            }
+        }
+
         // scan(state: *mut ProgramState) -> void
         let fn_type = self
             .context
@@ -4903,7 +4975,11 @@ impl<'ctx> Compiler<'ctx> {
         self.current_state_ptr = Some(state_ptr);
 
         self.bind_state_fields(struct_type, state_ptr, &fields)?;
+        // `M()` inside a program with methods is `THIS^.M()`.
         self.current_pou = None;
+        if !prog.methods.is_empty() {
+            self.bind_this_super(&prog.name.name, None, state_ptr, function)?;
+        }
         self.emit_fb_entry(&prog.var_blocks, function)?;
 
         // Add global variables
@@ -5457,6 +5533,13 @@ impl<'ctx> Compiler<'ctx> {
             let (name, methods) = match decl {
                 Declaration::FunctionBlock(fb) => (&fb.name.name, &fb.methods),
                 Declaration::Class(cls) => (&cls.name.name, &cls.methods),
+                // A callable program's methods (see `layout_callable_programs`).
+                Declaration::Program(p)
+                    if !p.methods.is_empty()
+                        && self.compiled_fbs.contains_key(&p.name.name.to_uppercase()) =>
+                {
+                    (&p.name.name, &p.methods)
+                }
                 _ => continue,
             };
             let mut infos: HashMap<String, MethodInfo> = HashMap::new();
