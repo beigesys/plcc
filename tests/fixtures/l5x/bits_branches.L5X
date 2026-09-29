@@ -42,6 +42,12 @@
 <Tag Name="FirstScan" TagType="Base" DataType="BOOL"/>
 <Tag Name="FsCount" TagType="Base" DataType="DINT"/>
 <Tag Name="Bits32" TagType="Base" DataType="DINT"/>
+<Tag Name="CmpNe" TagType="Base" DataType="BOOL"/>
+<Tag Name="CmpLe" TagType="Base" DataType="BOOL"/>
+<Tag Name="CmpGe" TagType="Base" DataType="BOOL"/>
+<Tag Name="CmpEq" TagType="Base" DataType="BOOL"/>
+<Tag Name="NopOut" TagType="Base" DataType="BOOL"/>
+<Tag Name="Diff" TagType="Base" DataType="INT"/>
 </Tags>
 <Programs>
 <Program Name="MainProgram" MainRoutineName="MainRoutine">
@@ -66,6 +72,9 @@
 <Rung Number="15" Type="N"><Text><![CDATA[XIC(S:FS)OTE(FirstScan)ADD(FsCount,1,FsCount);]]></Text></Rung>
 <Rung Number="16" Type="N"><Text><![CDATA[XIC(A)OTL(Bits32.[Idx]);]]></Text></Rung>
 <Rung Number="17" Type="N"><Text><![CDATA[XIC(B)OTU(Bits32.[Idx]);]]></Text></Rung>
+<Rung Number="18" Type="N"><Text><![CDATA[NEQ(Level,15)OTE(CmpNe);]]></Text></Rung>
+<Rung Number="19" Type="N"><Text><![CDATA[[LEQ(Level,15)OTE(CmpLe),GEQ(Level,15)OTE(CmpGe),EQU(Level,15.0)OTE(CmpEq)];]]></Text></Rung>
+<Rung Number="20" Type="N"><Text><![CDATA[NOP()OTE(NopOut)SUB(Level,20,Diff);]]></Text></Rung>
 </RLLContent>
 </Routine>
 </Routines>

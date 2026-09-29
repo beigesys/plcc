@@ -158,3 +158,29 @@ fn seal_in_rung_latches_and_breaks() {
         assert!(!plc.get_bool("Motor"));
     });
 }
+
+#[test]
+fn neq_leq_geq_equ_nop_sub() {
+    with_plc("bits_branches.L5X", |plc| {
+        // (Level, NEQ 15, LEQ 15, GEQ 15, EQU 15.0) — EQU compares INT with a
+        // REAL immediate in REAL (1756-RM003 "Data conversions").
+        for (level, ne, le, ge, eq) in [
+            (14, true, true, false, false),
+            (15, false, true, true, true),
+            (16, true, false, true, false),
+        ] {
+            plc.set("Level", level);
+            plc.scan();
+            assert_eq!(plc.get_bool("CmpNe"), ne, "NEQ at {level}");
+            assert_eq!(plc.get_bool("CmpLe"), le, "LEQ at {level}");
+            assert_eq!(plc.get_bool("CmpGe"), ge, "GEQ at {level}");
+            assert_eq!(plc.get_bool("CmpEq"), eq, "EQU at {level}");
+            // NOP leaves the rung true; the result of SUB goes to an INT.
+            assert!(plc.get_bool("NopOut"));
+            assert_eq!(plc.get("Diff"), level - 20);
+        }
+        plc.set("Level", -32768);
+        plc.scan();
+        assert_eq!(plc.get("Diff"), -32768 - 20 + 65536, "INT result keeps its low 16 bits");
+    });
+}
