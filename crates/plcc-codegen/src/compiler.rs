@@ -6517,15 +6517,16 @@ impl<'ctx> Compiler<'ctx> {
         // Same rule for the step: `BY st` with `st : BYTE := 16#C8` is +200, and
         // sign-extending it to -56 walked the control variable downward forever.
         //
-        // The sum is formed one bit wider than both operands, so an increment that
-        // leaves the control variable's range is seen rather than wrapped: `FOR b
-        // := 250 TO 255` on a BYTE used to go 255 → 0 → ... forever (CODESYS
-        // documents that as an endless loop; plcc ends the loop instead). The
-        // variable still receives the wrapped value, as it would in CODESYS.
+        // The increment is `i := i + BY` in the control variable's own type — it
+        // wraps — followed by the ordinary bound test, as in CODESYS. So `FOR b :=
+        // 250 TO 255` on a BYTE goes 255 → 0 → ... and never ends: the CODESYS help
+        // (ST statement FOR) warns that an end value equal to the type's upper limit
+        // gives an infinite loop. The sum is formed wide enough for both operands
+        // and truncated, which is that same modulo-2^n addition.
         let err = |e: inkwell::builder::BuilderError| CodegenError::LlvmError(e.to_string());
         let cur_i = self.int_operand(cur_val2, "a FOR control variable")?;
         let var_bits = cur_i.get_type().get_bit_width();
-        let wide_bits = (var_bits.max(step.get_type().get_bit_width()) + 1).min(128);
+        let wide_bits = var_bits.max(step.get_type().get_bit_width());
         let wide = self.context.custom_width_int_type(wide_bits);
         let var_unsigned = Self::widens_unsigned(&var_ty);
         let cur_w = self.resize_int(cur_i, wide, !var_unsigned)?;
@@ -6533,17 +6534,10 @@ impl<'ctx> Compiler<'ctx> {
         let step_w = self.resize_int(step, wide, step_signed)?;
         let next_w = self.builder.build_int_add(cur_w, step_w, "next").map_err(err)?;
         let back = self.resize_int(next_w, cur_i.get_type(), true)?;
-        let round_trip = self.resize_int(back, wide, !var_unsigned)?;
-        let in_range = self
-            .builder
-            .build_int_compare(IntPredicate::EQ, round_trip, next_w, "for_in_range")
-            .map_err(err)?;
         let next_val = self.coerce_value(back.into(), Some(&var_ty), &var_ty)?;
         self.builder.build_store(var_ptr, next_val).map_err(err)?;
         if self.builder.get_insert_block().and_then(|b| b.get_terminator()).is_none() {
-            self.builder
-                .build_conditional_branch(in_range, loop_bb, end_bb)
-                .map_err(err)?;
+            self.builder.build_unconditional_branch(loop_bb).map_err(err)?;
         }
 
         self.builder.position_at_end(end_bb);

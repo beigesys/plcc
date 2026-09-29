@@ -272,7 +272,7 @@ cargo run --example linux_sim -p plcc-hal
 
 ## Test Suite
 
-827 tests across all crates, all passing:
+828 tests across all crates, all passing:
 
 | Suite | Tests | What's Verified |
 |-------|-------|-----------------|
