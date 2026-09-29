@@ -5,7 +5,8 @@
 //! They used to be skipped without a diagnostic, so the FB ran with its inputs
 //! unchanged. IEC 61131-3 3rd ed. Annex A allows a `param_assign` without a name;
 //! positional arguments bind the VAR_INPUT / VAR_IN_OUT parameters in declaration
-//! order, as they do for a FUNCTION.
+//! order, as they do for a FUNCTION. CODESYS accepts them too: its compiler error
+//! C0044 is `inst(1);` against an FB with no input, fixed by declaring one.
 
 mod common;
 use common::{compile_error, run};

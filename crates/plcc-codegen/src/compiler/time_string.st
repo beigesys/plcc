@@ -1,15 +1,9 @@
 (* SPDX-License-Identifier: MPL-2.0 *)
 (* TIME / date values -> STRING, in the literal syntax CODESYS prints, compiled
-   into a module only when it uses them (see compiler/ondemand.rs). *)
-
-FUNCTION __PLCC_PAD2 : STRING
-VAR_INPUT V : LINT; END_VAR
-IF V < 10 THEN
-    __PLCC_PAD2 := CONCAT('0', LINT_TO_STRING(V));
-ELSE
-    __PLCC_PAD2 := LINT_TO_STRING(V);
-END_IF;
-END_FUNCTION
+   into a module only when it uses them (see compiler/ondemand.rs). Date and
+   time-of-day fields are not zero-padded, as in the CODESYS help's examples:
+   DATE_TO_STRING(D#1970-1-1) = 'D#1970-1-1', TOD_TO_STRING(TOD#12:0:1) =
+   'TOD#12:0:1'; milliseconds are always three digits ('TOD#2:3:4.005'). *)
 
 (* 'T#1d2h3m4s5ms', units that are 0 left out; 'T#0ms' for zero. With NS,
    sub-millisecond units (us, ns) are printed too (LTIME). *)
@@ -74,18 +68,18 @@ mp := (5 * doy + 2) / 153;
 d := doy - (153 * mp + 2) / 5 + 1;
 IF mp < 10 THEN m := mp + 3; ELSE m := mp - 9; END_IF;
 IF m <= 2 THEN y := y + 1; END_IF;
-__PLCC_DATE_PART := CONCAT(CONCAT(CONCAT(LINT_TO_STRING(y), '-'), CONCAT(__PLCC_PAD2(m), '-')), __PLCC_PAD2(d));
+__PLCC_DATE_PART := CONCAT(CONCAT(CONCAT(LINT_TO_STRING(y), '-'), CONCAT(LINT_TO_STRING(m), '-')), LINT_TO_STRING(d));
 END_FUNCTION
 
-(* 'hh:mm:ss' plus '.mmm' when there are milliseconds. *)
+(* 'h:m:s' plus '.mmm' when there are milliseconds. *)
 FUNCTION __PLCC_TOD_PART : STRING
 VAR_INPUT NSV : LINT; END_VAR
 VAR t : LINT; s : STRING; ms : LINT; END_VAR
 t := NSV MOD 86400000000000;
 IF t < 0 THEN t := t + 86400000000000; END_IF;
 t := t / 1000000;
-s := CONCAT(CONCAT(__PLCC_PAD2(t / 3600000), ':'), CONCAT(__PLCC_PAD2(t / 60000 MOD 60), ':'));
-s := CONCAT(s, __PLCC_PAD2(t / 1000 MOD 60));
+s := CONCAT(CONCAT(LINT_TO_STRING(t / 3600000), ':'), CONCAT(LINT_TO_STRING(t / 60000 MOD 60), ':'));
+s := CONCAT(s, LINT_TO_STRING(t / 1000 MOD 60));
 ms := t MOD 1000;
 IF ms > 0 THEN
     IF ms < 10 THEN
