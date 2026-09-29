@@ -49,6 +49,12 @@ pub struct FunctionBlockDecl {
     pub implements: Vec<Ident>,
     pub var_blocks: Vec<VarBlock>,
     pub methods: Vec<MethodDecl>,
+    /// CODESYS/TwinCAT properties (`PROPERTY P : T` with GET/SET accessors).
+    #[serde(default)]
+    pub properties: Vec<PropertyDecl>,
+    /// CODESYS/TwinCAT actions: parameterless bodies run in the instance's context.
+    #[serde(default)]
+    pub actions: Vec<ActionDecl>,
     pub body: Vec<Statement>,
     pub span: Span,
 }
@@ -63,6 +69,8 @@ pub struct ClassDecl {
     pub implements: Vec<Ident>,
     pub var_blocks: Vec<VarBlock>,
     pub methods: Vec<MethodDecl>,
+    #[serde(default)]
+    pub properties: Vec<PropertyDecl>,
     pub span: Span,
 }
 
@@ -71,6 +79,8 @@ pub struct InterfaceDecl {
     pub name: Ident,
     pub extends: Vec<Ident>,
     pub methods: Vec<MethodDecl>,
+    #[serde(default)]
+    pub properties: Vec<PropertyDecl>,
     pub span: Span,
 }
 
@@ -83,6 +93,38 @@ pub struct MethodDecl {
     pub is_final: bool,
     pub return_type: Option<TypeSpec>,
     pub var_blocks: Vec<VarBlock>,
+    pub body: Vec<Statement>,
+    pub span: Span,
+}
+
+/// A CODESYS/TwinCAT `PROPERTY`: a typed member read through its GET accessor
+/// and written through its SET accessor. Inside GET the property's name is the
+/// return value; inside SET it is the value being assigned.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PropertyDecl {
+    pub name: Ident,
+    pub access: Option<AccessModifier>,
+    pub is_abstract: bool,
+    pub is_final: bool,
+    pub type_spec: TypeSpec,
+    pub get: Option<PropertyAccessor>,
+    pub set: Option<PropertyAccessor>,
+    pub span: Span,
+}
+
+/// The GET or SET half of a property: local variables and a body.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PropertyAccessor {
+    pub var_blocks: Vec<VarBlock>,
+    pub body: Vec<Statement>,
+    pub span: Span,
+}
+
+/// A CODESYS/TwinCAT `ACTION`: a named, parameterless statement list of a
+/// FUNCTION_BLOCK, called as `inst.Action()` (or `Action()` inside the FB).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionDecl {
+    pub name: Ident,
     pub body: Vec<Statement>,
     pub span: Span,
 }
@@ -100,6 +142,10 @@ pub enum AccessModifier {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VarBlock {
     pub kind: VarBlockKind,
+    /// The name of the global variable list a VAR_GLOBAL block belongs to
+    /// (TwinCAT/CODESYS GVL objects), so `GVL.x` resolves. `None` in plain ST.
+    #[serde(default)]
+    pub list_name: Option<Ident>,
     pub is_constant: bool,
     pub is_retain: bool,
     pub is_non_retain: bool,
@@ -121,6 +167,9 @@ pub enum VarBlockKind {
     /// CODESYS `VAR_INST` in a METHOD: stored in the instance, so it keeps its
     /// value between calls of the method.
     VarInst,
+    /// CODESYS `VAR_STAT` in a FUNCTION_BLOCK, FUNCTION or METHOD: static
+    /// storage shared by all instances and calls.
+    VarStat,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +179,10 @@ pub struct VarDecl {
     pub at_address: Option<DirectVariable>,
     pub edge: Option<EdgeKind>,
     pub initializer: Option<Expression>,
+    /// CODESYS declaration-site FB_init arguments: `fb : FB_X(1, THIS^);`
+    /// passes them to the instance's `FB_init` method when it is initialized.
+    #[serde(default)]
+    pub init_args: Vec<CallArg>,
     pub span: Span,
 }
 
@@ -218,6 +271,10 @@ pub struct EnumValue {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypeDeclaration {
     pub name: Ident,
+    /// CODESYS `TYPE D EXTENDS B : STRUCT ...`: the base structure, whose
+    /// fields come first.
+    #[serde(default)]
+    pub extends: Option<Ident>,
     pub type_spec: TypeSpec,
     pub initializer: Option<Expression>,
     pub span: Span,
@@ -399,6 +456,12 @@ pub enum BinaryOp {
     And,
     Or,
     Xor,
+    /// CODESYS `AND_THEN`: BOOL only, right operand evaluated only if the left
+    /// one is TRUE.
+    AndThen,
+    /// CODESYS `OR_ELSE`: BOOL only, right operand evaluated only if the left
+    /// one is FALSE.
+    OrElse,
     Equal,
     NotEqual,
     Less,

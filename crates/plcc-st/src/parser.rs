@@ -47,6 +47,10 @@ impl TokenStream {
         for (result, range) in lexer.spanned() {
             let span = Span::from(range.clone());
             match result {
+                // `{attribute 'x'}`, `{warning '...'}`, `{IF defined(...)}`: pragmas
+                // carry no semantics plcc implements, so they are dropped here and
+                // may appear anywhere (before a POU, in a VAR block, in a body).
+                Ok(Token::Pragma) => {}
                 Ok(tok) => tokens.push((tok, span)),
                 Err(()) => {
                     errors.push(ParseError::General {
@@ -133,6 +137,9 @@ pub struct Parser<'s> {
     /// `TYPE ... END_TYPE` block holding several type declarations. The top-level
     /// loop drains this after each `parse_declaration`.
     pending: Vec<Declaration>,
+    /// Arguments of a declaration-site FB_init call (`fb : FB_X(1, THIS^);`),
+    /// left by `parse_type_spec` for `parse_var_decl_list` to attach.
+    init_args: Option<Vec<CallArg>>,
 }
 
 impl<'s> Parser<'s> {
@@ -143,6 +150,7 @@ impl<'s> Parser<'s> {
             source,
             errors,
             pending: Vec::new(),
+            init_args: None,
         }
     }
 
@@ -249,6 +257,7 @@ impl<'s> Parser<'s> {
 
     fn parse_program(&mut self) -> ProgramDecl {
         let start = self.ts.advance().unwrap().1; // consume PROGRAM
+        self.skip_pou_modifiers();
         let name = self.expect_ident();
         let mut var_blocks = Vec::new();
         let mut body = Vec::new();
@@ -285,6 +294,7 @@ impl<'s> Parser<'s> {
 
     fn parse_function(&mut self) -> FunctionDecl {
         let start = self.ts.advance().unwrap().1; // consume FUNCTION
+        self.skip_pou_modifiers();
         let name = self.expect_ident();
 
         let return_type = if self.ts.eat(&Token::Colon).is_some() {
@@ -328,10 +338,12 @@ impl<'s> Parser<'s> {
 
     fn parse_function_block(&mut self) -> FunctionBlockDecl {
         let start = self.ts.advance().unwrap().1; // consume FUNCTION_BLOCK
+        // CODESYS/TwinCAT: `FUNCTION_BLOCK PUBLIC ABSTRACT FB_X`.
+        self.skip_pou_modifiers();
         let name = self.expect_ident();
 
         let extends = if self.ts.eat(&Token::Extends).is_some() {
-            Some(self.expect_ident())
+            Some(self.expect_qualified_ident())
         } else {
             None
         };
@@ -344,6 +356,8 @@ impl<'s> Parser<'s> {
 
         let mut var_blocks = Vec::new();
         let mut methods = Vec::new();
+        let mut properties = Vec::new();
+        let mut actions = Vec::new();
         let mut body = Vec::new();
 
         loop {
@@ -352,13 +366,30 @@ impl<'s> Parser<'s> {
                 Some(t) if Self::is_var_block_start(t) => {
                     var_blocks.push(self.parse_var_block());
                 }
-                Some(Token::Method) => {
+                _ if self.at_member(Token::Method) => {
                     methods.push(self.parse_method());
                 }
+                _ if self.at_member(Token::Property) => {
+                    properties.push(self.parse_property());
+                }
+                _ if self.at_action_decl() => {
+                    actions.push(self.parse_action());
+                }
                 _ => {
-                    body = self.parse_statement_list(&[Token::EndFunctionBlock, Token::Method]);
+                    let pos_before = self.ts.pos;
+                    let stmts = self.parse_statement_list(&[
+                        Token::EndFunctionBlock,
+                        Token::Method,
+                        Token::Property,
+                        Token::Action,
+                    ]);
+                    body.extend(stmts);
                     // Don't break — there might be methods after the body
-                    if !matches!(self.ts.peek(), Some(Token::Method)) {
+                    if self.ts.pos == pos_before
+                        || !(self.at_member(Token::Method)
+                            || self.at_member(Token::Property)
+                            || self.at_action_decl())
+                    {
                         break;
                     }
                 }
@@ -377,6 +408,238 @@ impl<'s> Parser<'s> {
             implements,
             var_blocks,
             methods,
+            properties,
+            actions,
+            body,
+            span: start.merge(end),
+        }
+    }
+
+    /// Skip CODESYS POU modifiers written after the POU keyword
+    /// (`FUNCTION_BLOCK PUBLIC FINAL X`, `INTERFACE INTERNAL I`). Access
+    /// specifiers on POUs are not enforced.
+    fn skip_pou_modifiers(&mut self) -> (bool, bool) {
+        let (mut is_abstract, mut is_final) = (false, false);
+        loop {
+            // A modifier keyword that is not followed by a name is itself the
+            // POU's name (`FUNCTION_BLOCK Final`).
+            let next_is_name = matches!(
+                self.ts.tokens.get(self.ts.pos + 1).map(|(t, _)| t),
+                Some(t) if Self::is_ident_like(t)
+            );
+            match self.ts.peek() {
+                Some(Token::Public | Token::Private | Token::Protected | Token::Internal)
+                    if next_is_name =>
+                {
+                    self.ts.advance();
+                }
+                Some(Token::Abstract) if next_is_name => {
+                    self.ts.advance();
+                    is_abstract = true;
+                }
+                Some(Token::Final) if next_is_name => {
+                    self.ts.advance();
+                    is_final = true;
+                }
+                _ => return (is_abstract, is_final),
+            }
+        }
+    }
+
+    /// Whether the next tokens start a member declaration introduced by `kw`
+    /// (METHOD / PROPERTY), possibly after modifiers (`PUBLIC METHOD M`).
+    fn at_member(&self, kw: Token) -> bool {
+        let mut i = self.ts.pos;
+        while let Some((t, _)) = self.ts.tokens.get(i) {
+            match t {
+                Token::Public
+                | Token::Private
+                | Token::Protected
+                | Token::Internal
+                | Token::Override
+                | Token::Abstract
+                | Token::Final => i += 1,
+                // `property := 1;` is an assignment to a variable called
+                // `property`, not a declaration: a name must follow.
+                t => {
+                    return *t == kw
+                        && matches!(
+                            self.ts.tokens.get(i + 1).map(|(t, _)| t),
+                            Some(n) if Self::is_ident_like(n)
+                        );
+                }
+            }
+        }
+        false
+    }
+
+    /// `ACTION Name` (an action declaration), as opposed to a variable that
+    /// happens to be called `action`.
+    fn at_action_decl(&self) -> bool {
+        self.ts.at(&Token::Action)
+            && matches!(
+                self.ts.tokens.get(self.ts.pos + 1).map(|(t, _)| t),
+                Some(t) if Self::is_ident_like(t)
+            )
+    }
+
+    /// Modifiers of a METHOD or PROPERTY, before or after its keyword.
+    fn parse_member_modifiers(
+        &mut self,
+        access: &mut Option<AccessModifier>,
+        is_override: &mut bool,
+        is_abstract: &mut bool,
+        is_final: &mut bool,
+    ) {
+        loop {
+            // `METHOD Final : BOOL` — a modifier keyword not followed by a name
+            // is the member's name.
+            let next_is_name = matches!(
+                self.ts.tokens.get(self.ts.pos + 1).map(|(t, _)| t),
+                Some(t) if Self::is_ident_like(t) || *t == Token::Method || *t == Token::Property
+            );
+            if !next_is_name {
+                return;
+            }
+            match self.ts.peek() {
+                Some(Token::Override) => {
+                    self.ts.advance();
+                    *is_override = true;
+                }
+                Some(Token::Abstract) => {
+                    self.ts.advance();
+                    *is_abstract = true;
+                }
+                Some(Token::Final) => {
+                    self.ts.advance();
+                    *is_final = true;
+                }
+                _ => match self.try_parse_access_modifier() {
+                    Some(a) => *access = Some(a),
+                    None => return,
+                },
+            }
+        }
+    }
+
+    // ── PROPERTY ──
+
+    /// `PROPERTY [modifiers] Name : Type  [GET ... END_GET] [SET ... END_SET]
+    /// END_PROPERTY`: the textual form of a CODESYS/TwinCAT property object.
+    fn parse_property(&mut self) -> PropertyDecl {
+        let start = self.ts.peek_span();
+        let mut access = None;
+        let (mut is_override, mut is_abstract, mut is_final) = (false, false, false);
+        self.parse_member_modifiers(
+            &mut access,
+            &mut is_override,
+            &mut is_abstract,
+            &mut is_final,
+        );
+        self.ts.expect(&Token::Property, &mut self.errors);
+        self.parse_member_modifiers(
+            &mut access,
+            &mut is_override,
+            &mut is_abstract,
+            &mut is_final,
+        );
+        let name = self.expect_ident();
+        self.ts.expect(&Token::Colon, &mut self.errors);
+        let type_spec = self.parse_type_spec();
+        self.ts.eat(&Token::Semicolon);
+
+        let mut get = None;
+        let mut set = None;
+        loop {
+            match self.ts.peek() {
+                Some(Token::EndProperty) | None => break,
+                Some(Token::Identifier) => {
+                    let (_, span) = self.ts.tokens[self.ts.pos].clone();
+                    let word = self.ts.slice(self.source, &span).to_uppercase();
+                    match word.as_str() {
+                        "GET" => get = Some(self.parse_accessor(Token::EndGet)),
+                        "SET" => set = Some(self.parse_accessor(Token::EndSet)),
+                        _ => {
+                            self.errors.push(ParseError::General {
+                                message: "expected GET, SET or END_PROPERTY".into(),
+                                span: span.into(),
+                            });
+                            self.ts.advance();
+                        }
+                    }
+                }
+                _ => {
+                    let span = self.ts.peek_span();
+                    self.errors.push(ParseError::General {
+                        message: "expected GET, SET or END_PROPERTY".into(),
+                        span: span.into(),
+                    });
+                    self.ts.advance();
+                }
+            }
+        }
+        let end = self
+            .ts
+            .expect(&Token::EndProperty, &mut self.errors)
+            .unwrap_or(self.ts.peek_span());
+        self.ts.eat(&Token::Semicolon);
+        PropertyDecl {
+            name,
+            access,
+            is_abstract,
+            is_final,
+            type_spec,
+            get,
+            set,
+            span: start.merge(end),
+        }
+    }
+
+    fn parse_accessor(&mut self, end_token: Token) -> PropertyAccessor {
+        let start = self.ts.advance().unwrap().1; // GET / SET
+        // An accessor may narrow the property's access (`SET` declared `PRIVATE`).
+        self.try_parse_access_modifier();
+        let mut var_blocks = Vec::new();
+        let mut body = Vec::new();
+        loop {
+            match self.ts.peek() {
+                None => break,
+                Some(t) if *t == end_token => break,
+                Some(t) if Self::is_var_block_start(t) => {
+                    var_blocks.push(self.parse_var_block());
+                }
+                _ => {
+                    body = self.parse_statement_list(&[end_token.clone(), Token::EndProperty]);
+                    break;
+                }
+            }
+        }
+        let end = self
+            .ts
+            .expect(&end_token, &mut self.errors)
+            .unwrap_or(self.ts.peek_span());
+        self.ts.eat(&Token::Semicolon);
+        PropertyAccessor {
+            var_blocks,
+            body,
+            span: start.merge(end),
+        }
+    }
+
+    // ── ACTION ──
+
+    fn parse_action(&mut self) -> ActionDecl {
+        let start = self.ts.advance().unwrap().1; // ACTION
+        let name = self.expect_ident();
+        self.ts.eat(&Token::Colon);
+        let body = self.parse_statement_list(&[Token::EndAction]);
+        let end = self
+            .ts
+            .expect(&Token::EndAction, &mut self.errors)
+            .unwrap_or(self.ts.peek_span());
+        self.ts.eat(&Token::Semicolon);
+        ActionDecl {
+            name,
             body,
             span: start.merge(end),
         }
@@ -396,7 +659,7 @@ impl<'s> Parser<'s> {
         let name = self.expect_ident();
 
         let extends = if self.ts.eat(&Token::Extends).is_some() {
-            Some(self.expect_ident())
+            Some(self.expect_qualified_ident())
         } else {
             None
         };
@@ -409,12 +672,16 @@ impl<'s> Parser<'s> {
 
         let mut var_blocks = Vec::new();
         let mut methods = Vec::new();
+        let mut properties = Vec::new();
 
         loop {
             match self.ts.peek() {
                 Some(Token::EndClass) | None => break,
                 Some(t) if Self::is_var_block_start(t) => {
                     var_blocks.push(self.parse_var_block());
+                }
+                _ if self.at_member(Token::Property) => {
+                    properties.push(self.parse_property());
                 }
                 Some(Token::Method)
                 | Some(Token::Public)
@@ -453,6 +720,7 @@ impl<'s> Parser<'s> {
             implements,
             var_blocks,
             methods,
+            properties,
             span: start.merge(end),
         }
     }
@@ -461,6 +729,7 @@ impl<'s> Parser<'s> {
 
     fn parse_interface(&mut self) -> InterfaceDecl {
         let start = self.ts.advance().unwrap().1; // consume INTERFACE
+        self.skip_pou_modifiers();
         let name = self.expect_ident();
 
         let extends = if self.ts.eat(&Token::Extends).is_some() {
@@ -470,10 +739,14 @@ impl<'s> Parser<'s> {
         };
 
         let mut methods = Vec::new();
+        let mut properties = Vec::new();
 
         loop {
             match self.ts.peek() {
                 Some(Token::EndInterface) | None => break,
+                _ if self.at_member(Token::Property) => {
+                    properties.push(self.parse_property());
+                }
                 Some(Token::Method)
                 | Some(Token::Public)
                 | Some(Token::Private)
@@ -501,6 +774,7 @@ impl<'s> Parser<'s> {
             name,
             extends,
             methods,
+            properties,
             span: start.merge(end),
         }
     }
@@ -510,13 +784,23 @@ impl<'s> Parser<'s> {
     fn parse_method(&mut self) -> MethodDecl {
         let start = self.ts.peek_span();
 
-        // Optional access modifier
-        let access = self.try_parse_access_modifier();
-        let is_override = self.ts.eat(&Token::Override).is_some();
-        let is_abstract = self.ts.eat(&Token::Abstract).is_some();
-        let is_final = self.ts.eat(&Token::Final).is_some();
-
+        // Modifiers, IEC style before METHOD or CODESYS style after it
+        // (`METHOD PUBLIC FINAL M : BOOL`).
+        let mut access = None;
+        let (mut is_override, mut is_abstract, mut is_final) = (false, false, false);
+        self.parse_member_modifiers(
+            &mut access,
+            &mut is_override,
+            &mut is_abstract,
+            &mut is_final,
+        );
         self.ts.expect(&Token::Method, &mut self.errors);
+        self.parse_member_modifiers(
+            &mut access,
+            &mut is_override,
+            &mut is_abstract,
+            &mut is_final,
+        );
         let name = self.expect_ident();
 
         let return_type = if self.ts.eat(&Token::Colon).is_some() {
@@ -524,6 +808,8 @@ impl<'s> Parser<'s> {
         } else {
             None
         };
+        // `METHOD M : BOOL;` — TwinCAT accepts a `;` after the header.
+        self.ts.eat(&Token::Semicolon);
 
         let mut var_blocks = Vec::new();
         let mut body = Vec::new();
@@ -560,6 +846,17 @@ impl<'s> Parser<'s> {
         }
     }
 
+    /// Consume a contextual keyword spelled `word` (an identifier token).
+    fn eat_word(&mut self, word: &str) -> bool {
+        if let Some((Token::Identifier, span)) = self.ts.tokens.get(self.ts.pos)
+            && self.ts.slice(self.source, span).eq_ignore_ascii_case(word)
+        {
+            self.ts.advance();
+            return true;
+        }
+        false
+    }
+
     fn try_parse_access_modifier(&mut self) -> Option<AccessModifier> {
         match self.ts.peek()? {
             Token::Public => {
@@ -591,7 +888,15 @@ impl<'s> Parser<'s> {
         let mut first_decl = None;
         while !self.ts.at(&Token::EndType) && self.ts.peek().is_some() {
             let pos_before = self.ts.pos;
+            // `TYPE INTERNAL X : ...`, `TYPE ABSTRACT X : STRUCT ...`.
+            self.skip_pou_modifiers();
             let name = self.expect_ident();
+            // CODESYS: `TYPE Derived EXTENDS Base : STRUCT ... END_STRUCT`.
+            let extends = if self.ts.eat(&Token::Extends).is_some() {
+                Some(self.expect_qualified_ident())
+            } else {
+                None
+            };
             self.ts.expect(&Token::Colon, &mut self.errors);
             let type_spec = self.parse_type_spec();
             let initializer = if self.ts.eat(&Token::Assign).is_some() {
@@ -611,6 +916,7 @@ impl<'s> Parser<'s> {
             let span = name.span.merge(type_spec.span);
             let decl = TypeDeclaration {
                 name,
+                extends,
                 type_spec,
                 initializer,
                 span,
@@ -646,6 +952,7 @@ impl<'s> Parser<'s> {
                 | Token::VarAccess
                 | Token::VarConfig
                 | Token::VarInst
+                | Token::VarStat
         )
     }
 
@@ -661,9 +968,11 @@ impl<'s> Parser<'s> {
             Some((Token::VarAccess, s)) => (VarBlockKind::VarAccess, s),
             Some((Token::VarConfig, s)) => (VarBlockKind::VarConfig, s),
             Some((Token::VarInst, s)) => (VarBlockKind::VarInst, s),
+            Some((Token::VarStat, s)) => (VarBlockKind::VarStat, s),
             _ => {
                 let s = self.ts.peek_span();
                 return VarBlock {
+                    list_name: None,
                     kind: VarBlockKind::Var,
                     is_constant: false,
                     is_retain: false,
@@ -675,7 +984,13 @@ impl<'s> Parser<'s> {
         };
 
         let is_constant = self.ts.eat(&Token::Constant).is_some();
-        let is_retain = self.ts.eat(&Token::Retain).is_some();
+        let mut is_retain = self.ts.eat(&Token::Retain).is_some();
+        // CODESYS/TwinCAT `VAR PERSISTENT` / `VAR RETAIN PERSISTENT`: kept like
+        // RETAIN (plcc has no separate persistent store).
+        if self.eat_word("PERSISTENT") {
+            is_retain = true;
+            self.ts.eat(&Token::Retain);
+        }
         let is_non_retain = if !is_retain {
             self.ts.eat(&Token::NonRetain).is_some()
         } else {
@@ -684,6 +999,10 @@ impl<'s> Parser<'s> {
 
         let mut declarations = Vec::new();
         while !self.ts.at(&Token::EndVar) && self.ts.peek().is_some() {
+            // A stray `;` (`x : INT;;`) is harmless.
+            if self.ts.eat(&Token::Semicolon).is_some() {
+                continue;
+            }
             let pos_before = self.ts.pos;
             self.parse_var_decl_list(&mut declarations);
             // Safety: prevent infinite loop
@@ -698,6 +1017,7 @@ impl<'s> Parser<'s> {
             .unwrap_or(self.ts.peek_span());
 
         VarBlock {
+            list_name: None,
             kind,
             is_constant,
             is_retain,
@@ -737,7 +1057,9 @@ impl<'s> Parser<'s> {
 
         self.ts.expect(&Token::Colon, &mut self.errors);
 
+        self.init_args = None;
         let type_spec = self.parse_type_spec();
+        let init_args = self.init_args.take().unwrap_or_default();
 
         // Optional edge qualifier
         let edge = if self.ts.eat(&Token::REdge).is_some() {
@@ -768,6 +1090,7 @@ impl<'s> Parser<'s> {
                 at_address: at_address.clone(),
                 edge,
                 initializer: initializer.clone(),
+                init_args: init_args.clone(),
                 span: start.merge(end),
             });
         }
@@ -791,8 +1114,25 @@ impl<'s> Parser<'s> {
                 self.parse_enum_type_spec(None)
             }
             _ => {
-                // Named type, possibly followed by subrange or enum
-                let ident = self.expect_ident();
+                // Named type, possibly followed by subrange or enum. A dotted name
+                // (`Tc2_System.T_MaxString`, `GVL.E_Mode`) is a namespace-qualified
+                // type and kept as one name.
+                let ident = self.expect_qualified_ident();
+                if self.ts.at(&Token::LParen) && self.at_init_args(&ident) {
+                    // CODESYS FB_init arguments: `inst : FB_X(1, THIS^)`.
+                    self.ts.advance();
+                    let args = self.parse_call_args();
+                    let end = self
+                        .ts
+                        .expect(&Token::RParen, &mut self.errors)
+                        .unwrap_or(self.ts.peek_span());
+                    self.init_args = Some(args);
+                    let span = ident.span.merge(end);
+                    return TypeSpec {
+                        kind: TypeSpecKind::Named(ident),
+                        span,
+                    };
+                }
                 if self.ts.at(&Token::LParen) {
                     // Could be enum or subrange: MyType(0..10) or (val1, val2)
                     self.parse_enum_or_subrange(ident)
@@ -844,7 +1184,20 @@ impl<'s> Parser<'s> {
 
         while !self.ts.at(&Token::EndStruct) && self.ts.peek().is_some() {
             let pos_before = self.ts.pos;
-            let name = self.expect_ident();
+            if self.ts.eat(&Token::Semicolon).is_some() {
+                continue;
+            }
+            let mut names = vec![self.expect_ident()];
+            while self.ts.eat(&Token::Comma).is_some() {
+                names.push(self.expect_ident());
+            }
+            let name = names.remove(0);
+            // TwinCAT: `x AT %I* : BOOL;` in a STRUCT marks a field for I/O
+            // linking in the device tree; the address carries no meaning in
+            // source and is dropped.
+            if self.ts.eat(&Token::At).is_some() {
+                self.ts.eat(&Token::DirectVariable);
+            }
             self.ts.expect(&Token::Colon, &mut self.errors);
             let type_spec = self.parse_type_spec();
             let initializer = if self.ts.eat(&Token::Assign).is_some() {
@@ -864,10 +1217,20 @@ impl<'s> Parser<'s> {
             let span = name.span.merge(end_span);
             fields.push(StructField {
                 name,
-                type_spec,
-                initializer,
+                type_spec: type_spec.clone(),
+                initializer: initializer.clone(),
                 span,
             });
+            // `a, b : BOOL;` declares both fields.
+            for other in names {
+                let span = other.span.merge(end_span);
+                fields.push(StructField {
+                    name: other,
+                    type_spec: type_spec.clone(),
+                    initializer: initializer.clone(),
+                    span,
+                });
+            }
         }
 
         let end = self
@@ -980,19 +1343,60 @@ impl<'s> Parser<'s> {
             }
         }
 
-        let end = self
+        let mut end = self
             .ts
             .expect(&Token::RParen, &mut self.errors)
             .unwrap_or(self.ts.peek_span());
 
+        // CODESYS: `TYPE E : (a, b) DINT;` names the base type after the list.
+        let base_type = match self.ts.peek() {
+            Some(t) if Self::is_type_keyword(t) || *t == Token::Identifier => {
+                let ident = self.expect_ident();
+                end = ident.span;
+                Some(ident)
+            }
+            _ => None,
+        };
+
         TypeSpec {
             kind: TypeSpecKind::Enum(EnumSpec {
-                base_type: None,
+                base_type,
                 values,
                 span: start.merge(end),
             }),
             span: start.merge(end),
         }
+    }
+
+    /// After a user type name, whether `(` opens FB_init arguments rather than
+    /// a subrange (`(lo..hi)`) or an enumeration (`INT (a, b)`): the name is
+    /// not an elementary type and no `..` appears at the top level.
+    fn at_init_args(&self, name: &Ident) -> bool {
+        const ELEMENTARY: &[&str] = &[
+            "BOOL", "BYTE", "WORD", "DWORD", "LWORD", "SINT", "INT", "DINT", "LINT", "USINT",
+            "UINT", "UDINT", "ULINT", "REAL", "LREAL",
+        ];
+        if ELEMENTARY.contains(&name.name.to_uppercase().as_str()) {
+            return false;
+        }
+        let mut depth = 0usize;
+        let mut i = self.ts.pos;
+        while let Some((t, _)) = self.ts.tokens.get(i) {
+            match t {
+                Token::LParen | Token::LBracket => depth += 1,
+                Token::RParen | Token::RBracket => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return true;
+                    }
+                }
+                Token::DotDot if depth == 1 => return false,
+                Token::Semicolon | Token::EndVar => return true,
+                _ => {}
+            }
+            i += 1;
+        }
+        true
     }
 
     fn parse_enum_or_subrange(&mut self, base: Ident) -> TypeSpec {
@@ -1059,7 +1463,10 @@ impl<'s> Parser<'s> {
     fn parse_statement_list(&mut self, terminators: &[Token]) -> Vec<Statement> {
         let mut stmts = Vec::new();
         while let Some(tok) = self.ts.peek() {
-            if terminators.contains(tok) {
+            if terminators.contains(tok)
+                && (*tok != Token::Action || self.at_action_decl())
+                && (*tok != Token::Property || self.at_member(Token::Property))
+            {
                 break;
             }
             // Also break on var blocks or other structural tokens
@@ -1216,7 +1623,47 @@ impl<'s> Parser<'s> {
                 }
                 if self.ts.eat(&Token::Assign).is_some() {
                     // Assignment
-                    let value = self.parse_expression();
+                    let mut value = self.parse_expression();
+                    // CODESYS multiple assignment `a := b := v;`: b := v, then
+                    // a := b. Lowered to `IF TRUE THEN b := v; a := b; END_IF`.
+                    let mut chain = Vec::new();
+                    while self.ts.at(&Token::Assign) {
+                        self.ts.advance();
+                        let next = self.parse_expression();
+                        chain.push(value);
+                        value = next;
+                    }
+                    if !chain.is_empty() {
+                        let end = self.expect_statement_end();
+                        let span = start.merge(end);
+                        let mut targets = vec![expr];
+                        targets.extend(chain);
+                        let mut stmts = Vec::new();
+                        let mut source = value;
+                        while let Some(target) = targets.pop() {
+                            let next_source = target.clone();
+                            stmts.push(Statement {
+                                kind: StatementKind::Assignment {
+                                    target,
+                                    value: source,
+                                },
+                                span,
+                            });
+                            source = next_source;
+                        }
+                        return Some(Statement {
+                            kind: StatementKind::If {
+                                condition: Expression {
+                                    kind: ExpressionKind::BoolLiteral(true),
+                                    span,
+                                },
+                                then_body: stmts,
+                                elsif_branches: Vec::new(),
+                                else_body: None,
+                            },
+                            span,
+                        });
+                    }
                     let end = self.expect_statement_end();
                     Some(Statement {
                         kind: StatementKind::Assignment {
@@ -1556,6 +2003,15 @@ impl<'s> Parser<'s> {
     /// A parenthesized expression never has `:=` after its first name.
     fn try_parse_struct_initializer(&mut self) -> Option<Expression> {
         let at = |i: usize| self.ts.tokens.get(self.ts.pos + i).map(|(t, _)| t);
+        // `x : ST := ();` — every field keeps its default.
+        if matches!(at(0), Some(Token::LParen)) && matches!(at(1), Some(Token::RParen)) {
+            let start = self.ts.advance().unwrap().1;
+            let end = self.ts.advance().unwrap().1;
+            return Some(Expression {
+                kind: ExpressionKind::StructInitializer(Vec::new()),
+                span: start.merge(end),
+            });
+        }
         if !(matches!(at(0), Some(Token::LParen))
             && at(1).is_some_and(Self::is_ident_like)
             && matches!(at(2), Some(Token::Assign)))
@@ -1678,13 +2134,18 @@ impl<'s> Parser<'s> {
 
     fn parse_or_expression(&mut self) -> Expression {
         let mut left = self.parse_xor_expression();
-        while self.ts.at(&Token::Or) {
-            self.ts.advance();
+        while self.ts.at(&Token::Or) || self.ts.at(&Token::OrElse) {
+            let (tok, _) = self.ts.advance().unwrap();
+            let op = if tok == Token::OrElse {
+                BinaryOp::OrElse
+            } else {
+                BinaryOp::Or
+            };
             let right = self.parse_xor_expression();
             let span = left.span.merge(right.span);
             left = Expression {
                 kind: ExpressionKind::BinaryOp {
-                    op: BinaryOp::Or,
+                    op,
                     left: Box::new(left),
                     right: Box::new(right),
                 },
@@ -1714,13 +2175,18 @@ impl<'s> Parser<'s> {
 
     fn parse_and_expression(&mut self) -> Expression {
         let mut left = self.parse_comparison();
-        while self.ts.at(&Token::And) || self.ts.at(&Token::Ampersand) {
-            self.ts.advance();
+        while self.ts.at(&Token::And) || self.ts.at(&Token::Ampersand) || self.ts.at(&Token::AndThen)
+        {
+            let (tok, _) = self.ts.advance().unwrap();
             let right = self.parse_comparison();
             let span = left.span.merge(right.span);
             left = Expression {
                 kind: ExpressionKind::BinaryOp {
-                    op: BinaryOp::And,
+                    op: if tok == Token::AndThen {
+                        BinaryOp::AndThen
+                    } else {
+                        BinaryOp::And
+                    },
                     left: Box::new(left),
                     right: Box::new(right),
                 },
@@ -2188,9 +2654,16 @@ impl<'s> Parser<'s> {
                 }
                 self.ts.pos = checkpoint;
             }
-            if matches!(self.ts.peek(), Some(Token::Identifier)) {
+            if matches!(self.ts.peek(), Some(t) if Self::is_ident_like(t)) {
                 let ident = self.expect_ident();
                 if self.ts.eat(&Token::Assign).is_some() {
+                    // `x := ,` / `x := )`: an input left unassigned.
+                    if matches!(self.ts.peek(), Some(Token::Comma | Token::RParen)) {
+                        if self.ts.eat(&Token::Comma).is_none() || self.ts.at(&Token::RParen) {
+                            break;
+                        }
+                        continue;
+                    }
                     let value = self.parse_expression();
                     let span = start.merge(value.span);
                     args.push(CallArg {
@@ -2200,11 +2673,18 @@ impl<'s> Parser<'s> {
                         negated: false,
                         span,
                     });
-                    if self.ts.eat(&Token::Comma).is_none() {
+                    if self.ts.eat(&Token::Comma).is_none() || self.ts.at(&Token::RParen) {
                         break;
                     }
                     continue;
                 } else if self.ts.eat(&Token::OutputAssign).is_some() {
+                    // `Q => ,` / `Q => )`: the output is left unconnected.
+                    if matches!(self.ts.peek(), Some(Token::Comma | Token::RParen)) {
+                        if self.ts.eat(&Token::Comma).is_none() || self.ts.at(&Token::RParen) {
+                            break;
+                        }
+                        continue;
+                    }
                     let value = self.parse_expression();
                     let span = start.merge(value.span);
                     args.push(CallArg {
@@ -2214,7 +2694,7 @@ impl<'s> Parser<'s> {
                         negated: false,
                         span,
                     });
-                    if self.ts.eat(&Token::Comma).is_none() {
+                    if self.ts.eat(&Token::Comma).is_none() || self.ts.at(&Token::RParen) {
                         break;
                     }
                     continue;
@@ -2232,7 +2712,8 @@ impl<'s> Parser<'s> {
                 negated: false,
                 span,
             });
-            if self.ts.eat(&Token::Comma).is_none() {
+            // A trailing comma before `)` is accepted (TwinCAT does).
+            if self.ts.eat(&Token::Comma).is_none() || self.ts.at(&Token::RParen) {
                 break;
             }
         }
@@ -2511,6 +2992,8 @@ impl<'s> Parser<'s> {
                 | Token::Constant
                 | Token::Array
                 | Token::Of
+                | Token::Property
+                | Token::Action
         ) || Self::is_type_keyword(token)
     }
 
@@ -2546,12 +3029,34 @@ impl<'s> Parser<'s> {
         }
     }
 
+    /// A comma-separated list of (possibly namespace-qualified) POU names, as
+    /// after IMPLEMENTS or an interface's EXTENDS.
     fn parse_ident_list(&mut self) -> Vec<Ident> {
-        let mut list = vec![self.expect_ident()];
+        let mut list = vec![self.expect_qualified_ident()];
         while self.ts.eat(&Token::Comma).is_some() {
-            list.push(self.expect_ident());
+            list.push(self.expect_qualified_ident());
         }
         list
+    }
+
+    /// `Name` or a namespace-qualified `Lib.Name` (CODESYS/TwinCAT library
+    /// namespaces), kept as one identifier whose name contains the dots.
+    fn expect_qualified_ident(&mut self) -> Ident {
+        let mut ident = self.expect_ident();
+        while self.ts.at(&Token::Dot)
+            && matches!(
+                self.ts.tokens.get(self.ts.pos + 1).map(|(t, _)| t),
+                Some(t) if Self::is_ident_like(t)
+            )
+        {
+            self.ts.advance();
+            let part = self.expect_ident();
+            ident = Ident::new(
+                format!("{}.{}", ident.name, part.name),
+                ident.span.merge(part.span),
+            );
+        }
+        ident
     }
 }
 

@@ -925,6 +925,17 @@ impl TypeChecker {
                     IecType::Void
                 }
             }
+            // CODESYS short-circuit operators take BOOL operands only.
+            BinaryOp::AndThen | BinaryOp::OrElse => {
+                if *left != IecType::Bool || *right != IecType::Bool {
+                    self.errors.push(CheckError::TypeMismatch {
+                        expected: "BOOL".into(),
+                        found: format!("{left} and {right}"),
+                        span: span.into(),
+                    });
+                }
+                IecType::Bool
+            }
         }
     }
 

@@ -280,6 +280,7 @@ fn call_arg(name: &str, value: Expression, span: Span) -> CallArg {
 
 fn var_decl(name: &str, ty: &str, span: Span) -> VarDecl {
     VarDecl {
+        init_args: Vec::new(),
         name: Ident::new(name, span),
         type_spec: TypeSpec {
             kind: TypeSpecKind::Named(Ident::new(ty, span)),
@@ -629,6 +630,7 @@ pub(crate) fn lower_body(
     if !g.extra.is_empty() {
         let span = g.extra[0].span;
         var_blocks.push(VarBlock {
+            list_name: None,
             kind: VarBlockKind::Var,
             is_constant: false,
             is_retain: false,

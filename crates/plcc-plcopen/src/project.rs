@@ -145,6 +145,7 @@ impl<'s> Lower<'s> {
         let type_spec = self.type_of(base)?;
         let initializer = xml::child(dt, "initialValue").and_then(|iv| self.initial_value(iv));
         Some(TypeDeclaration {
+            extends: None,
             name,
             type_spec,
             initializer,
@@ -408,6 +409,7 @@ impl<'s> Lower<'s> {
         };
         let initializer = xml::child(v, "initialValue").and_then(|iv| self.initial_value(iv));
         Some(VarDecl {
+            init_args: Vec::new(),
             name,
             type_spec,
             at_address,
@@ -423,6 +425,7 @@ impl<'s> Lower<'s> {
             .filter_map(|v| self.variable(v))
             .collect();
         VarBlock {
+            list_name: None,
             kind,
             is_constant: xml::attr_bool(section, "constant"),
             is_retain: xml::attr_bool(section, "retain") || xml::attr_bool(section, "persistent"),
@@ -526,6 +529,8 @@ impl<'s> Lower<'s> {
                 implements: Vec::new(),
                 var_blocks,
                 methods: Vec::new(),
+                properties: Vec::new(),
+                actions: Vec::new(),
                 body,
                 span,
             }),

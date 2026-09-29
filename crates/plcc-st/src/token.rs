@@ -94,6 +94,21 @@ pub enum Token {
     Method,
     #[token("END_METHOD", ignore(case))]
     EndMethod,
+    /// CODESYS/TwinCAT `PROPERTY Name : Type` with `GET ... END_GET` and
+    /// `SET ... END_SET` accessors (`GET`/`SET` are contextual, not keywords).
+    #[token("PROPERTY", ignore(case))]
+    Property,
+    #[token("END_PROPERTY", ignore(case))]
+    EndProperty,
+    #[token("END_GET", ignore(case))]
+    EndGet,
+    #[token("END_SET", ignore(case))]
+    EndSet,
+    /// CODESYS/TwinCAT `ACTION Name: ... END_ACTION` inside a FUNCTION_BLOCK.
+    #[token("ACTION", ignore(case))]
+    Action,
+    #[token("END_ACTION", ignore(case))]
+    EndAction,
     #[token("EXTENDS", ignore(case))]
     Extends,
     #[token("IMPLEMENTS", ignore(case))]
@@ -133,6 +148,9 @@ pub enum Token {
     /// CODESYS: a METHOD variable that keeps its value between calls.
     #[token("VAR_INST", ignore(case))]
     VarInst,
+    /// CODESYS `VAR_STAT`: one variable shared by every instance of the POU.
+    #[token("VAR_STAT", ignore(case))]
+    VarStat,
     #[token("VAR_ACCESS", ignore(case))]
     VarAccess,
     #[token("VAR_CONFIG", ignore(case))]
@@ -354,6 +372,12 @@ pub enum Token {
     Caret,
 
     // ── Logical keywords ──
+    /// CODESYS short-circuit `AND_THEN` / `OR_ELSE`: the right operand is
+    /// evaluated only when the left one does not decide the result.
+    #[token("AND_THEN", ignore(case))]
+    AndThen,
+    #[token("OR_ELSE", ignore(case))]
+    OrElse,
     #[token("AND", ignore(case))]
     And,
     #[token("OR", ignore(case))]

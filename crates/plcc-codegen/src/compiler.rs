@@ -27,6 +27,7 @@ mod interfaces;
 mod ondemand;
 mod oop;
 mod refs;
+mod shortcircuit;
 mod stdfns;
 mod strings;
 pub use contract::{RuntimeContract, TaskOptions};
@@ -6881,7 +6882,9 @@ impl<'ctx> Compiler<'ctx> {
                 | BinaryOp::Less
                 | BinaryOp::LessEqual
                 | BinaryOp::Greater
-                | BinaryOp::GreaterEqual => Some(IecType::Bool),
+                | BinaryOp::GreaterEqual
+                | BinaryOp::AndThen
+                | BinaryOp::OrElse => Some(IecType::Bool),
                 BinaryOp::Power => Some(self.expt_result_type(left, right)),
                 // The wider operand's type governs — except when the two disagree
                 // about signedness, where the operator runs in a wider signed type
@@ -7458,6 +7461,11 @@ impl<'ctx> Compiler<'ctx> {
                 }
             }
             ExpressionKind::BinaryOp { op, left, right } => {
+                if matches!(op, BinaryOp::AndThen | BinaryOp::OrElse) {
+                    return self
+                        .compile_short_circuit(*op, left, right, function)
+                        .map(Some);
+                }
                 // `t + 1000`, `t > 500` with t a TIME: the literal is milliseconds.
                 if matches!(
                     op,
@@ -8157,11 +8165,11 @@ impl<'ctx> Compiler<'ctx> {
                 // ANY_BIT / ANY_UNSIGNED operands divide with udiv/urem. `BYTE 200 / 2`
                 // is 100; sdiv reads the 200 as -56 and answers 228.
                 BinaryOp::Div | BinaryOp::Mod => self.checked_int_div(op, l, r, unsigned)?,
-                BinaryOp::And => self
+                BinaryOp::And | BinaryOp::AndThen => self
                     .builder
                     .build_and(l, r, "and")
                     .map_err(|e| CodegenError::LlvmError(e.to_string()))?,
-                BinaryOp::Or => self
+                BinaryOp::Or | BinaryOp::OrElse => self
                     .builder
                     .build_or(l, r, "or")
                     .map_err(|e| CodegenError::LlvmError(e.to_string()))?,
