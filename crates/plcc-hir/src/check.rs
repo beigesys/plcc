@@ -462,7 +462,8 @@ impl TypeChecker {
             });
             return true;
         }
-        if scope.lookup(&id.name).is_some() || self.symbols.lookup_pou(&id.name).is_some() {
+        // A local, a global (an FB instance named `test`, say), or a POU.
+        if scope.lookup(&id.name).is_some() || self.is_known_name(&id.name) {
             return false;
         }
         match crate::libraries::library_of(&id.name) {

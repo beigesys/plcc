@@ -114,3 +114,24 @@ fn variable_length_arrays_are_reported() {
     assert_eq!(errs.len(), 1, "{errs:?}");
     assert!(errs[0].contains("variable-length arrays (`ARRAY[*]`) are not supported yet"), "{errs:?}");
 }
+
+/// A global FB instance whose name is also a library symbol (TcUnit's `TEST`)
+/// is the instance, not the library: calling it is no error.
+#[test]
+fn a_global_instance_named_like_a_library_symbol_is_callable() {
+    let errs = errors(
+        r#"
+FUNCTION_BLOCK Runner
+VAR_INPUT x : INT; END_VAR
+END_FUNCTION_BLOCK
+VAR_GLOBAL
+    test : Runner;
+END_VAR
+PROGRAM p
+test();
+test(x := 1);
+END_PROGRAM
+"#,
+    );
+    assert!(errs.is_empty(), "{errs:?}");
+}
