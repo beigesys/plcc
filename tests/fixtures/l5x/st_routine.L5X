@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- Written for plcc: Structured Text routines — constructs, a TONR timer,
+     JSR into a ladder routine with a parameter, an AOI whose logic is ST,
+     aliases, a tag named like an ST keyword, non-retentive assignment, SIZE,
+     and Logix numeric rules (integer divide by zero, REAL rounding). -->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="33.01" TargetName="StRoutines" TargetType="Controller" ContainsContext="false">
+<Controller Use="Target" Name="StRoutines" ProcessorType="1756-L83E" MajorRev="33">
+<AddOnInstructionDefinitions>
+<AddOnInstructionDefinition Name="Clamp_AOI" Revision="1.0" ExecutePrescan="false" ExecutePostscan="false" ExecuteEnableInFalse="false">
+<Parameters>
+<Parameter Name="EnableIn" TagType="Base" DataType="BOOL" Usage="Input" Required="false" Visible="false"/>
+<Parameter Name="EnableOut" TagType="Base" DataType="BOOL" Usage="Output" Required="false" Visible="false"/>
+<Parameter Name="In" TagType="Base" DataType="DINT" Usage="Input" Required="true" Visible="true"/>
+<Parameter Name="Lo" TagType="Base" DataType="DINT" Usage="Input" Required="true" Visible="true"/>
+<Parameter Name="Hi" TagType="Base" DataType="DINT" Usage="Input" Required="true" Visible="true"/>
+<Parameter Name="Out" TagType="Base" DataType="DINT" Usage="Output" Required="true" Visible="true"/>
+</Parameters>
+<Routines>
+<Routine Name="Logic" Type="ST">
+<STContent>
+<Line Number="0"><![CDATA[IF In < Lo THEN]]></Line>
+<Line Number="1"><![CDATA[    Out := Lo;]]></Line>
+<Line Number="2"><![CDATA[ELSIF In > Hi THEN]]></Line>
+<Line Number="3"><![CDATA[    Out := Hi;]]></Line>
+<Line Number="4"><![CDATA[ELSE]]></Line>
+<Line Number="5"><![CDATA[    Out := In;]]></Line>
+<Line Number="6"><![CDATA[END_IF;]]></Line>
+</STContent>
+</Routine>
+</Routines>
+</AddOnInstructionDefinition>
+</AddOnInstructionDefinitions>
+<Tags>
+<Tag Name="State" TagType="Base" DataType="DINT"/>
+<Tag Name="Sum" TagType="Base" DataType="DINT"/>
+<Tag Name="Values" TagType="Base" DataType="DINT" Dimensions="5">
+<Data Format="L5K"><![CDATA[[1,2,3,4,5]]]></Data>
+</Tag>
+<Tag Name="Count" TagType="Base" DataType="DINT"/>
+<Tag Name="Delay" TagType="Base" DataType="FBD_TIMER"/>
+<Tag Name="Go" TagType="Base" DataType="BOOL"/>
+<Tag Name="Done" TagType="Base" DataType="BOOL"/>
+<Tag Name="Time" TagType="Base" DataType="DINT"/>
+<Tag Name="GoAlias" TagType="Alias" AliasFor="Go"/>
+<Tag Name="Clamp1" TagType="Base" DataType="Clamp_AOI"/>
+<Tag Name="Raw" TagType="Base" DataType="DINT"><Data Format="L5K"><![CDATA[150]]></Data></Tag>
+<Tag Name="Clamped" TagType="Base" DataType="DINT"/>
+<Tag Name="Doubled" TagType="Base" DataType="DINT"/>
+<Tag Name="Elements" TagType="Base" DataType="DINT"/>
+<Tag Name="Zero" TagType="Base" DataType="DINT"/>
+<Tag Name="Quot" TagType="Base" DataType="DINT"/>
+<Tag Name="Rem" TagType="Base" DataType="DINT"/>
+<Tag Name="Half" TagType="Base" DataType="REAL"><Data Format="L5K"><![CDATA[2.50000000e+000]]></Data></Tag>
+<Tag Name="Rounded" TagType="Base" DataType="DINT"/>
+<Tag Name="Loops" TagType="Base" DataType="DINT"/>
+<Tag Name="Word" TagType="Base" DataType="INT"/>
+</Tags>
+<Programs>
+<Program Name="MainProgram" MainRoutineName="Main">
+<Tags>
+<Tag Name="Arg" TagType="Base" DataType="DINT"/>
+</Tags>
+<Routines>
+<Routine Name="Main" Type="ST">
+<STContent>
+<Line Number="0"><![CDATA[// State machine]]></Line>
+<Line Number="1"><![CDATA[CASE State OF]]></Line>
+<Line Number="2"><![CDATA[    0: IF GoAlias THEN State := 1; END_IF;]]></Line>
+<Line Number="3"><![CDATA[    1, 2: State := State + 1;]]></Line>
+<Line Number="4"><![CDATA[    3..9: State := 10;]]></Line>
+<Line Number="5"><![CDATA[ELSE]]></Line>
+<Line Number="6"><![CDATA[    State := State;]]></Line>
+<Line Number="7"><![CDATA[END_CASE;]]></Line>
+<Line Number="8"><![CDATA[Sum := 0; (* sum the array *)]]></Line>
+<Line Number="9"><![CDATA[FOR Count := 0 TO 4 BY 1 DO]]></Line>
+<Line Number="10"><![CDATA[    Sum := Sum + Values[Count];]]></Line>
+<Line Number="11"><![CDATA[END_FOR;]]></Line>
+<Line Number="12"><![CDATA[Loops := 0;]]></Line>
+<Line Number="13"><![CDATA[WHILE Loops < 3 DO Loops := Loops + 1; END_WHILE;]]></Line>
+<Line Number="14"><![CDATA[REPEAT Loops := Loops + 10; UNTIL Loops > 20 END_REPEAT;]]></Line>
+<Line Number="15"><![CDATA[Delay.PRE := 100;]]></Line>
+<Line Number="16"><![CDATA[Delay.TimerEnable := Go;]]></Line>
+<Line Number="17"><![CDATA[TONR(Delay);]]></Line>
+<Line Number="18"><![CDATA[Done [:=] Delay.DN;]]></Line>
+<Line Number="19"><![CDATA[Time := Delay.ACC;]]></Line>
+<Line Number="20"><![CDATA[Clamp_AOI(Clamp1, Raw, 0, 100, Clamped);]]></Line>
+<Line Number="21"><![CDATA[JSR(Doubler, 1, Clamped);]]></Line>
+<Line Number="22"><![CDATA[SIZE(Values, 0, Elements);]]></Line>
+<Line Number="23"><![CDATA[Quot := Raw / Zero;   /* Logix: Source A */]]></Line>
+<Line Number="24"><![CDATA[Rem := Raw MOD Zero;]]></Line>
+<Line Number="25"><![CDATA[Rounded := Half;]]></Line>
+<Line Number="26"><![CDATA[Word := 16#7FFF + 1;]]></Line>
+</STContent>
+</Routine>
+<Routine Name="Doubler" Type="RLL">
+<RLLContent>
+<Rung Number="0" Type="N"><Text><![CDATA[SBR(Arg)MUL(Arg,2,Doubled);]]></Text></Rung>
+</RLLContent>
+</Routine>
+</Routines>
+</Program>
+</Programs>
+<Tasks>
+<Task Name="MainTask" Type="PERIODIC" Rate="10" Priority="10">
+<ScheduledPrograms><ScheduledProgram Name="MainProgram"/></ScheduledPrograms>
+</Task>
+</Tasks>
+</Controller>
+</RSLogix5000Content>

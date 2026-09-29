@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- Written for plcc: every rung here is wrong in a different way; each must
+     be reported at the rung text, and the FBD/SFC routines as unsupported. -->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="33.01" TargetName="Bad" TargetType="Controller">
+<Controller Use="Target" Name="Bad" ProcessorType="1756-L83E" MajorRev="33">
+<Tags>
+<Tag Name="A" TagType="Base" DataType="BOOL"/>
+<Tag Name="N" TagType="Base" DataType="DINT"/>
+<Tag Name="Vfd" TagType="Base" DataType="PowerFlex525_Drive"/>
+</Tags>
+<Programs>
+<Program Name="MainProgram" MainRoutineName="Main">
+<Routines>
+<Routine Name="Main" Type="RLL">
+<RLLContent>
+<Rung Number="0" Type="N"><Text><![CDATA[XIC(A)[OTE(A);]]></Text></Rung>
+<Rung Number="1" Type="N"><Text><![CDATA[XIC(Missing)OTE(A);]]></Text></Rung>
+<Rung Number="2" Type="N"><Text><![CDATA[XIC(A)FROB(N);]]></Text></Rung>
+<Rung Number="3" Type="N"><Text><![CDATA[XIC(A)TON(N,100,0);]]></Text></Rung>
+<Rung Number="4" Type="N"><Text><![CDATA[XIC(Vfd.Run)OTE(A);]]></Text></Rung>
+</RLLContent>
+</Routine>
+<Routine Name="Blocks" Type="FBD">
+<FBDContent SheetSize="Letter - 8.5 x 11 in" SheetOrientation="Landscape"/>
+</Routine>
+<Routine Name="Steps" Type="SFC">
+<SFCContent SheetSize="Letter - 8.5 x 11 in" SheetOrientation="Landscape"/>
+</Routine>
+</Routines>
+</Program>
+</Programs>
+</Controller>
+</RSLogix5000Content>

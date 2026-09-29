@@ -1,0 +1,164 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- Written for plcc: UDTs (BOOL members packed in a hidden SINT), arrays,
+     an Add-On Instruction, alias tags, JSR with parameters, RET, JMP/LBL
+     forward and backward, an MCR zone, TND, COP and FLL. -->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="33.01" TargetName="Structure" TargetType="Controller" ContainsContext="false" ExportOptions="NoRawData L5KData DecoratedData">
+<Controller Use="Target" Name="Structure" ProcessorType="1756-L83E" MajorRev="33">
+<DataTypes>
+<DataType Name="Motor_UDT" Family="NoFamily" Class="User">
+<Members>
+<Member Name="ZZZZZZZZZZMotor_UDT0" DataType="SINT" Dimension="0" Radix="Decimal" Hidden="true"/>
+<Member Name="Run" DataType="BIT" Dimension="0" Radix="Decimal" Hidden="false" Target="ZZZZZZZZZZMotor_UDT0" BitNumber="0"/>
+<Member Name="Fault" DataType="BIT" Dimension="0" Radix="Decimal" Hidden="false" Target="ZZZZZZZZZZMotor_UDT0" BitNumber="1"/>
+<Member Name="Speed" DataType="DINT" Dimension="0" Radix="Decimal" Hidden="false"/>
+<Member Name="Setpoints" DataType="REAL" Dimension="4" Radix="Float" Hidden="false"/>
+<Member Name="Tmr" DataType="TIMER" Dimension="0" Radix="NullType" Hidden="false"/>
+</Members>
+</DataType>
+<DataType Name="Line_UDT" Family="NoFamily" Class="User">
+<Members>
+<Member Name="Motors" DataType="Motor_UDT" Dimension="2" Radix="NullType" Hidden="false"/>
+<Member Name="Count" DataType="DINT" Dimension="0" Radix="Decimal" Hidden="false"/>
+</Members>
+</DataType>
+</DataTypes>
+<AddOnInstructionDefinitions>
+<AddOnInstructionDefinition Name="Scale_AOI" Revision="1.0" ExecutePrescan="false" ExecutePostscan="false" ExecuteEnableInFalse="false">
+<Parameters>
+<Parameter Name="EnableIn" TagType="Base" DataType="BOOL" Usage="Input" Radix="Decimal" Required="false" Visible="false">
+<DefaultData Format="L5K"><![CDATA[1]]></DefaultData>
+</Parameter>
+<Parameter Name="EnableOut" TagType="Base" DataType="BOOL" Usage="Output" Radix="Decimal" Required="false" Visible="false"/>
+<Parameter Name="In" TagType="Base" DataType="REAL" Usage="Input" Radix="Float" Required="true" Visible="true"/>
+<Parameter Name="Out" TagType="Base" DataType="REAL" Usage="Output" Radix="Float" Required="true" Visible="true"/>
+<Parameter Name="MinOut" TagType="Base" DataType="REAL" Usage="Input" Radix="Float" Required="false" Visible="true">
+<DefaultData Format="Decorated"><DataValue DataType="REAL" Radix="Float" Value="4.0"/></DefaultData>
+</Parameter>
+<Parameter Name="MaxOut" TagType="Base" DataType="REAL" Usage="Input" Radix="Float" Required="false" Visible="true">
+<DefaultData Format="Decorated"><DataValue DataType="REAL" Radix="Float" Value="20.0"/></DefaultData>
+</Parameter>
+<Parameter Name="Ref" TagType="Base" DataType="DINT" Usage="InOut" Radix="Decimal" Required="true" Visible="true"/>
+</Parameters>
+<LocalTags>
+<LocalTag Name="Calls" DataType="DINT" Radix="Decimal">
+<DefaultData Format="L5K"><![CDATA[0]]></DefaultData>
+</LocalTag>
+</LocalTags>
+<Routines>
+<Routine Name="Logic" Type="RLL">
+<RLLContent>
+<Rung Number="0" Type="N"><Text><![CDATA[CPT(Out,In * (MaxOut - MinOut) / 100.0 + MinOut)ADD(Calls,1,Calls)ADD(Ref,1,Ref);]]></Text></Rung>
+</RLLContent>
+</Routine>
+</Routines>
+</AddOnInstructionDefinition>
+</AddOnInstructionDefinitions>
+<Tags>
+<Tag Name="M1" TagType="Base" DataType="Motor_UDT">
+<Data Format="L5K"><![CDATA[[1,1500,[1.50000000e+000,2.50000000e+000,0.00000000e+000,0.00000000e+000],[0,0,0]]]]></Data>
+</Tag>
+<Tag Name="M2" TagType="Base" DataType="Motor_UDT">
+<Data Format="Decorated">
+<Structure DataType="Motor_UDT">
+<DataValueMember Name="Run" DataType="BOOL" Value="0"/>
+<DataValueMember Name="Fault" DataType="BOOL" Value="1"/>
+<DataValueMember Name="Speed" DataType="DINT" Radix="Decimal" Value="750"/>
+<ArrayMember Name="Setpoints" DataType="REAL" Dimensions="4" Radix="Float">
+<Element Index="[0]" Value="0.0"/>
+<Element Index="[1]" Value="0.0"/>
+<Element Index="[2]" Value="9.25"/>
+<Element Index="[3]" Value="0.0"/>
+</ArrayMember>
+<StructureMember Name="Tmr" DataType="TIMER">
+<DataValueMember Name="PRE" DataType="DINT" Radix="Decimal" Value="2500"/>
+</StructureMember>
+</Structure>
+</Data>
+</Tag>
+<Tag Name="Line" TagType="Base" DataType="Line_UDT"/>
+<Tag Name="StartAlias" TagType="Alias" AliasFor="M1.Run"/>
+<Tag Name="SpeedCopy" TagType="Base" DataType="DINT"/>
+<Tag Name="Arr" TagType="Base" DataType="DINT" Dimensions="10">
+<Data Format="L5K"><![CDATA[[10,20,30,40,50,60,70,80,90,100]]]></Data>
+</Tag>
+<Tag Name="Arr2" TagType="Base" DataType="DINT" Dimensions="10"/>
+<Tag Name="Arr3" TagType="Base" DataType="DINT" Dimensions="5"/>
+<Tag Name="Grid" TagType="Base" DataType="INT" Dimensions="2 3">
+<Data Format="Decorated">
+<Array DataType="INT" Dimensions="2,3" Radix="Decimal">
+<Element Index="[0,0]" Value="1"/>
+<Element Index="[1,2]" Value="6"/>
+</Array>
+</Data>
+</Tag>
+<Tag Name="GridSum" TagType="Base" DataType="DINT"/>
+<Tag Name="ScaleTag" TagType="Base" DataType="Scale_AOI"/>
+<Tag Name="RawIn" TagType="Base" DataType="REAL"><Data Format="L5K"><![CDATA[5.00000000e+001]]></Data></Tag>
+<Tag Name="Scaled" TagType="Base" DataType="REAL"/>
+<Tag Name="RefCount" TagType="Base" DataType="DINT"/>
+<Tag Name="AoiGate" TagType="Base" DataType="BOOL"/>
+<Tag Name="AoiOut" TagType="Base" DataType="BOOL"/>
+<Tag Name="ZoneOn" TagType="Base" DataType="BOOL"/>
+<Tag Name="InZone" TagType="Base" DataType="BOOL"/>
+<Tag Name="AfterZone" TagType="Base" DataType="BOOL"/>
+<Tag Name="Skipped" TagType="Base" DataType="BOOL"/>
+<Tag Name="Landed" TagType="Base" DataType="BOOL"/>
+<Tag Name="Iter" TagType="Base" DataType="DINT"/>
+<Tag Name="DoTnd" TagType="Base" DataType="BOOL"/>
+<Tag Name="AfterTnd" TagType="Base" DataType="BOOL"/>
+</Tags>
+<Programs>
+<Program Name="MainProgram" MainRoutineName="MainRoutine">
+<Tags>
+<Tag Name="SubCalls" TagType="Base" DataType="DINT"/>
+<Tag Name="AfterRet" TagType="Base" DataType="BOOL"/>
+<Tag Name="P1" TagType="Base" DataType="DINT"/>
+<Tag Name="P2" TagType="Base" DataType="DINT"/>
+<Tag Name="PSum" TagType="Base" DataType="DINT"/>
+<Tag Name="LocalRun" TagType="Alias" AliasFor="M2.Fault"/>
+<Tag Name="SawFault" TagType="Base" DataType="BOOL"/>
+</Tags>
+<Routines>
+<Routine Name="MainRoutine" Type="RLL">
+<RLLContent>
+<Rung Number="0" Type="N"><Text><![CDATA[JSR(Sub1,0);]]></Text></Rung>
+<Rung Number="1" Type="N"><Text><![CDATA[JSR(SubParams,2,5,Arr[1]);]]></Text></Rung>
+<Rung Number="2" Type="N"><Text><![CDATA[XIC(AoiGate)Scale_AOI(ScaleTag,RawIn,Scaled,RefCount)OTE(AoiOut);]]></Text></Rung>
+<Rung Number="3" Type="N"><Text><![CDATA[COP(Arr[0],Arr2[2],3)FLL(7,Arr3[1],10);]]></Text></Rung>
+<Rung Number="4" Type="N"><Text><![CDATA[XIC(StartAlias)MOV(M1.Speed,SpeedCopy);]]></Text></Rung>
+<Rung Number="5" Type="N"><Text><![CDATA[XIC(LocalRun)OTE(SawFault)CPT(GridSum,Grid[0,0] + Grid[1,2]);]]></Text></Rung>
+<Rung Number="6" Type="N"><Text><![CDATA[XIC(ZoneOn)MCR();]]></Text></Rung>
+<Rung Number="7" Type="N"><Text><![CDATA[OTE(InZone);]]></Text></Rung>
+<Rung Number="8" Type="N"><Text><![CDATA[MCR();]]></Text></Rung>
+<Rung Number="9" Type="N"><Text><![CDATA[OTE(AfterZone);]]></Text></Rung>
+<Rung Number="10" Type="N"><Text><![CDATA[JMP(Skip);]]></Text></Rung>
+<Rung Number="11" Type="N"><Text><![CDATA[OTE(Skipped);]]></Text></Rung>
+<Rung Number="12" Type="N"><Text><![CDATA[LBL(Skip)OTE(Landed)CLR(Iter);]]></Text></Rung>
+<Rung Number="13" Type="N"><Text><![CDATA[LBL(Again)ADD(Iter,1,Iter)LES(Iter,5)JMP(Again);]]></Text></Rung>
+<Rung Number="14" Type="N"><Text><![CDATA[XIC(DoTnd)TND();]]></Text></Rung>
+<Rung Number="15" Type="N"><Text><![CDATA[OTE(AfterTnd);]]></Text></Rung>
+</RLLContent>
+</Routine>
+<Routine Name="Sub1" Type="RLL">
+<RLLContent>
+<Rung Number="0" Type="N"><Text><![CDATA[ADD(SubCalls,1,SubCalls);]]></Text></Rung>
+<Rung Number="1" Type="N"><Text><![CDATA[RET();]]></Text></Rung>
+<Rung Number="2" Type="N"><Text><![CDATA[OTE(AfterRet);]]></Text></Rung>
+</RLLContent>
+</Routine>
+<Routine Name="SubParams" Type="RLL">
+<RLLContent>
+<Rung Number="0" Type="N"><Text><![CDATA[SBR(P1,P2)ADD(P1,P2,PSum);]]></Text></Rung>
+</RLLContent>
+</Routine>
+</Routines>
+</Program>
+</Programs>
+<Tasks>
+<Task Name="MainTask" Type="CONTINUOUS" Priority="10">
+<ScheduledPrograms><ScheduledProgram Name="MainProgram"/></ScheduledPrograms>
+</Task>
+</Tasks>
+</Controller>
+</RSLogix5000Content>

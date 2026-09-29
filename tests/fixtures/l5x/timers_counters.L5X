@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- Written for plcc: TON / TOF / RTO / CTU / CTD / RES on a fake clock.
+     T1 has PRE 0 in its data: the rung's preset operand (a pseudo-operand)
+     is what sets it to 100 when the project is downloaded.
+     C1 uses L5K data only ([control word, PRE, ACC]). -->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="33.01" TargetName="TimersCounters" TargetType="Controller" ContainsContext="false" ExportOptions="NoRawData L5KData DecoratedData">
+<Controller Use="Target" Name="TimersCounters" ProcessorType="1769-L33ER" MajorRev="33" MinorRev="11">
+<DataTypes/>
+<Tags>
+<Tag Name="In1" TagType="Base" DataType="BOOL" Radix="Decimal"/>
+<Tag Name="ResetT3" TagType="Base" DataType="BOOL" Radix="Decimal"/>
+<Tag Name="CountIn" TagType="Base" DataType="BOOL" Radix="Decimal"/>
+<Tag Name="DownIn" TagType="Base" DataType="BOOL" Radix="Decimal"/>
+<Tag Name="ResC" TagType="Base" DataType="BOOL" Radix="Decimal"/>
+<Tag Name="T1" TagType="Base" DataType="TIMER">
+<Data Format="Decorated">
+<Structure DataType="TIMER">
+<DataValueMember Name="PRE" DataType="DINT" Radix="Decimal" Value="0"/>
+<DataValueMember Name="ACC" DataType="DINT" Radix="Decimal" Value="0"/>
+<DataValueMember Name="EN" DataType="BOOL" Value="0"/>
+<DataValueMember Name="TT" DataType="BOOL" Value="0"/>
+<DataValueMember Name="DN" DataType="BOOL" Value="0"/>
+</Structure>
+</Data>
+</Tag>
+<Tag Name="T2" TagType="Base" DataType="TIMER">
+<Data Format="L5K">
+<![CDATA[[0,50,0]]]>
+</Data>
+</Tag>
+<Tag Name="T3" TagType="Base" DataType="TIMER">
+<Data Format="Decorated">
+<Structure DataType="TIMER">
+<DataValueMember Name="PRE" DataType="DINT" Radix="Decimal" Value="150"/>
+<DataValueMember Name="ACC" DataType="DINT" Radix="Decimal" Value="0"/>
+</Structure>
+</Data>
+</Tag>
+<Tag Name="C1" TagType="Base" DataType="COUNTER">
+<Data Format="L5K">
+<![CDATA[[0,3,0]]]>
+</Data>
+</Tag>
+<Tag Name="C2" TagType="Base" DataType="COUNTER">
+<Data Format="L5K">
+<![CDATA[[0,10,2147483646]]]>
+</Data>
+</Tag>
+<Tag Name="C2In" TagType="Base" DataType="BOOL" Radix="Decimal"/>
+</Tags>
+<Programs>
+<Program Name="MainProgram" MainRoutineName="MainRoutine">
+<Routines>
+<Routine Name="MainRoutine" Type="RLL">
+<RLLContent>
+<Rung Number="0" Type="N"><Text><![CDATA[XIC(In1)TON(T1,100,0);]]></Text></Rung>
+<Rung Number="1" Type="N"><Text><![CDATA[XIC(In1)TOF(T2,?,?);]]></Text></Rung>
+<Rung Number="2" Type="N"><Text><![CDATA[XIC(In1)RTO(T3,150,0);]]></Text></Rung>
+<Rung Number="3" Type="N"><Text><![CDATA[XIC(ResetT3)RES(T3);]]></Text></Rung>
+<Rung Number="4" Type="N"><Text><![CDATA[XIC(CountIn)CTU(C1,3,0);]]></Text></Rung>
+<Rung Number="5" Type="N"><Text><![CDATA[XIC(DownIn)CTD(C1,3,0);]]></Text></Rung>
+<Rung Number="6" Type="N"><Text><![CDATA[XIC(ResC)RES(C1);]]></Text></Rung>
+<Rung Number="7" Type="N"><Text><![CDATA[XIC(C2In)CTU(C2,?,?);]]></Text></Rung>
+</RLLContent>
+</Routine>
+</Routines>
+</Program>
+</Programs>
+<Tasks>
+<Task Name="MainTask" Type="CONTINUOUS" Priority="10" Watchdog="500">
+<ScheduledPrograms>
+<ScheduledProgram Name="MainProgram"/>
+</ScheduledPrograms>
+</Task>
+</Tasks>
+</Controller>
+</RSLogix5000Content>

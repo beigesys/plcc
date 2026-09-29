@@ -24,6 +24,9 @@ enum Commands {
         /// Dump AST as JSON
         #[arg(long)]
         dump_ast: bool,
+        /// Rockwell L5X: print the Structured Text the project lowers to
+        #[arg(long)]
+        dump_st: bool,
     },
     /// Parse and type-check Structured Text / PLCopen XML files — exactly the
     /// check `compile` runs before code generation
@@ -33,6 +36,11 @@ enum Commands {
         /// Standard function block library to check against (as `compile` does)
         #[arg(long, value_enum, default_value_t = StdlibOpt::BundledSt)]
         stdlib: StdlibOpt,
+        /// Rockwell L5X: TOML file binding Logix tags (module tags such as
+        /// `Local:1:I.Data.0`, aliases, base tags) to process-image addresses
+        /// (`%IX0.0`); see docs/l5x.md
+        #[arg(long, value_name = "FILE")]
+        io_map: Option<PathBuf>,
     },
     /// Compile one or more Structured Text / PLCopen XML files
     Compile {
@@ -71,6 +79,11 @@ enum Commands {
         #[arg(short = 'O', long = "opt-level", default_value_t = 0,
               value_parser = clap::value_parser!(u8).range(0..=3))]
         opt_level: u8,
+        /// Rockwell L5X: TOML file binding Logix tags (module tags such as
+        /// `Local:1:I.Data.0`, aliases, base tags) to process-image addresses
+        /// (`%IX0.0`); see docs/l5x.md
+        #[arg(long, value_name = "FILE")]
+        io_map: Option<PathBuf>,
     },
     /// Compile and JIT-run ST programs, optionally with Modbus TCP for SCADA
     Sim {
@@ -91,6 +104,11 @@ enum Commands {
         /// Skip the type checker that otherwise runs before code generation
         #[arg(long)]
         no_typecheck: bool,
+        /// Rockwell L5X: TOML file binding Logix tags (module tags such as
+        /// `Local:1:I.Data.0`, aliases, base tags) to process-image addresses
+        /// (`%IX0.0`); see docs/l5x.md
+        #[arg(long, value_name = "FILE")]
+        io_map: Option<PathBuf>,
     },
 }
 
@@ -116,30 +134,63 @@ fn read_source(path: &std::path::Path) -> Result<String> {
 
 /// Parse one input: a TwinCAT object (`.TcPOU`, `.TcDUT`, `.TcGVL`, `.TcIO`,
 /// or any file whose root element is `<TcPlcObject>`) goes through
-/// `plcc-twincat`; PLCopen XML (a `.xml` file, or any file whose root element
-/// is `<project>`) is lowered to the ST AST by `plcc-plcopen`; anything else is
-/// Structured Text. Diagnostics carry spans into `source` and no source code.
+/// `plcc-twincat`; a Rockwell `.L5X` export (or any file whose root is
+/// `<RSLogix5000Content>`) through `plcc-l5x`; PLCopen XML (a `.xml` file, or
+/// any file whose root element is `<project>`) is lowered to the ST AST by
+/// `plcc-plcopen`; anything else is Structured Text. Diagnostics carry spans
+/// into `source` and no source code. The flag is whether any of them is an
+/// error (L5X lowering also reports warnings).
 fn parse_file(
     path: &std::path::Path,
     source: &str,
-) -> (plcc_st::ast::CompilationUnit, Vec<miette::Report>) {
+    l5x: &plcc_l5x::Options,
+) -> (plcc_st::ast::CompilationUnit, Vec<miette::Report>, bool) {
     if plcc_twincat::is_object_file(path) || plcc_twincat::is_twincat_object(source) {
         let (unit, errors) = plcc_twincat::parse(source);
-        return (unit, errors.into_iter().map(miette::Report::new).collect());
+        let reports: Vec<miette::Report> = errors.into_iter().map(miette::Report::new).collect();
+        let failed = !reports.is_empty();
+        return (unit, reports, failed);
+    }
+    if is_l5x_input(path, source) {
+        let (unit, diags) = plcc_l5x::parse_with(source, l5x);
+        let failed = diags.iter().any(|d| !d.is_warning());
+        return (
+            unit,
+            diags.into_iter().map(miette::Report::new).collect(),
+            failed,
+        );
     }
     let is_xml = path
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("xml"))
         || plcc_plcopen::is_plcopen(source);
-    if is_xml {
+    let (unit, reports): (_, Vec<miette::Report>) = if is_xml {
         let (unit, errors) = plcc_plcopen::parse(source);
         (unit, errors.into_iter().map(miette::Report::new).collect())
     } else {
         let (unit, errors) = plcc_st::parse(source);
         (unit, errors.into_iter().map(miette::Report::new).collect())
-    }
+    };
+    let failed = !reports.is_empty();
+    (unit, reports, failed)
 }
 
+fn is_l5x_input(path: &std::path::Path, source: &str) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("l5x"))
+        || plcc_l5x::is_l5x(source)
+}
+
+/// `--io-map FILE` → L5X options.
+fn l5x_options(io_map: &Option<PathBuf>) -> Result<plcc_l5x::Options> {
+    let mut opts = plcc_l5x::Options::default();
+    if let Some(p) = io_map {
+        let text = read_source(p)?;
+        opts.io_map =
+            plcc_l5x::IoMap::parse(&text).map_err(|e| miette::miette!("{}: {e}", p.display()))?;
+    }
+    Ok(opts)
+}
 /// Name of a top-level declaration, uppercased, when it has one.
 fn declaration_name(decl: &plcc_st::ast::Declaration) -> Option<String> {
     use plcc_st::ast::Declaration as D;
@@ -309,17 +360,22 @@ fn twincat_configuration(
     Some((text, unit))
 }
 
-fn parse_inputs(inputs: &[PathBuf], stdlib: StdlibOpt) -> Result<Parsed> {
+fn parse_inputs(inputs: &[PathBuf], stdlib: StdlibOpt, l5x: &plcc_l5x::Options) -> Result<Parsed> {
     let inputs = expand_inputs(inputs)?;
     let mut all_declarations = Vec::new();
     let mut origins = Vec::new();
     let mut failed = false;
+    let mut any_l5x = false;
     let mut defined: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut shadowed = Vec::new();
     for (input, library) in &inputs.files {
         let source = read_source(input)?;
-        let (unit, errors) = parse_file(input, &source);
-        failed |= print_parse_diagnostics(input, &source, errors);
+        let logix = is_l5x_input(input, &source);
+        any_l5x |= logix;
+        let (unit, errors, file_failed) = parse_file(input, &source, l5x);
+        let printed_failed = print_parse_diagnostics(input, &source, errors);
+        // L5X lowering reports warnings too; only its errors fail the build.
+        failed |= if logix { file_failed } else { printed_failed };
         let origin = Origin {
             name: input.display().to_string(),
             source: std::rc::Rc::new(source),
@@ -355,6 +411,33 @@ fn parse_inputs(inputs: &[PathBuf], stdlib: StdlibOpt) -> Result<Parsed> {
         };
         origins.extend(std::iter::repeat_n(origin, unit.declarations.len()));
         all_declarations.extend(unit.declarations);
+    }
+
+    // Rockwell projects need the Logix instruction prelude (TIMER, COUNTER,
+    // the instruction helpers), whatever `--stdlib` says.
+    if any_l5x {
+        let src = plcc_l5x::prelude();
+        let (unit, errors) = plcc_st::parse(&src);
+        if !errors.is_empty() {
+            for err in &errors {
+                let report = miette::Report::new(err.clone())
+                    .with_source_code(NamedSource::new(plcc_l5x::PRELUDE_NAME, src.clone()));
+                eprintln!("{:?}", report);
+            }
+            eprintln!("internal error: the bundled Logix prelude failed to parse");
+            std::process::exit(1);
+        }
+        let origin = Origin {
+            name: plcc_l5x::PRELUDE_NAME.to_string(),
+            source: std::rc::Rc::new(src),
+            prelude: true,
+        };
+        let mut decls = unit.declarations;
+        let mut os: Vec<Origin> = std::iter::repeat_n(origin, decls.len()).collect();
+        decls.extend(all_declarations);
+        os.extend(origins);
+        all_declarations = decls;
+        origins = os;
     }
 
     if stdlib == StdlibOpt::BundledSt {
@@ -460,8 +543,10 @@ fn run_typecheck(parsed: &Parsed) -> bool {
         } else {
             errors += 1;
         }
-        let report = miette::Report::new(diag)
-            .with_source_code(NamedSource::new(&origin.name, origin.source.as_str().to_owned()));
+        let report = miette::Report::new(diag).with_source_code(NamedSource::new(
+            &origin.name,
+            origin.source.as_str().to_owned(),
+        ));
         eprintln!("{report:?}");
     }
     if errors > 0 || warnings > 0 {
@@ -481,7 +566,23 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Parse { input, dump_ast } => {
+        Commands::Parse {
+            input,
+            dump_ast,
+            dump_st,
+        } => {
+            if dump_st {
+                let source = read_source(&input)?;
+                let (st, diags) = plcc_l5x::to_st(&source, &plcc_l5x::Options::default());
+                println!("{st}");
+                let file_name = input.display().to_string();
+                for d in diags {
+                    let report = miette::Report::new(d)
+                        .with_source_code(NamedSource::new(&file_name, source.clone()));
+                    eprintln!("{report:?}");
+                }
+                return Ok(());
+            }
             // A TwinCAT project or directory parses every file it stands for.
             let inputs = expand_inputs(std::slice::from_ref(&input))?;
             let mut unit = plcc_st::ast::CompilationUnit {
@@ -491,11 +592,17 @@ fn main() -> Result<()> {
             let mut error_count = 0;
             for (file, _) in &inputs.files {
                 let source = read_source(file)?;
-                let (file_unit, errors) = parse_file(file, &source);
-                error_count += errors
-                    .iter()
-                    .filter(|r| r.severity() != Some(miette::Severity::Warning))
-                    .count();
+                let logix = is_l5x_input(file, &source);
+                let (file_unit, errors, failed) =
+                    parse_file(file, &source, &plcc_l5x::Options::default());
+                error_count += if logix {
+                    if failed { errors.len() } else { 0 }
+                } else {
+                    errors
+                        .iter()
+                        .filter(|r| r.severity() != Some(miette::Severity::Warning))
+                        .count()
+                };
                 print_parse_diagnostics(file, &source, errors);
                 unit.declarations.extend(file_unit.declarations);
             }
@@ -516,12 +623,16 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Commands::Check { inputs, stdlib } => {
+        Commands::Check {
+            inputs,
+            stdlib,
+            io_map,
+        } => {
             if inputs.is_empty() {
                 eprintln!("Error: at least one input file is required");
                 std::process::exit(1);
             }
-            let parsed = parse_inputs(&inputs, stdlib)?;
+            let parsed = parse_inputs(&inputs, stdlib, &l5x_options(&io_map)?)?;
             if run_typecheck(&parsed) {
                 std::process::exit(1);
             }
@@ -540,13 +651,14 @@ fn main() -> Result<()> {
             task_interval,
             no_typecheck,
             opt_level,
+            io_map,
         } => {
             if inputs.is_empty() {
                 eprintln!("Error: at least one input file is required");
                 std::process::exit(1);
             }
 
-            let parsed = parse_inputs(&inputs, stdlib)?;
+            let parsed = parse_inputs(&inputs, stdlib, &l5x_options(&io_map)?)?;
             if !no_typecheck && run_typecheck(&parsed) {
                 eprintln!("not compiled: fix the type errors, or pass --no-typecheck");
                 std::process::exit(1);
@@ -560,7 +672,9 @@ fn main() -> Result<()> {
             }
             register_sources(&mut compiler, &parsed);
             let interval = plcc_codegen::compiler::contract::parse_duration_ns(&task_interval)
-                .ok_or_else(|| miette::miette!("--task-interval: `{task_interval}` is not a TIME"))?;
+                .ok_or_else(|| {
+                    miette::miette!("--task-interval: `{task_interval}` is not a TIME")
+                })?;
             compiler.set_task_options(plcc_codegen::TaskOptions {
                 default_interval_ns: interval,
             });
@@ -587,7 +701,9 @@ fn main() -> Result<()> {
                 if let Some(path) = &emit_header {
                     let guard = format!(
                         "PLCC_{}_H",
-                        path.file_stem().and_then(|s| s.to_str()).unwrap_or("program")
+                        path.file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("program")
                     );
                     std::fs::write(path, plcc_codegen::header::c_header(&contract, &guard))
                         .into_diagnostic()?;
@@ -619,13 +735,14 @@ fn main() -> Result<()> {
             modbus,
             stdlib,
             no_typecheck,
+            io_map,
         } => {
             if inputs.is_empty() {
                 eprintln!("Usage: plcc sim <program.st> [--scans 0] [--modbus 502]");
                 std::process::exit(1);
             }
 
-            let parsed = parse_inputs(&inputs, stdlib)?;
+            let parsed = parse_inputs(&inputs, stdlib, &l5x_options(&io_map)?)?;
             if !no_typecheck && run_typecheck(&parsed) {
                 eprintln!("not run: fix the type errors, or pass --no-typecheck");
                 std::process::exit(1);
@@ -798,7 +915,11 @@ fn parse_image_size(spec: &str) -> Result<(plcc_codegen::direct_address::Area, u
         "I" => Area::Input,
         "Q" => Area::Output,
         "M" => Area::Memory,
-        other => return Err(miette::miette!("--image-size: unknown area `{other}` (I, Q or M)")),
+        other => {
+            return Err(miette::miette!(
+                "--image-size: unknown area `{other}` (I, Q or M)"
+            ));
+        }
     };
     let bytes = n
         .trim()

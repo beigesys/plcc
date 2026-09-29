@@ -401,6 +401,7 @@ dependencies = [
  "miette",
  "plcc-codegen",
  "plcc-hir",
+ "plcc-l5x",
  "plcc-plcopen",
  "plcc-runtime",
  "plcc-st",
@@ -443,6 +444,22 @@ version = "0.1.0"
 dependencies = [
  "miette",
  "plcc-st",
+ "thiserror",
+]
+
+[[package]]
+name = "plcc-l5x"
+version = "0.1.0"
+dependencies = [
+ "inkwell",
+ "miette",
+ "plcc-codegen",
+ "plcc-hir",
+ "plcc-st",
+ "plcc-stdlib",
+ "roxmltree",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 

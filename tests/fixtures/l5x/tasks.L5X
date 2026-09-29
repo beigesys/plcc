@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- Written for plcc: a continuous task, a 10 ms periodic task, an event task
+     triggered by the EVENT instruction, an inhibited task, an unscheduled
+     program and a disabled one. -->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="33.01" TargetName="Tasks" TargetType="Controller" ContainsContext="false">
+<Controller Use="Target" Name="Tasks" ProcessorType="1769-L33ER" MajorRev="33">
+<Tags>
+<Tag Name="SlowCount" TagType="Base" DataType="DINT"/>
+<Tag Name="FastCount" TagType="Base" DataType="DINT"/>
+<Tag Name="EventCount" TagType="Base" DataType="DINT"/>
+<Tag Name="Fire" TagType="Base" DataType="BOOL"/>
+<Tag Name="FireOns" TagType="Base" DataType="BOOL"/>
+<Tag Name="Never" TagType="Base" DataType="DINT"/>
+</Tags>
+<Programs>
+<Program Name="Slow" MainRoutineName="Main">
+<Routines>
+<Routine Name="Main" Type="RLL">
+<RLLContent>
+<Rung Number="0" Type="N"><Text><![CDATA[ADD(SlowCount,1,SlowCount);]]></Text></Rung>
+<Rung Number="1" Type="N"><Text><![CDATA[XIC(Fire)ONS(FireOns)EVENT(OnFire);]]></Text></Rung>
+</RLLContent>
+</Routine>
+</Routines>
+</Program>
+<Program Name="Fast" MainRoutineName="Main">
+<Routines>
+<Routine Name="Main" Type="RLL">
+<RLLContent>
+<Rung Number="0" Type="N"><Text><![CDATA[ADD(FastCount,1,FastCount);]]></Text></Rung>
+</RLLContent>
+</Routine>
+</Routines>
+</Program>
+<Program Name="Handler" MainRoutineName="Main">
+<Routines>
+<Routine Name="Main" Type="RLL">
+<RLLContent>
+<Rung Number="0" Type="N"><Text><![CDATA[ADD(EventCount,1,EventCount);]]></Text></Rung>
+</RLLContent>
+</Routine>
+</Routines>
+</Program>
+<Program Name="Unscheduled" MainRoutineName="Main">
+<Routines>
+<Routine Name="Main" Type="RLL">
+<RLLContent>
+<Rung Number="0" Type="N"><Text><![CDATA[ADD(Never,1,Never);]]></Text></Rung>
+</RLLContent>
+</Routine>
+</Routines>
+</Program>
+<Program Name="Off" MainRoutineName="Main" Disabled="true">
+<Routines>
+<Routine Name="Main" Type="RLL">
+<RLLContent>
+<Rung Number="0" Type="N"><Text><![CDATA[ADD(Never,1,Never);]]></Text></Rung>
+</RLLContent>
+</Routine>
+</Routines>
+</Program>
+</Programs>
+<Tasks>
+<Task Name="MainTask" Type="CONTINUOUS" Priority="10" Watchdog="500">
+<ScheduledPrograms><ScheduledProgram Name="Slow"/><ScheduledProgram Name="Off"/></ScheduledPrograms>
+</Task>
+<Task Name="FastTask" Type="PERIODIC" Rate="10" Priority="5" Watchdog="100">
+<ScheduledPrograms><ScheduledProgram Name="Fast"/></ScheduledPrograms>
+</Task>
+<Task Name="OnFire" Type="EVENT" Priority="3" Watchdog="100">
+<EventInfo EventTrigger="EVENT instruction only" EnableTimeout="false"/>
+<ScheduledPrograms><ScheduledProgram Name="Handler"/></ScheduledPrograms>
+</Task>
+<Task Name="Parked" Type="PERIODIC" Rate="100" Priority="8" InhibitTask="true">
+<ScheduledPrograms/>
+</Task>
+</Tasks>
+</Controller>
+</RSLogix5000Content>

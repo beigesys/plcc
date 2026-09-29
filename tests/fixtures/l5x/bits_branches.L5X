@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- Written for plcc: one-shots, latches, nested branches, bit addressing,
+     compare instructions, AFI, and the false-rung behaviour of OTE. -->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="33.01" TargetName="Bits" TargetType="Controller" ContainsContext="false">
+<Controller Use="Target" Name="Bits" ProcessorType="1756-L83E" MajorRev="33">
+<Tags>
+<Tag Name="In" TagType="Base" DataType="BOOL"/>
+<Tag Name="OnsBit" TagType="Base" DataType="BOOL"/>
+<Tag Name="Pulses" TagType="Base" DataType="DINT"/>
+<Tag Name="OsrSb" TagType="Base" DataType="BOOL"/>
+<Tag Name="OsrOut" TagType="Base" DataType="BOOL"/>
+<Tag Name="OsfSb" TagType="Base" DataType="BOOL"/>
+<Tag Name="OsfOut" TagType="Base" DataType="BOOL"/>
+<Tag Name="Falls" TagType="Base" DataType="DINT"/>
+<Tag Name="Set" TagType="Base" DataType="BOOL"/>
+<Tag Name="Reset" TagType="Base" DataType="BOOL"/>
+<Tag Name="Latched" TagType="Base" DataType="BOOL"/>
+<Tag Name="A" TagType="Base" DataType="BOOL"/>
+<Tag Name="B" TagType="Base" DataType="BOOL"/>
+<Tag Name="C" TagType="Base" DataType="BOOL"/>
+<Tag Name="D" TagType="Base" DataType="BOOL"/>
+<Tag Name="Out1" TagType="Base" DataType="BOOL"/>
+<Tag Name="Out2" TagType="Base" DataType="BOOL"/>
+<Tag Name="Word" TagType="Base" DataType="DINT">
+<Data Format="Decorated"><DataValue DataType="DINT" Radix="Hex" Value="16#0000_0020"/></Data>
+</Tag>
+<Tag Name="Bit5" TagType="Base" DataType="BOOL"/>
+<Tag Name="Level" TagType="Base" DataType="INT"/>
+<Tag Name="InRange" TagType="Base" DataType="BOOL"/>
+<Tag Name="OutOfBand" TagType="Base" DataType="BOOL"/>
+<Tag Name="Masked" TagType="Base" DataType="BOOL"/>
+<Tag Name="Never" TagType="Base" DataType="BOOL"/>
+<Tag Name="Temp" TagType="Base" DataType="REAL">
+<Data Format="Decorated"><DataValue DataType="REAL" Radix="Float" Value="21.5"/></Data>
+</Tag>
+<Tag Name="Warm" TagType="Base" DataType="BOOL"/>
+<Tag Name="CmpOk" TagType="Base" DataType="BOOL"/>
+<Tag Name="Flags" TagType="Base" DataType="BOOL" Dimensions="32"/>
+<Tag Name="Idx" TagType="Base" DataType="DINT"/>
+<Tag Name="IdxBit" TagType="Base" DataType="BOOL"/>
+<Tag Name="FirstScan" TagType="Base" DataType="BOOL"/>
+<Tag Name="FsCount" TagType="Base" DataType="DINT"/>
+</Tags>
+<Programs>
+<Program Name="MainProgram" MainRoutineName="MainRoutine">
+<Routines>
+<Routine Name="MainRoutine" Type="RLL">
+<RLLContent>
+<Rung Number="0" Type="N"><Text><![CDATA[XIC(In)ONS(OnsBit)ADD(Pulses,1,Pulses);]]></Text></Rung>
+<Rung Number="1" Type="N"><Text><![CDATA[XIC(In)OSR(OsrSb,OsrOut);]]></Text></Rung>
+<Rung Number="2" Type="N"><Text><![CDATA[XIC(In)OSF(OsfSb,OsfOut);]]></Text></Rung>
+<Rung Number="3" Type="N"><Text><![CDATA[XIC(OsfOut)ADD(Falls,1,Falls);]]></Text></Rung>
+<Rung Number="4" Type="N"><Text><![CDATA[XIC(Set)OTL(Latched);]]></Text></Rung>
+<Rung Number="5" Type="N"><Text><![CDATA[XIC(Reset)OTU(Latched);]]></Text></Rung>
+<Rung Number="6" Type="N"><Text><![CDATA[[XIC(A) [XIC(B) ,XIC(C) ] ,XIC(D) ]OTE(Out1)XIO(C)OTE(Out2);]]></Text></Rung>
+<Rung Number="7" Type="N"><Text><![CDATA[XIC(Word.5)OTE(Bit5);]]></Text></Rung>
+<Rung Number="8" Type="N"><Text><![CDATA[LIM(10,Level,20)OTE(InRange);]]></Text></Rung>
+<Rung Number="9" Type="N"><Text><![CDATA[LIM(20,Level,10)OTE(OutOfBand);]]></Text></Rung>
+<Rung Number="10" Type="N"><Text><![CDATA[MEQ(Word,16#F0,16#20)OTE(Masked);]]></Text></Rung>
+<Rung Number="11" Type="N"><Text><![CDATA[AFI()OTE(Never);]]></Text></Rung>
+<Rung Number="12" Type="N"><Text><![CDATA[GRT(Temp,20)LES(Temp,25.0)OTE(Warm);]]></Text></Rung>
+<Rung Number="13" Type="N"><Text><![CDATA[CMP((Level * 2 + 1) >= 31 && Level <> 0)OTE(CmpOk);]]></Text></Rung>
+<Rung Number="14" Type="N"><Text><![CDATA[XIC(Flags[Idx])OTE(IdxBit);]]></Text></Rung>
+<Rung Number="15" Type="N"><Text><![CDATA[XIC(S:FS)OTE(FirstScan)ADD(FsCount,1,FsCount);]]></Text></Rung>
+</RLLContent>
+</Routine>
+</Routines>
+</Program>
+</Programs>
+<Tasks>
+<Task Name="MainTask" Type="CONTINUOUS" Priority="10">
+<ScheduledPrograms><ScheduledProgram Name="MainProgram"/></ScheduledPrograms>
+</Task>
+</Tasks>
+</Controller>
+</RSLogix5000Content>

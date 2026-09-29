@@ -1,0 +1,19 @@
+[package]
+name = "plcc-l5x"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+miette = "7.6.0"
+plcc-st = { version = "0.1.0", path = "../plcc-st" }
+roxmltree = "0.21.1"
+serde = "1.0.229"
+serde_json = "1.0.151"
+thiserror = "2.0.21"
+
+[dev-dependencies]
+inkwell = { version = "0.8.0", features = ["llvm21-1", "llvm21-1-force-static"] }
+plcc-codegen = { path = "../plcc-codegen" }
+plcc-hir = { path = "../plcc-hir" }
+plcc-stdlib = { path = "../plcc-stdlib" }

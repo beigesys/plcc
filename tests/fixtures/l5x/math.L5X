@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- Written for plcc: Logix math, conversions and status flags
+     (1756-RM003 "Data conversions", "Math status flags", DIV, MOD, CPT). -->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="33.01" TargetName="Math" TargetType="Controller" ContainsContext="false">
+<Controller Use="Target" Name="Math" ProcessorType="1756-L83E" MajorRev="33">
+<Tags>
+<Tag Name="SA" TagType="Base" DataType="SINT"><Data Format="L5K"><![CDATA[100]]></Data></Tag>
+<Tag Name="SDst" TagType="Base" DataType="SINT"/>
+<Tag Name="Ovf1" TagType="Base" DataType="BOOL"/>
+<Tag Name="DivI" TagType="Base" DataType="DINT"/>
+<Tag Name="DivN" TagType="Base" DataType="DINT"/>
+<Tag Name="DivR" TagType="Base" DataType="REAL"/>
+<Tag Name="Num" TagType="Base" DataType="DINT"><Data Format="L5K"><![CDATA[42]]></Data></Tag>
+<Tag Name="Zero" TagType="Base" DataType="DINT"/>
+<Tag Name="DivZ" TagType="Base" DataType="DINT"/>
+<Tag Name="DivZV" TagType="Base" DataType="BOOL"/>
+<Tag Name="ModN" TagType="Base" DataType="DINT"/>
+<Tag Name="ModZ" TagType="Base" DataType="DINT"><Data Format="L5K"><![CDATA[9]]></Data></Tag>
+<Tag Name="Rnd1" TagType="Base" DataType="DINT"/>
+<Tag Name="Rnd2" TagType="Base" DataType="DINT"/>
+<Tag Name="Rnd3" TagType="Base" DataType="DINT"/>
+<Tag Name="Rnd4" TagType="Base" DataType="DINT"/>
+<Tag Name="A" TagType="Base" DataType="DINT"><Data Format="L5K"><![CDATA[5]]></Data></Tag>
+<Tag Name="B" TagType="Base" DataType="DINT"><Data Format="L5K"><![CDATA[6]]></Data></Tag>
+<Tag Name="CptOut" TagType="Base" DataType="DINT"/>
+<Tag Name="Big" TagType="Base" DataType="DINT"><Data Format="L5K"><![CDATA[100000]]></Data></Tag>
+<Tag Name="MulOvf" TagType="Base" DataType="DINT"/>
+<Tag Name="MulV" TagType="Base" DataType="BOOL"/>
+<Tag Name="NegOut" TagType="Base" DataType="DINT"/>
+<Tag Name="AbsOut" TagType="Base" DataType="INT"/>
+<Tag Name="SqrOut" TagType="Base" DataType="REAL"/>
+<Tag Name="DintVal" TagType="Base" DataType="DINT"><Data Format="L5K"><![CDATA[70000]]></Data></Tag>
+<Tag Name="IntDst" TagType="Base" DataType="INT"/>
+<Tag Name="IntV" TagType="Base" DataType="BOOL"/>
+<Tag Name="AndOut" TagType="Base" DataType="DINT"/>
+<Tag Name="OrOut" TagType="Base" DataType="DINT"/>
+<Tag Name="XorOut" TagType="Base" DataType="DINT"/>
+<Tag Name="NotOut" TagType="Base" DataType="DINT"/>
+<Tag Name="ClrMe" TagType="Base" DataType="DINT"><Data Format="L5K"><![CDATA[123]]></Data></Tag>
+<Tag Name="ClrZ" TagType="Base" DataType="BOOL"/>
+<Tag Name="BtdOut" TagType="Base" DataType="DINT"/>
+<Tag Name="MvmOut" TagType="Base" DataType="DINT"><Data Format="L5K"><![CDATA[3855]]></Data></Tag>
+<Tag Name="Int1" TagType="Base" DataType="INT"><Data Format="L5K"><![CDATA[-1]]></Data></Tag>
+<Tag Name="SignExt" TagType="Base" DataType="DINT"/>
+<Tag Name="ZeroFill" TagType="Base" DataType="DINT"/>
+<Tag Name="HugeReal" TagType="Base" DataType="REAL"><Data Format="L5K"><![CDATA[3.00000000e+010]]></Data></Tag>
+<Tag Name="Wrapped" TagType="Base" DataType="DINT"/>
+<Tag Name="WrapV" TagType="Base" DataType="BOOL"/>
+<Tag Name="TrnOut" TagType="Base" DataType="REAL"/>
+<Tag Name="TodOut" TagType="Base" DataType="DINT"/>
+<Tag Name="FrdOut" TagType="Base" DataType="DINT"/>
+<Tag Name="RealOut" TagType="Base" DataType="REAL"/>
+<Tag Name="PowOut" TagType="Base" DataType="DINT"/>
+<Tag Name="NegFlag" TagType="Base" DataType="BOOL"/>
+<Tag Name="Counter" TagType="Base" DataType="DINT"/>
+</Tags>
+<Programs>
+<Program Name="MainProgram" MainRoutineName="MainRoutine">
+<Routines>
+<Routine Name="MainRoutine" Type="RLL">
+<RLLContent>
+<Rung Number="0" Type="N"><Text><![CDATA[ADD(SA,SA,SDst)XIC(S:V)OTE(Ovf1);]]></Text></Rung>
+<Rung Number="1" Type="N"><Text><![CDATA[DIV(7,2,DivI)DIV(-7,2,DivN)DIV(7,2,DivR);]]></Text></Rung>
+<Rung Number="2" Type="N"><Text><![CDATA[DIV(Num,Zero,DivZ)XIC(S:V)OTE(DivZV);]]></Text></Rung>
+<Rung Number="3" Type="N"><Text><![CDATA[MOD(-7,3,ModN)MOD(Num,Zero,ModZ);]]></Text></Rung>
+<Rung Number="4" Type="N"><Text><![CDATA[MOV(2.5,Rnd1)MOV(3.5,Rnd2)MOV(-2.5,Rnd3)MOV(1.6,Rnd4);]]></Text></Rung>
+<Rung Number="5" Type="N"><Text><![CDATA[CPT(CptOut,(A + B) * 2 / 3);]]></Text></Rung>
+<Rung Number="6" Type="N"><Text><![CDATA[MUL(Big,Big,MulOvf)XIC(S:V)OTE(MulV);]]></Text></Rung>
+<Rung Number="7" Type="N"><Text><![CDATA[NEG(A,NegOut)XIC(S:N)OTE(NegFlag);]]></Text></Rung>
+<Rung Number="8" Type="N"><Text><![CDATA[ABS(-300,AbsOut)SQR(16.0,SqrOut);]]></Text></Rung>
+<Rung Number="9" Type="N"><Text><![CDATA[MOV(DintVal,IntDst)XIC(S:V)OTE(IntV);]]></Text></Rung>
+<Rung Number="10" Type="N"><Text><![CDATA[AND(16#FF00,16#0FF0,AndOut)OR(16#FF00,16#0FF0,OrOut)XOR(16#FF00,16#0FF0,XorOut)NOT(0,NotOut);]]></Text></Rung>
+<Rung Number="11" Type="N"><Text><![CDATA[CLR(ClrMe)XIC(S:Z)OTE(ClrZ);]]></Text></Rung>
+<Rung Number="12" Type="N"><Text><![CDATA[BTD(16#F,0,BtdOut,4,4)MVM(16#FFFF,16#00F0,MvmOut);]]></Text></Rung>
+<Rung Number="13" Type="N"><Text><![CDATA[ADD(Int1,0,SignExt)AND(Int1,16#7FFFFFFF,ZeroFill);]]></Text></Rung>
+<Rung Number="14" Type="N"><Text><![CDATA[MOV(HugeReal,Wrapped)XIC(S:V)OTE(WrapV);]]></Text></Rung>
+<Rung Number="15" Type="N"><Text><![CDATA[TRN(-3.7,TrnOut)TOD(1234,TodOut)FRD(16#1234,FrdOut);]]></Text></Rung>
+<Rung Number="16" Type="N"><Text><![CDATA[CPT(RealOut,1.5 * 4 - 0.5)XPY(2,10,PowOut);]]></Text></Rung>
+<Rung Number="17" Type="N"><Text><![CDATA[XIO(Ovf1)ADD(Counter,1,Counter);]]></Text></Rung>
+</RLLContent>
+</Routine>
+</Routines>
+</Program>
+</Programs>
+<Tasks>
+<Task Name="MainTask" Type="CONTINUOUS" Priority="10">
+<ScheduledPrograms><ScheduledProgram Name="MainProgram"/></ScheduledPrograms>
+</Task>
+</Tasks>
+</Controller>
+</RSLogix5000Content>

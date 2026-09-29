@@ -15,3 +15,4 @@ plcc-runtime = { version = "0.1.0", path = "../plcc-runtime" }
 plcc-stdlib = { version = "0.1.0", path = "../plcc-stdlib" }
 plcc-plcopen = { version = "0.1.0", path = "../plcc-plcopen" }
 plcc-twincat = { version = "0.1.0", path = "../plcc-twincat" }
+plcc-l5x = { version = "0.1.0", path = "../plcc-l5x" }

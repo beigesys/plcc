@@ -1,0 +1,236 @@
+// SPDX-License-Identifier: MPL-2.0
+
+//! Rockwell Logix 5000 (Studio 5000 / RSLogix 5000) `.L5X` front end.
+//!
+//! Reads a Logix project export and lowers it into the same [`plcc_st`] AST the
+//! Structured Text parser produces, so type checking, codegen, the process image,
+//! tasks and every runtime work unchanged. Logix semantics — rung-condition
+//! flow, false-rung and prescan behaviour, TIMER/COUNTER instructions, integer
+//! overflow and REAL rounding — are reproduced by the lowering and by a bundled
+//! ST prelude ([`prelude`]) that must be compiled alongside. `docs/l5x.md` lists
+//! every decision with its source in the Rockwell manuals.
+//!
+//! Lowering produces ST text with a span map; after parsing, every span of the
+//! AST points back into the `.L5X` file, so diagnostics from any later stage
+//! land on the rung, operand or tag they are about.
+
+mod data;
+mod emit;
+mod error;
+mod iomap;
+mod lower;
+mod model;
+mod names;
+mod operand;
+mod rll;
+mod rung;
+mod scope;
+mod stsem;
+mod stx;
+mod types;
+mod xml;
+
+pub use error::L5xError;
+pub use iomap::IoMap;
+use plcc_st::{CompilationUnit, Span};
+
+/// Options for [`parse_with`].
+#[derive(Default, Clone, Debug)]
+pub struct Options {
+    /// Bindings of Logix tags (module tags, aliases, base tags) to process-image
+    /// addresses (`--io-map`).
+    pub io_map: IoMap,
+}
+
+/// Name under which the prelude is reported in diagnostics.
+pub const PRELUDE_NAME: &str = "logix.st";
+
+const PRELUDE_ST: &str = include_str!("../st/logix.st");
+
+/// The Logix instruction prelude: predefined structures (TIMER, COUNTER,
+/// CONTROL, STRING, ...), controller status flags and the instruction helpers
+/// the lowering calls. Compile it with every L5X input.
+pub fn prelude() -> String {
+    let mut s = String::from(PRELUDE_ST);
+    s.push_str(
+        "\n(* ---- Stores (1756-RM003 \"Data conversions\", \"Math status flags\") ----\n   \
+         lx__put_<T>_i / _r store an integer / floating result into a <T>:\n   \
+         integers keep their low bits (\"truncates the upper portion\"), REAL\n   \
+         rounds half to even, and S:V (with a minor fault), S:Z, S:N follow the\n   \
+         stored value. *)\n",
+    );
+    let ints = [
+        "SINT", "INT", "DINT", "LINT", "USINT", "UINT", "UDINT", "ULINT",
+    ];
+    for t in ints {
+        let signed = !t.starts_with('U');
+        let check = if t == "LINT" || t == "ULINT" {
+            "FALSE".to_string()
+        } else {
+            format!("{t}_TO_LINT(r) <> v")
+        };
+        let conv = if t == "LINT" {
+            "v".to_string()
+        } else {
+            format!("LINT_TO_{t}(v)")
+        };
+        let neg = if signed { "r < 0" } else { "FALSE" };
+        s.push_str(&format!(
+            "FUNCTION lx__put_{t}_i : {t}\nVAR_INPUT v : LINT; END_VAR\nVAR r : {t}; END_VAR\n    \
+             r := {conv};\n    IF {check} THEN lx__overflow(); END_IF;\n    \
+             lx__S_Z := r = 0;\n    lx__S_N := {neg};\n    lx__put_{t}_i := r;\nEND_FUNCTION\n\n\
+             FUNCTION lx__put_{t}_r : {t}\nVAR_INPUT v : LREAL; END_VAR\nVAR r : {t}; END_VAR\n    \
+             r := lx__put_{t}_i(lx__r2l(lx__round(v)));\n    \
+             lx__put_{t}_r := r;\nEND_FUNCTION\n\n"
+        ));
+    }
+    s.push_str(
+        "FUNCTION lx__put_REAL_r : REAL\nVAR_INPUT v : LREAL; END_VAR\nVAR r : REAL; END_VAR\n    \
+         r := LREAL_TO_REAL(v);\n    IF v > 3.4028234663852886E38 OR v < -3.4028234663852886E38 THEN lx__overflow(); END_IF;\n    \
+         lx__S_Z := r = 0.0;\n    lx__S_N := r < 0.0;\n    \
+         lx__put_REAL_r := r;\nEND_FUNCTION\n\n\
+         FUNCTION lx__put_REAL_i : REAL\nVAR_INPUT v : LINT; END_VAR\n    \
+         lx__put_REAL_i := lx__put_REAL_r(LINT_TO_LREAL(v));\nEND_FUNCTION\n\n\
+         FUNCTION lx__put_LREAL_r : LREAL\nVAR_INPUT v : LREAL; END_VAR\n    \
+         lx__S_Z := v = 0.0;\n    lx__S_N := v < 0.0;\n    lx__put_LREAL_r := v;\nEND_FUNCTION\n\n\
+         FUNCTION lx__put_LREAL_i : LREAL\nVAR_INPUT v : LINT; END_VAR\n    \
+         lx__put_LREAL_i := lx__put_LREAL_r(LINT_TO_LREAL(v));\nEND_FUNCTION\n\n\
+         (* BTD (1756-RM003 \"Bit Field Distribute\"): Length bits of s from bit sb\n   \
+         into d from bit db. *)\n\
+         FUNCTION lx__btd : LINT\nVAR_INPUT s : LINT; sb : LINT; d : LINT; db : LINT; n : LINT; END_VAR\n\
+         VAR i : LINT; r : LINT; m : LINT; END_VAR\n    r := d;\n    FOR i := 0 TO n - 1 DO\n        \
+         IF db + i >= 0 AND db + i <= 63 AND sb + i >= 0 AND sb + i <= 63 THEN\n            \
+         m := lx__shl(1, db + i);\n            \
+         IF lx__getbit(s, sb + i) THEN r := r OR m; ELSE r := r AND NOT m; END_IF;\n        \
+         END_IF;\n    END_FOR;\n    lx__btd := r;\nEND_FUNCTION\n",
+    );
+    s
+}
+
+/// Whether `source` looks like an L5X export (root element
+/// `<RSLogix5000Content>`).
+pub fn is_l5x(source: &str) -> bool {
+    let mut s = source.trim_start_matches('\u{feff}').trim_start();
+    loop {
+        if let Some(rest) = s.strip_prefix("<?") {
+            match rest.find("?>") {
+                Some(p) => s = rest[p + 2..].trim_start(),
+                None => return false,
+            }
+        } else if let Some(rest) = s.strip_prefix("<!--") {
+            match rest.find("-->") {
+                Some(p) => s = rest[p + 3..].trim_start(),
+                None => return false,
+            }
+        } else {
+            return s.starts_with("<RSLogix5000Content");
+        }
+    }
+}
+
+/// Lower an L5X file to Structured Text: the generated text, its span map, and
+/// the diagnostics found on the way.
+type Lowered = (emit::Out, Vec<L5xError>, types::TypeEnv);
+
+fn lower(source: &str, opts: &Options) -> Result<Lowered, Vec<L5xError>> {
+    let opt = roxmltree::ParsingOptions {
+        allow_dtd: false,
+        ..Default::default()
+    };
+    let doc = match roxmltree::Document::parse_with_options(source, opt) {
+        Ok(d) => d,
+        Err(e) => {
+            let at = byte_offset(source, e.pos());
+            return Err(vec![L5xError::new(
+                format!("malformed XML: {e}"),
+                Span::new(at, at),
+            )]);
+        }
+    };
+    let root = doc.root_element();
+    if xml::name(root) != "RSLogix5000Content" {
+        return Err(vec![L5xError::new(
+            format!(
+                "not an L5X export: the root element is <{}>, expected <RSLogix5000Content>",
+                xml::name(root)
+            ),
+            xml::tag_span(source, root),
+        )]);
+    }
+    let mut reader = model::Reader {
+        src: source,
+        errors: Vec::new(),
+    };
+    let project = reader.project(root);
+    let mut lw = lower::Lower::new(source, opts.io_map.clone());
+    lw.errors = reader.errors;
+    let out = lw.project(&project);
+    Ok((out, lw.errors, lw.env))
+}
+
+/// The Structured Text an L5X file lowers to (for inspection:
+/// `plcc parse --dump-st`), with the diagnostics of the lowering.
+pub fn to_st(source: &str, opts: &Options) -> (String, Vec<L5xError>) {
+    match lower(source, opts) {
+        Ok((out, errs, _)) => (out.text, errs),
+        Err(errs) => (String::new(), errs),
+    }
+}
+
+/// Parse an L5X project into a compilation unit (without the prelude).
+pub fn parse(source: &str) -> (CompilationUnit, Vec<L5xError>) {
+    parse_with(source, &Options::default())
+}
+
+/// [`parse`] with options (I/O map).
+pub fn parse_with(source: &str, opts: &Options) -> (CompilationUnit, Vec<L5xError>) {
+    let empty = CompilationUnit {
+        declarations: Vec::new(),
+        span: Span::new(0, source.len()),
+    };
+    let (out, mut errors, env) = match lower(source, opts) {
+        Ok(x) => x,
+        Err(errs) => return (empty, errs),
+    };
+    let text = out.text.clone();
+    let map = out.map();
+    let (unit, parse_errors) = plcc_st::parse(&text);
+    for e in &parse_errors {
+        use plcc_st::ParseError as P;
+        let (message, span) = match e {
+            P::UnexpectedToken { span, .. } | P::UnexpectedEof { span, .. } => {
+                (e.to_string(), *span)
+            }
+            P::General { message, span } => (message.clone(), *span),
+        };
+        let sp = map.span(Span::new(span.offset(), span.offset() + span.len()));
+        let line = text[..span.offset().min(text.len())].lines().count();
+        errors.push(L5xError::new(message, sp).with_help(format!(
+            "in the Structured Text plcc generated for this element (line {line}; `plcc parse --dump-st` shows it)"
+        )));
+    }
+    let mut declarations = unit.declarations;
+    stsem::apply(&mut declarations, &env);
+    let declarations = map.remap(declarations);
+    (
+        CompilationUnit {
+            declarations,
+            span: Span::new(0, source.len()),
+        },
+        errors,
+    )
+}
+
+fn byte_offset(src: &str, pos: roxmltree::TextPos) -> usize {
+    let mut line = 1;
+    let mut offset = 0;
+    for l in src.split_inclusive('\n') {
+        if line == pos.row {
+            let col = (pos.col as usize).saturating_sub(1);
+            return offset + l.char_indices().nth(col).map_or(l.len(), |(i, _)| i);
+        }
+        offset += l.len();
+        line += 1;
+    }
+    src.len()
+}
