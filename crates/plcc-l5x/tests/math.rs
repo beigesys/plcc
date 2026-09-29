@@ -60,5 +60,9 @@ fn logix_math_semantics() {
         assert_eq!(plc.get_real("RealOut"), 5.5);
         assert_eq!(plc.get("PowOut"), 1024);
         assert_eq!(plc.get("Counter"), 0);
+        // COP between integer types copies bytes, little-endian.
+        let bytes: Vec<i64> = (0..6).map(|i| plc.get(&format!("Bytes[{i}]"))).collect();
+        assert_eq!(bytes, vec![0, 1, 2, 3, 4, 0]);
+        assert_eq!(plc.get("Packed"), 0x04030201);
     });
 }

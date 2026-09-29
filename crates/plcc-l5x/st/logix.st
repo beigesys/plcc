@@ -109,6 +109,33 @@ STRUCT
 END_STRUCT;
 END_TYPE
 
+(* Byte k (0 = least significant) of an integer, and the integer with byte k
+   replaced: COP between integer types copies bytes, little-endian. *)
+FUNCTION lx__getbyte : LINT
+VAR_INPUT v : LINT; k : LINT; END_VAR
+    lx__getbyte := LWORD_TO_LINT(SHR(LINT_TO_LWORD(v), LINT_TO_INT(k * 8)) AND LWORD#16#FF);
+END_FUNCTION
+
+FUNCTION lx__setbyte : LINT
+VAR_INPUT v : LINT; k : LINT; b : LINT; END_VAR
+VAR m : LWORD; END_VAR
+    m := SHL(LWORD#16#FF, LINT_TO_INT(k * 8));
+    lx__setbyte := LWORD_TO_LINT((LINT_TO_LWORD(v) AND NOT m)
+        OR SHL(LINT_TO_LWORD(b) AND LWORD#16#FF, LINT_TO_INT(k * 8)));
+END_FUNCTION
+
+(* One bit of a DINT set or cleared (bit-array instructions BSL/BSR). *)
+FUNCTION lx__setbit_dint : DINT
+VAR_INPUT v : DINT; n : LINT; b : BOOL; END_VAR
+VAR m : DWORD; END_VAR
+    m := SHL(DWORD#1, LINT_TO_INT(n));
+    IF b THEN
+        lx__setbit_dint := DWORD_TO_DINT(DINT_TO_DWORD(v) OR m);
+    ELSE
+        lx__setbit_dint := DWORD_TO_DINT(DINT_TO_DWORD(v) AND NOT m);
+    END_IF;
+END_FUNCTION
+
 TYPE FBD_ONESHOT :
 STRUCT
     EnableIn : BOOL := TRUE;
@@ -135,6 +162,14 @@ VAR_GLOBAL
     (* Count of minor faults: arithmetic overflow (4/4) and divide by zero. *)
     lx__minor_faults : UDINT;
 END_VAR
+
+(* A minor fault that is not an arithmetic overflow (string instructions:
+   type 4, codes 51/52/56). *)
+FUNCTION lx__minor : BOOL
+    lx__S_MINOR := TRUE;
+    lx__minor_faults := lx__minor_faults + 1;
+    lx__minor := TRUE;
+END_FUNCTION
 
 FUNCTION lx__overflow : BOOL
     lx__S_V := TRUE;

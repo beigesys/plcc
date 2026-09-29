@@ -141,7 +141,16 @@ pub(crate) fn is_keyword(name: &str) -> bool {
 
 /// The ST identifier for a Logix name.
 pub(crate) fn ident(name: &str) -> String {
-    let mut s = name.replace(':', "__");
+    // `:` (module tags) and anything else ST cannot spell (tool-made exports
+    // contain names like `New Program`) become `__`.
+    let mut s = String::with_capacity(name.len());
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() || c == '_' {
+            s.push(c);
+        } else {
+            s.push_str("__");
+        }
+    }
     if s.starts_with(|c: char| c.is_ascii_digit()) {
         s.insert_str(0, "lx__");
     }

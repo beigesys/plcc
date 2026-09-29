@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- Written for plcc: STRING and a 10-character string type, the ASCII
+     string instructions in ladder and ST, string compares, and string
+     literals in ST. -->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="33.01" TargetName="Strings" TargetType="Controller">
+<Controller Use="Target" Name="Strings" ProcessorType="1756-L83E" MajorRev="33">
+<DataTypes>
+<DataType Name="Str10" Family="StringFamily" Class="User">
+<Members>
+<Member Name="LEN" DataType="DINT" Dimension="0" Radix="Decimal" Hidden="false"/>
+<Member Name="DATA" DataType="SINT" Dimension="10" Radix="ASCII" Hidden="false"/>
+</Members>
+</DataType>
+</DataTypes>
+<Tags>
+<Tag Name="Hello" TagType="Base" DataType="STRING">
+<Data Format="L5K"><![CDATA[[5,'Hello$00$00']]]></Data>
+</Tag>
+<Tag Name="World" TagType="Base" DataType="STRING">
+<Data Format="Decorated">
+<Structure DataType="STRING">
+<DataValueMember Name="LEN" DataType="DINT" Radix="Decimal" Value="6"/>
+<DataValueMember Name="DATA" DataType="STRING" Radix="ASCII"><![CDATA[' world']]></DataValueMember>
+</Structure>
+</Data>
+</Tag>
+<Tag Name="Joined" TagType="Base" DataType="STRING"/>
+<Tag Name="Short" TagType="Base" DataType="Str10"/>
+<Tag Name="Piece" TagType="Base" DataType="STRING"/>
+<Tag Name="Cut" TagType="Base" DataType="STRING"/>
+<Tag Name="Ins" TagType="Base" DataType="STRING"/>
+<Tag Name="Pos" TagType="Base" DataType="DINT"/>
+<Tag Name="Up" TagType="Base" DataType="STRING"/>
+<Tag Name="Num" TagType="Base" DataType="STRING"/>
+<Tag Name="Back" TagType="Base" DataType="DINT"/>
+<Tag Name="Same" TagType="Base" DataType="BOOL"/>
+<Tag Name="Before" TagType="Base" DataType="BOOL"/>
+<Tag Name="StLit" TagType="Base" DataType="Str10"/>
+<Tag Name="StEq" TagType="Base" DataType="BOOL"/>
+<Tag Name="StCopy" TagType="Base" DataType="STRING"/>
+<Tag Name="StJoin" TagType="Base" DataType="STRING"/>
+</Tags>
+<Programs>
+<Program Name="MainProgram" MainRoutineName="Ladder">
+<Routines>
+<Routine Name="Ladder" Type="RLL">
+<RLLContent>
+<Rung Number="0" Type="N"><Text><![CDATA[CONCAT(Hello,World,Joined)MOV(Joined,Short);]]></Text></Rung>
+<Rung Number="1" Type="N"><Text><![CDATA[MID(Joined,5,7,Piece)DELETE(Joined,6,1,Cut)INSERT(Hello,World,3,Ins);]]></Text></Rung>
+<Rung Number="2" Type="N"><Text><![CDATA[FIND(Joined,Piece,1,Pos)UPPER(Joined,Up);]]></Text></Rung>
+<Rung Number="3" Type="N"><Text><![CDATA[DTOS(-1234,Num)STOD(Num,Back);]]></Text></Rung>
+<Rung Number="4" Type="N"><Text><![CDATA[EQU(Piece,World)OTE(Same);]]></Text></Rung>
+<Rung Number="5" Type="N"><Text><![CDATA[LES(World,Hello)OTE(Before);]]></Text></Rung>
+<Rung Number="6" Type="N"><Text><![CDATA[JSR(StPart,0);]]></Text></Rung>
+</RLLContent>
+</Routine>
+<Routine Name="StPart" Type="ST">
+<STContent>
+<Line Number="0"><![CDATA[StLit := 'abc';]]></Line>
+<Line Number="1"><![CDATA[StEq := StLit = 'abc' AND StLit <> 'abd';]]></Line>
+<Line Number="2"><![CDATA[StCopy := StLit;]]></Line>
+<Line Number="3"><![CDATA[CONCAT(StCopy, StLit, StJoin);]]></Line>
+<Line Number="4"><![CDATA[IF StJoin > StCopy THEN StJoin.LEN := StJoin.LEN; END_IF;]]></Line>
+</STContent>
+</Routine>
+</Routines>
+</Program>
+</Programs>
+</Controller>
+</RSLogix5000Content>

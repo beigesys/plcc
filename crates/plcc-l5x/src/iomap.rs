@@ -91,7 +91,12 @@ impl IoMap {
                         });
                     }
                     toml::Value::Table(_) => {}
-                    other => return Err(format!("`{k}`: expected an address string, found a {}", other.type_str())),
+                    other => {
+                        return Err(format!(
+                            "`{k}`: expected an address string, found a {}",
+                            other.type_str()
+                        ));
+                    }
                 }
             }
             Ok(())
@@ -100,7 +105,9 @@ impl IoMap {
         for (k, v) in &table {
             if let toml::Value::Table(t) = v {
                 if k != "io" {
-                    return Err(format!("unknown section [{k}] (entries go at the top level or under [io])"));
+                    return Err(format!(
+                        "unknown section [{k}] (entries go at the top level or under [io])"
+                    ));
                 }
                 add(t, &mut entries)?;
             }
@@ -124,7 +131,9 @@ impl IoMap {
         self.at = at.start..at.end;
         for (n, e) in self.entries.iter().enumerate() {
             let fail = |m: String| L5xError::new(format!("--io-map `{}`: {m}", e.tag), at);
-            let Some((area, size)) = addr_ok(&e.addr) else { continue };
+            let Some((area, size)) = addr_ok(&e.addr) else {
+                continue;
+            };
             let parsed = match operand::parse_expr(&e.tag, 0..e.tag.len()) {
                 Ok(p) => p,
                 Err(err) => {
@@ -144,7 +153,10 @@ impl IoMap {
                 }
             };
             let Some(el) = ty.elem() else {
-                errors.push(fail(format!("a {} cannot be mapped to one address", ctx.env.logix(&ty))));
+                errors.push(fail(format!(
+                    "a {} cannot be mapped to one address",
+                    ctx.env.logix(&ty)
+                )));
                 continue;
             };
             if !size_fits(size, el) {
@@ -152,7 +164,8 @@ impl IoMap {
                 continue;
             }
             let hidden = format!("lx__io{n}");
-            self.hidden.push((hidden.clone(), e.addr.clone(), el.st().to_string()));
+            self.hidden
+                .push((hidden.clone(), e.addr.clone(), el.st().to_string()));
             self.copies.push((st, hidden, area));
         }
         errors
@@ -206,7 +219,8 @@ mod tests {
 
     #[test]
     fn parses_flat_and_sectioned_maps() {
-        let m = IoMap::parse("\"Local:1:I.Data.0\" = \"%IX0.0\"\n[io]\nMotor = \"%QX0.1\"\n").unwrap();
+        let m =
+            IoMap::parse("\"Local:1:I.Data.0\" = \"%IX0.0\"\n[io]\nMotor = \"%QX0.1\"\n").unwrap();
         assert_eq!(m.entries.len(), 2);
         assert!(IoMap::parse("x = \"Q0.1\"").is_err());
         assert!(IoMap::parse("[inputs]\nx = \"%IX0.0\"").is_err());

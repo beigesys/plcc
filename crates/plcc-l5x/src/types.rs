@@ -182,8 +182,8 @@ pub(crate) struct StructDef {
     pub st: String,
     pub kind: StructKind,
     pub fields: Vec<Field>,
-    /// Declared (e.g. a UDT member refers to a type that failed): the ST
-    /// declaration is not emitted.
+    /// Declared elsewhere (the predefined structures live in the prelude):
+    /// no TYPE declaration is emitted for it.
     pub opaque: bool,
 }
 
@@ -194,9 +194,6 @@ impl StructDef {
             .find(|f| f.logix.eq_ignore_ascii_case(name))
     }
 }
-
-/// Structures declared by the prelude (TIMER ... STRING): not emitted.
-pub(crate) const BUILTIN_COUNT: usize = 7;
 
 #[derive(Default)]
 pub(crate) struct TypeEnv {
@@ -212,7 +209,7 @@ impl TypeEnv {
             list.iter()
                 .map(|(n, t)| Field {
                     logix: n.to_string(),
-                    st: n.to_string(),
+                    st: crate::names::ident(n),
                     ty: b(t),
                 })
                 .collect()
@@ -323,7 +320,148 @@ impl TypeEnv {
             opaque: false,
         });
         env.add_string("STRING", "LX_STRING", 82);
+        // PID (1756-RM003 "Proportional Integral Derivative (PID)", "PID
+        // structure"): the members, so tags and UDTs holding one compile and
+        // their tuning values can be read and written. The .CTL bits are
+        // separate BOOL members here, not views of .CTL. The PID
+        // instruction itself is not supported yet.
+        let mut pid = fields(&[
+            ("CTL", "DINT"),
+            ("EN", "BOOL"),
+            ("CT", "BOOL"),
+            ("CL", "BOOL"),
+            ("PVT", "BOOL"),
+            ("DOE", "BOOL"),
+            ("SWM", "BOOL"),
+            ("CA", "BOOL"),
+            ("MO", "BOOL"),
+            ("PE", "BOOL"),
+            ("NDF", "BOOL"),
+            ("NOBC", "BOOL"),
+            ("NOZC", "BOOL"),
+            ("INI", "BOOL"),
+            ("SPOR", "BOOL"),
+            ("OLL", "BOOL"),
+            ("OLH", "BOOL"),
+            ("EWD", "BOOL"),
+            ("DVNA", "BOOL"),
+            ("DVPA", "BOOL"),
+            ("PVLA", "BOOL"),
+            ("PVHA", "BOOL"),
+            ("SP", "REAL"),
+            ("KP", "REAL"),
+            ("KI", "REAL"),
+            ("KD", "REAL"),
+            ("BIAS", "REAL"),
+            ("MAXS", "REAL"),
+            ("MINS", "REAL"),
+            ("DB", "REAL"),
+            ("SO", "REAL"),
+            ("MAXO", "REAL"),
+            ("MINO", "REAL"),
+            ("UPD", "REAL"),
+            ("PV", "REAL"),
+            ("ERR", "REAL"),
+            ("OUT", "REAL"),
+            ("PVH", "REAL"),
+            ("PVL", "REAL"),
+            ("DVP", "REAL"),
+            ("DVN", "REAL"),
+            ("PVDB", "REAL"),
+            ("DVDB", "REAL"),
+            ("MAXI", "REAL"),
+            ("MINI", "REAL"),
+            ("TIE", "REAL"),
+            ("MAXCV", "REAL"),
+            ("MINCV", "REAL"),
+            ("MINTIE", "REAL"),
+            ("MAXTIE", "REAL"),
+        ]);
+        pid.push(Field {
+            logix: "DATA".into(),
+            st: "DATA".into(),
+            ty: Ty::Array(Box::new(Ty::Elem(Elem::Real)), vec![17]),
+        });
+        env.add(StructDef {
+            logix: "PID".into(),
+            st: "LX_PID".into(),
+            kind: StructKind::Builtin,
+            fields: pid,
+            opaque: false,
+        });
+        // MESSAGE (1756-RM003 "Message (MSG)"): the status members a program
+        // tests. plcc has no CIP messaging; MSG never completes.
+        env.add(StructDef {
+            logix: "MESSAGE".into(),
+            st: "LX_MESSAGE".into(),
+            kind: StructKind::Builtin,
+            fields: fields(&[
+                ("EN", "BOOL"),
+                ("EW", "BOOL"),
+                ("ST", "BOOL"),
+                ("DN", "BOOL"),
+                ("ER", "BOOL"),
+                ("TO", "BOOL"),
+                ("EN_CC", "BOOL"),
+                ("ERR", "INT"),
+                ("EXERR", "DINT"),
+                ("ERR_SRC", "SINT"),
+                ("DN_LEN", "INT"),
+                ("REQ_LEN", "INT"),
+                ("Class", "INT"),
+                ("Attribute", "INT"),
+                ("Instance", "DINT"),
+                ("UnconnectedTimeout", "DINT"),
+                ("ConnectionRate", "DINT"),
+                ("TimeoutMultiplier", "SINT"),
+                ("RemoteIndex", "DINT"),
+                ("LocalIndex", "DINT"),
+                ("Channel", "SINT"),
+                ("Rack", "SINT"),
+                ("Group", "SINT"),
+                ("Slot", "SINT"),
+                ("Flags", "INT"),
+                ("DestinationLink", "INT"),
+                ("DestinationNode", "INT"),
+                ("SourceLink", "INT"),
+            ]),
+            opaque: false,
+        });
+        // The MESSAGE configuration strings (1756-RM003 "Access the Message
+        // object": Path, RemoteElement).
+        if let (Some(msg), Some(s)) = (env.lookup("MESSAGE"), env.lookup("STRING")) {
+            for n in ["Path", "RemoteElement"] {
+                env.structs[msg].fields.push(Field {
+                    logix: n.into(),
+                    st: n.into(),
+                    ty: Ty::Struct(s),
+                });
+            }
+        }
+        // All of the above are declared by the prelude, not per project.
+        for s in &mut env.structs {
+            s.opaque = true;
+        }
         env
+    }
+
+    /// ST declarations of the predefined structures the prelude file does not
+    /// spell out itself (PID, MESSAGE): generated from this table, so the two
+    /// cannot drift apart.
+    pub fn prelude_types() -> String {
+        let env = TypeEnv::new();
+        let mut s = String::new();
+        for d in &env.structs {
+            if !matches!(d.st.as_str(), "LX_PID" | "LX_MESSAGE") {
+                continue;
+            }
+            s.push_str(&format!("TYPE {} :\nSTRUCT\n", d.st));
+            for f in &d.fields {
+                s.push_str(&format!("    {} : {};\n", f.st, env.st(&f.ty)));
+            }
+            s.push_str("END_STRUCT;\nEND_TYPE\n\n");
+        }
+        s
     }
 
     pub fn add(&mut self, d: StructDef) -> usize {

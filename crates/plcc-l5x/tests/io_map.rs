@@ -24,7 +24,11 @@ fn seal_in_on_process_image() {
         plc.scan();
         assert!(plc.get_bool("Motor"));
         assert_eq!(plc.output_byte(0) & 1, 1, "relay 1 on");
-        assert_eq!(plc.get("Local__1__I.Data") & 1, 1, "module tag follows %IX0.0");
+        assert_eq!(
+            plc.get("Local__1__I.Data") & 1,
+            1,
+            "module tag follows %IX0.0"
+        );
         *plc.input_byte(0) &= !1;
         plc.scan();
         assert_eq!(plc.output_byte(0) & 1, 1, "sealed in");
@@ -48,6 +52,13 @@ fn bad_map_entries_are_reported() {
     let map = plcc_l5x::IoMap::parse("\"Nope\" = \"%IX0.0\"\n\"Level\" = \"%IX0.1\"\n").unwrap();
     let (_, errs) = plcc_l5x::parse_with(&src, &plcc_l5x::Options { io_map: map });
     let msgs: Vec<String> = errs.iter().map(|e| e.to_string()).collect();
-    assert!(msgs.iter().any(|m| m.contains("`Nope`") && m.contains("unknown tag")), "{msgs:?}");
-    assert!(msgs.iter().any(|m| m.contains("INT does not fit %IX0.1")), "{msgs:?}");
+    assert!(
+        msgs.iter()
+            .any(|m| m.contains("`Nope`") && m.contains("unknown tag")),
+        "{msgs:?}"
+    );
+    assert!(
+        msgs.iter().any(|m| m.contains("INT does not fit %IX0.1")),
+        "{msgs:?}"
+    );
 }

@@ -154,6 +154,8 @@ pub(crate) struct ModuleDef<'a, 'i> {
     pub parent_port: Option<u32>,
     /// Address of the upstream port (the slot, in a chassis).
     pub slot: Option<String>,
+    /// `(Id, Type)` of every port.
+    pub ports: Vec<(u32, String)>,
     /// `(suffix, data node)` of `InputTag`/`OutputTag`/`ConfigTag`; suffix is
     /// `I`, `O` or `C`.
     pub io_tags: Vec<(char, Option<XNode<'a, 'i>>, Span)>,
@@ -290,14 +292,29 @@ impl<'s> Reader<'s> {
     }
 
     fn module<'a, 'i>(&mut self, m: XNode<'a, 'i>) -> Option<ModuleDef<'a, 'i>> {
+        // `Use="Reference"` placeholders of component exports carry no name;
+        // neither do some tool-made files. No tags can be derived from one.
+        if xml::attr(m, "Name").is_none() {
+            if xml::attr(m, "Use") != Some("Reference") {
+                self.errors.push(L5xError::warning(
+                    "<Module> without a Name: its I/O tags cannot be named and are left out",
+                    xml::tag_span(self.src, m),
+                ));
+            }
+            return None;
+        }
         let name = self.name_attr(m, "Name")?;
         let parent = xml::attr(m, "ParentModule").unwrap_or("").to_string();
         let parent_port = xml::attr(m, "ParentModPortId").and_then(|v| v.trim().parse().ok());
         let mut slot = None;
+        let mut port_list = Vec::new();
         if let Some(ports) = xml::child(m, "Ports") {
             for port in xml::children(ports, "Port") {
                 if xml::attr_bool(port, "Upstream") {
                     slot = xml::attr(port, "Address").map(str::to_string);
+                }
+                if let Some(id) = xml::attr(port, "Id").and_then(|v| v.trim().parse().ok()) {
+                    port_list.push((id, xml::attr(port, "Type").unwrap_or("").to_string()));
                 }
             }
         }
@@ -322,6 +339,7 @@ impl<'s> Reader<'s> {
             parent,
             parent_port,
             slot,
+            ports: port_list,
             io_tags,
             span: xml::tag_span(self.src, m),
         })

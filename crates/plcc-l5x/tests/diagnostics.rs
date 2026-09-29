@@ -73,6 +73,8 @@ fn every_fixture_lowers_type_checks_and_generates_no_warnings_from_plcc() {
         "structure.L5X",
         "tasks.L5X",
         "st_routine.L5X",
+        "shift_loop.L5X",
+        "strings.L5X",
     ] {
         let errs = check_errors(f);
         assert!(errs.is_empty(), "{f}: {errs:#?}");

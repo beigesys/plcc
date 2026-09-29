@@ -31,10 +31,13 @@ use std::collections::HashMap;
 #[derive(Clone, Debug)]
 pub(crate) struct ParamSig {
     pub logix: String,
+    /// ST member path in the backing tag (`PCmd.0` for an alias parameter).
     pub st: String,
     pub usage: Usage,
     pub required: bool,
     pub ty: Ty,
+    /// An alias parameter: a view of another member, not an FB input.
+    pub alias: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -54,6 +57,7 @@ pub(crate) struct Lower<'s> {
     pub programs: HashMap<String, (String, usize)>,
     pub aois: HashMap<String, AoiSig>,
     pub io: IoMap,
+    pub strings: crate::strings::Helpers,
     /// Names taken in the global namespace (lower-case).
     globals: HashMap<String, Span>,
 }
@@ -78,6 +82,7 @@ impl<'s> Lower<'s> {
             programs: HashMap::new(),
             aois: HashMap::new(),
             io,
+            strings: Default::default(),
             globals: HashMap::new(),
         }
     }
@@ -145,9 +150,10 @@ impl<'s> Lower<'s> {
                     continue;
                 }
                 let Some(base) = self.env.resolve(&m.data_type.text) else {
-                    self.err(
+                    // Left out: using the member is an error at the use.
+                    self.warn(
                         format!(
-                            "member `{}` has unknown data type `{}`",
+                            "member `{}` has data type `{}`, which plcc cannot model; it was left out",
                             m.name.text, m.data_type.text
                         ),
                         m.data_type.span,
@@ -231,14 +237,22 @@ impl<'s> Lower<'s> {
                     Some(ty) => ty,
                     None if t.kind == TagKind::Alias => continue,
                     None => {
-                        self.err(
-                            format!(
-                                "`{}` has unknown data type `{}`",
-                                t.name.text,
-                                t.data_type.as_ref().map_or("?", |d| d.text.as_str())
-                            ),
-                            t.data_type.as_ref().map_or(t.span, |d| d.span),
+                        // A required parameter is part of every call; a local
+                        // tag or optional parameter can be left out (using it
+                        // is an error at the use).
+                        let required = t.required || t.usage == Usage::InOut;
+                        let msg = format!(
+                            "`{}` has data type `{}`, which plcc cannot model{}",
+                            t.name.text,
+                            t.data_type.as_ref().map_or("?", |d| d.text.as_str()),
+                            if required { "" } else { "; it was left out" }
                         );
+                        let at = t.data_type.as_ref().map_or(t.span, |d| d.span);
+                        if required {
+                            self.err(msg, at);
+                        } else {
+                            self.warn(msg, at);
+                        }
                         continue;
                     }
                 };
@@ -256,9 +270,76 @@ impl<'s> Lower<'s> {
                             || t.usage == Usage::InOut
                                 && !t.name.text.eq_ignore_ascii_case("EnableIn"),
                         ty,
+                        alias: false,
                     });
                 }
             }
+            // Alias parameters and local tags (`PCmd_Red` AliasFor
+            // `PCmd.0`): views of other members of the backing tag.
+            let mut scope = Scope::default();
+            for f in &fields {
+                scope.insert(
+                    &f.logix,
+                    Sym {
+                        st: f.st.clone(),
+                        ty: Some(f.ty.clone()),
+                        unknown_type: None,
+                        decl: a.span,
+                    },
+                );
+            }
+            for t in a.params.iter().chain(&a.locals) {
+                if t.kind != TagKind::Alias {
+                    continue;
+                }
+                let Some(target) = &t.alias_for else { continue };
+                let resolved = crate::operand::parse_expr(&target.text, 0..target.text.len())
+                    .ok()
+                    .and_then(|e| match e.kind {
+                        crate::operand::LKind::Path(tp) => {
+                            let ctx = Ctx {
+                                env: &self.env,
+                                layers: vec![&scope],
+                                programs: &self.programs,
+                                program_scopes: &self.prog_scopes,
+                            };
+                            ctx.path(&tp, target).ok()
+                        }
+                        _ => None,
+                    });
+                let Some((st, ty)) = resolved else {
+                    self.warn(
+                        format!(
+                            "alias `{}` of `{}` could not be resolved and was left out",
+                            t.name.text, a.name.text
+                        ),
+                        t.span,
+                    );
+                    continue;
+                };
+                fields.push(Field {
+                    logix: t.name.text.clone(),
+                    st: st.clone(),
+                    ty: ty.clone(),
+                });
+                if !matches!(t.usage, Usage::Local) {
+                    params.push(ParamSig {
+                        logix: t.name.text.clone(),
+                        st,
+                        usage: t.usage,
+                        required: t.required,
+                        ty,
+                        alias: true,
+                    });
+                }
+            }
+            // Required parameters are operands in definition order.
+            params.sort_by_key(|p| {
+                a.params
+                    .iter()
+                    .position(|t| t.name.text.eq_ignore_ascii_case(&p.logix))
+                    .unwrap_or(usize::MAX)
+            });
             self.env.structs[id].fields = fields;
             self.aois.insert(
                 a.name.text.to_ascii_lowercase(),
@@ -337,18 +418,39 @@ impl<'s> Lower<'s> {
     }
 
     fn register_modules(&mut self, p: &Project, globals: &mut Out) {
-        let controller = p
-            .modules
+        // Module tag names (Logix Designer's convention): a module in a
+        // chassis — on a backplane port of its parent (the controller's own
+        // chassis `Local`, or a remote chassis behind a communication
+        // adapter) — is `<parent>:<slot>:I`; a module on a network port is
+        // `<module>:I`.
+        let network = |ty: &str| {
+            let t = ty.to_ascii_lowercase();
+            [
+                "ethernet",
+                "controlnet",
+                "devicenet",
+                "dhplus",
+                "rio",
+                "serial",
+                "usb",
+                "sercos",
+            ]
             .iter()
-            .find(|m| m.parent == m.name.text)
-            .map(|m| m.name.text.clone());
+            .any(|n| t.contains(n))
+        };
         for m in &p.modules {
-            let local = controller.as_deref() == Some(m.parent.as_str()) && m.parent != m.name.text;
+            let parent = p.modules.iter().find(|x| {
+                x.name.text.eq_ignore_ascii_case(&m.parent) && x.name.text != m.name.text
+            });
+            let in_chassis = parent.is_some_and(|par| {
+                par.ports
+                    .iter()
+                    .find(|(id, _)| Some(*id) == m.parent_port)
+                    .is_some_and(|(_, ty)| !network(ty))
+            });
             for (suffix, data, span) in &m.io_tags {
-                let tag = match (&m.slot, local) {
-                    (Some(slot), true) if m.parent_port == Some(1) => {
-                        format!("{}:{slot}:{suffix}", m.parent)
-                    }
+                let tag = match (&m.slot, in_chassis) {
+                    (Some(slot), true) => format!("{}:{slot}:{suffix}", m.parent),
                     _ => format!("{}:{suffix}", m.name.text),
                 };
                 let Some(ty) = data
@@ -653,11 +755,8 @@ impl<'s> Lower<'s> {
         globals.pop_ctx();
 
         // Types (after modules/AOIs registered everything).
-        for (i, def) in self.env.structs.iter().enumerate() {
+        for def in self.env.structs.iter() {
             if matches!(def.kind, StructKind::Builtin | StructKind::Aoi) || def.opaque {
-                continue;
-            }
-            if i < crate::types::BUILTIN_COUNT {
                 continue;
             }
             let span = p
@@ -696,6 +795,11 @@ impl<'s> Lower<'s> {
         all.append(globals);
         all.append(pous);
         all.append(config);
+        if !self.strings.is_empty() {
+            all.push_ctx(p.root_span);
+            all.s("\n").s(&self.strings.source());
+            all.pop_ctx();
+        }
         all
     }
 
@@ -732,6 +836,7 @@ impl<'s> Lower<'s> {
         let mut methods = Out::new();
         let mut prescan = Out::new();
         let mut errors = Vec::new();
+        let mut ret_vars: Vec<String> = Vec::new();
         {
             let ctx = Ctx {
                 env: &self.env,
@@ -743,8 +848,18 @@ impl<'s> Lower<'s> {
                 src: self.src,
                 env: &self.env,
                 aois: &self.aois,
+                strings: &self.strings,
             };
-            let sbr = rll::sbr_params(&ctx, &pr.routines);
+            let sbr = rll::subroutines(&ctx, &pr.routines, &routines);
+            for (method, tys) in &sbr.ret {
+                for (k, t) in tys.iter().enumerate() {
+                    ret_vars.push(format!(
+                        "        {} : {};\n",
+                        rll::Subs::ret_var(method, k),
+                        self.env.st(t)
+                    ));
+                }
+            }
             for r in &pr.routines {
                 let name = &routines[&r.name.text.to_ascii_lowercase()];
                 let lowered = if r.encoded {
@@ -763,6 +878,26 @@ impl<'s> Lower<'s> {
                         }
                         RoutineKind::St => {
                             Some(stx::routine_with(&shared, &ctx, r, &routines, false, &sbr))
+                        }
+                        // `Use="Reference"/"Context"` placeholders of a
+                        // component export: the routine is named (a JSR
+                        // calls it) but not part of the file.
+                        RoutineKind::Other if r.kind_text.is_empty() => {
+                            errors.push(L5xError::warning(
+                                format!(
+                                    "routine `{}` is not part of this export; calling it does nothing",
+                                    r.name.text
+                                ),
+                                r.span,
+                            ));
+                            Some((
+                                RoutineOut {
+                                    temps: Default::default(),
+                                    body: Out::new(),
+                                    prescan: Out::new(),
+                                },
+                                Vec::new(),
+                            ))
                         }
                         _ => {
                             errors.push(L5xError::new(
@@ -800,7 +935,10 @@ impl<'s> Lower<'s> {
         out.push_ctx(pr.span);
         out.s("FUNCTION_BLOCK ").s(&fb).s("\nVAR\n");
         out.append(decl);
-        out.s("        lx__first : BOOL := TRUE;\nEND_VAR\n");
+        for v in &ret_vars {
+            out.s(v);
+        }
+        out.s("        lx__first : BOOL := TRUE;\n        lx__brk : BOOL;\n        lx__for_depth : DINT;\nEND_VAR\n");
         // S:FS is set during the program's first scan; the prescan pass runs
         // just before it (1756-RM003 "Math status flags", each instruction's
         // "Prescan" row).
@@ -950,6 +1088,7 @@ impl<'s> Lower<'s> {
             src: self.src,
             env: &self.env,
             aois: &self.aois,
+            strings: &self.strings,
         };
         let mut lowered: Vec<(&str, RoutineOut)> = Vec::new();
         let mut errs = Vec::new();
@@ -1080,6 +1219,17 @@ impl<'s> Lower<'s> {
                 TaskType::Continuous => None,
                 TaskType::Periodic => {
                     let ms = t.rate_ms.unwrap_or(10.0);
+                    // Logix periodic rates run from 0.1 ms to 2,000,000 ms.
+                    if !(0.1..=2_000_000.0).contains(&ms) {
+                        self.err(
+                            format!(
+                                "task `{}`: rate {ms} ms is outside 0.1 .. 2,000,000 ms",
+                                t.name.text
+                            ),
+                            t.span,
+                        );
+                        continue;
+                    }
                     let us = (ms * 1000.0).round() as i64;
                     out.push_ctx(t.span);
                     out.s("    TASK ").s(&tname).s(&format!(

@@ -32,7 +32,7 @@ use crate::lower::AoiSig;
 use crate::model::{RoutineDef, Usage};
 use crate::operand::{self, LExpr, LKind, Seg, TagPath};
 use crate::rung::{self, Element, Instr};
-use crate::scope::{Ctx, Dom, Val, conv, dom_of};
+use crate::scope::{Ctx, Dom, SpanOf, Val, conv, dom_of};
 use crate::types::{Elem, StructKind, Ty, TypeEnv};
 use crate::xml::Text;
 use plcc_st::Span;
@@ -42,6 +42,8 @@ pub(crate) struct Shared<'a> {
     pub src: &'a str,
     pub env: &'a TypeEnv,
     pub aois: &'a HashMap<String, AoiSig>,
+    /// String helpers generated on demand.
+    pub strings: &'a crate::strings::Helpers,
 }
 
 pub(crate) struct RoutineOut {
@@ -148,8 +150,26 @@ struct R<'a, 'x> {
     jmp: bool,
     mcr: bool,
     guards: usize,
-    /// SBR operands of each routine (for JSR input parameters).
-    sbr: &'a HashMap<String, Vec<(String, Ty)>>,
+    /// SBR operands and RET types of each routine (JSR parameters).
+    subs: &'a Subs,
+    /// This routine's method (RET return values are stored per routine).
+    method: String,
+}
+
+/// Subroutine parameters of a program's routines (1756-RM003 JSR/SBR/RET): the
+/// tags each routine's SBR copies inputs into, and the types of the values
+/// its RET instructions return (kept in hidden `lx__ret_<method>_<k>`
+/// variables of the program).
+#[derive(Default)]
+pub(crate) struct Subs {
+    pub sbr: HashMap<String, Vec<(String, Ty)>>,
+    pub ret: HashMap<String, Vec<Ty>>,
+}
+
+impl Subs {
+    pub fn ret_var(method: &str, k: usize) -> String {
+        format!("lx__ret_{method}_{k}")
+    }
 }
 
 type Res<T> = Result<T, L5xError>;
@@ -161,7 +181,7 @@ pub(crate) fn routine(
     routines: &HashMap<String, String>,
     in_aoi: bool,
 ) -> (RoutineOut, Vec<L5xError>) {
-    let empty = HashMap::new();
+    let empty = Subs::default();
     routine_with(sh, ctx, r, routines, in_aoi, &empty)
 }
 
@@ -171,8 +191,12 @@ pub(crate) fn routine_with(
     r: &RoutineDef,
     routines: &HashMap<String, String>,
     in_aoi: bool,
-    sbr: &HashMap<String, Vec<(String, Ty)>>,
+    subs: &Subs,
 ) -> (RoutineOut, Vec<L5xError>) {
+    let method = routines
+        .get(&r.name.text.to_ascii_lowercase())
+        .cloned()
+        .unwrap_or_default();
     let mut w = R {
         sh,
         ctx,
@@ -187,7 +211,8 @@ pub(crate) fn routine_with(
         jmp: false,
         mcr: false,
         guards: 0,
-        sbr,
+        subs,
+        method,
     };
     w.temps.insert("lx__rc : BOOL".into());
     // Parse every rung first: labels and MCR/JMP use are routine-wide.
@@ -273,7 +298,79 @@ pub(crate) fn routine_with(
 
 /// The SBR operands of each ladder routine whose first instruction is SBR: the
 /// tags a JSR's input parameters are copied into (1756-RM003 JSR/SBR/RET).
-pub(crate) fn sbr_params(ctx: &Ctx, routines: &[RoutineDef]) -> HashMap<String, Vec<(String, Ty)>> {
+pub(crate) fn subroutines(
+    ctx: &Ctx,
+    routines: &[RoutineDef],
+    names: &HashMap<String, String>,
+) -> Subs {
+    let mut subs = Subs {
+        sbr: sbr_params(ctx, routines),
+        ret: HashMap::new(),
+    };
+    // RET operand types: the first RET with operands in each routine.
+    for r in routines {
+        let Some(method) = names.get(&r.name.text.to_ascii_lowercase()) else {
+            continue;
+        };
+        let found = if r.kind == crate::model::RoutineKind::St {
+            crate::stx::ret_types(ctx, r)
+        } else {
+            let mut found = None;
+            'rungs: for rung in &r.rungs {
+                let Some(text) = &rung.text else { continue };
+                let Ok(rs) = rung::parse(&text.text) else {
+                    continue;
+                };
+                for seq in &rs {
+                    if let Some(tys) = ret_in_seq(ctx, seq, text) {
+                        found = Some(tys);
+                        break 'rungs;
+                    }
+                }
+            }
+            found
+        };
+        if let Some(tys) = found {
+            subs.ret.insert(method.to_ascii_lowercase(), tys);
+        }
+    }
+    subs
+}
+
+fn ret_in_seq(ctx: &Ctx, seq: &[Element], text: &Text) -> Option<Vec<Ty>> {
+    for e in seq {
+        match e {
+            Element::Instr(i) if i.name.eq_ignore_ascii_case("RET") && !i.operands.is_empty() => {
+                let mut tys = Vec::new();
+                for op in &i.operands {
+                    let ex = operand::parse_expr(&text.text, op.clone()).ok()?;
+                    let v = ctx.value(&ex, text).ok()?;
+                    tys.push(match v.dom {
+                        Dom::Bool => Ty::Elem(Elem::Bool),
+                        Dom::Real => Ty::Elem(Elem::Real),
+                        Dom::LReal => Ty::Elem(Elem::Lreal),
+                        Dom::Int => match v.ty.elem() {
+                            Some(e) if e.is_int() => Ty::Elem(e),
+                            _ => Ty::Elem(Elem::Dint),
+                        },
+                    });
+                }
+                return Some(tys);
+            }
+            Element::Branch(legs, _) => {
+                for l in legs {
+                    if let Some(t) = ret_in_seq(ctx, l, text) {
+                        return Some(t);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn sbr_params(ctx: &Ctx, routines: &[RoutineDef]) -> HashMap<String, Vec<(String, Ty)>> {
     let mut map = HashMap::new();
     for r in routines {
         if r.kind == crate::model::RoutineKind::St {
@@ -595,6 +692,27 @@ impl<'a, 'x> R<'a, 'x> {
             "EQU" | "EQ" | "NEQ" | "NE" | "LES" | "LT" | "LEQ" | "LE" | "GRT" | "GT" | "GEQ"
             | "GE" => {
                 self.arity(ins, 2, t)?;
+                if let (Some((sa, ta)), Some((sb, tb))) = (
+                    self.string_operand(ins, 0, t),
+                    self.string_operand(ins, 1, t),
+                ) {
+                    // String compare (1756-RM003 EQ/NE/LT/... "String Compare").
+                    let f = self
+                        .sh
+                        .strings
+                        .compare(self.sh.env, &ta, &tb)
+                        .ok_or_else(|| L5xError::new("string compare", t.span(ins.span.clone())))?;
+                    let op = match up.as_str() {
+                        "EQU" | "EQ" => "=",
+                        "NEQ" | "NE" => "<>",
+                        "LES" | "LT" => "<",
+                        "LEQ" | "LE" => "<=",
+                        "GRT" | "GT" => ">",
+                        _ => ">=",
+                    };
+                    self.line(&format!("lx__rc := lx__rc AND ({f}({sa}, {sb}) {op} 0);"));
+                    return Ok(());
+                }
                 let a = self.val(ins, 0, t)?;
                 let b = self.val(ins, 1, t)?;
                 let op = match up.as_str() {
@@ -695,6 +813,18 @@ impl<'a, 'x> R<'a, 'x> {
             "MOV" | "MOVE" => {
                 self.arity(ins, 2, t)?;
                 let (d, dty) = self.dest(ins, 1, t)?;
+                if let Some((s, sty)) = self.string_operand(ins, 0, t)
+                    && crate::strings::cap(self.sh.env, &dty).is_some()
+                    && sty != dty
+                {
+                    let f = self
+                        .sh
+                        .strings
+                        .copy(self.sh.env, &sty, &dty)
+                        .unwrap_or_default();
+                    self.when_true(&format!("lx__S_V := FALSE; {f}({s}, {d});"));
+                    return Ok(());
+                }
                 if let Ty::Struct(_) | Ty::Array(..) = dty {
                     let se = self.operand(ins, 0, t)?;
                     let (s, sty) = match &se.kind {
@@ -816,6 +946,11 @@ impl<'a, 'x> R<'a, 'x> {
                 self.when_true(&format!("{d} := {};", cast(&r, de)));
             }
             "COP" | "CPS" => self.cop(ins, t)?,
+            "CONCAT" | "MID" | "DELETE" | "INSERT" | "FIND" | "UPPER" | "LOWER" | "DTOS"
+            | "STOD" => {
+                let stmt = self.string_instr(&up, ins, t)?;
+                self.when_true(&stmt);
+            }
             "FLL" => self.fll(ins, t)?,
             // ── Program control (1756-RM003 "Program Control Instructions") ──
             "NOP" | "SBR" => {}
@@ -827,13 +962,25 @@ impl<'a, 'x> R<'a, 'x> {
             }
             "TND" => self.when_true("RETURN;"),
             "RET" => {
-                if !ins.operands.is_empty() {
-                    return Err(L5xError::new(
-                        "RET with return parameters is not supported yet",
-                        t.span(ins.span.clone()),
-                    ));
+                // Return parameters go to hidden per-routine variables the JSR
+                // copies into its return operands.
+                let mut stmts = Vec::new();
+                let types = self
+                    .subs
+                    .ret
+                    .get(&self.method.to_ascii_lowercase())
+                    .cloned()
+                    .unwrap_or_default();
+                for k in 0..ins.operands.len() {
+                    let v = self.val(ins, k, t)?;
+                    let value = match types.get(k).and_then(|t| t.elem()) {
+                        Some(e) => cast(&v, e),
+                        None => v.st,
+                    };
+                    stmts.push(format!("{} := {value};", Subs::ret_var(&self.method, k)));
                 }
-                self.when_true("RETURN;");
+                stmts.push("RETURN;".into());
+                self.when_true(&stmts.join("\n    "));
             }
             "JSR" => {
                 self.arity(ins, 1, t)?;
@@ -855,26 +1002,72 @@ impl<'a, 'x> R<'a, 'x> {
                     // JSR(routine, input count, inputs..., returns...).
                     let n: usize = t.text[ins.operands[1].clone()].trim().parse().unwrap_or(0);
                     let targets = self
+                        .subs
                         .sbr
                         .get(&name.to_ascii_lowercase())
                         .cloned()
                         .unwrap_or_default();
-                    if extra > n || targets.len() < n {
+                    if targets.len() < n {
                         return Err(L5xError::new(
-                            "JSR with return parameters, or input parameters without a matching SBR, is not supported yet",
+                            format!("JSR passes {n} input(s) but `{name}` has no SBR taking them"),
                             t.span(ins.span.clone()),
                         ));
                     }
                     let mut stmts = Vec::new();
                     for (k, (target, tty)) in targets.iter().enumerate().take(n) {
-                        let v = self.val(ins, 2 + k, t)?;
                         let value = match tty.elem() {
-                            Some(e) => cast(&v, e),
-                            None => v.st,
+                            Some(e) => cast(&self.val(ins, 2 + k, t)?, e),
+                            // A structure or array parameter: copied whole.
+                            None => {
+                                let (s, sty) = self.dest(ins, 2 + k, t)?;
+                                if &sty != tty {
+                                    return Err(L5xError::new(
+                                        format!(
+                                            "JSR passes a {} where SBR expects a {}",
+                                            self.sh.env.logix(&sty),
+                                            self.sh.env.logix(tty)
+                                        ),
+                                        t.span(ins.operands[2 + k].clone()),
+                                    ));
+                                }
+                                s
+                            }
                         };
                         stmts.push(format!("{target} := {value};"));
                     }
                     stmts.push(format!("{m}();"));
+                    // Return operands, after the inputs.
+                    let rtypes = self
+                        .subs
+                        .ret
+                        .get(&m.to_ascii_lowercase())
+                        .cloned()
+                        .unwrap_or_default();
+                    for k in 0..extra.saturating_sub(n) {
+                        let (d, dty) = self.dest(ins, 2 + n + k, t)?;
+                        let Some(rt) = rtypes.get(k) else {
+                            return Err(L5xError::new(
+                                format!("`{name}` returns fewer values than this JSR expects"),
+                                t.span(ins.operands[2 + n + k].clone()),
+                            ));
+                        };
+                        let rv = Subs::ret_var(&m, k);
+                        match (dty.elem(), dom_of(rt)) {
+                            (Some(de), Some(rd)) => {
+                                let v = Val {
+                                    st: rv,
+                                    dom: rd,
+                                    ty: rt.clone(),
+                                };
+                                let v = Val {
+                                    st: conv(&v, rd),
+                                    ..v
+                                };
+                                stmts.push(format!("{d} := {};", cast(&v, de)));
+                            }
+                            _ => stmts.push(format!("{d} := {rv};")),
+                        }
+                    }
                     self.when_true(&stmts.join("\n    "));
                 } else {
                     self.when_true(&format!("{m}();"));
@@ -895,6 +1088,123 @@ impl<'a, 'x> R<'a, 'x> {
                 self.guards += 1;
             }
             "LBL" => {}
+            // plcc's tasks do not preempt one another (docs/process-image.md):
+            // there are no user-task interrupts to disable or enable.
+            "UID" | "UIE" => {}
+            "SIZE" => {
+                // SIZE(Source, Dimension to vary, Size): a constant, since
+                // plcc arrays have fixed bounds (1756-RM003 "Size In Elements").
+                self.arity(ins, 3, t)?;
+                let e = self.operand(ins, 0, t)?;
+                let LKind::Path(p) = &e.kind else {
+                    return Err(L5xError::new("SIZE needs an array tag", t.span(e.span)));
+                };
+                let dims = self.ctx.size_dims(p, t)?;
+                let dim = match self.operand(ins, 1, t)?.kind {
+                    LKind::Int(n) => n as usize,
+                    _ => 0,
+                };
+                let Some(n) = dims.get(dim) else {
+                    return Err(L5xError::new(
+                        format!("the array has no dimension {dim}"),
+                        t.span(ins.operands[1].clone()),
+                    ));
+                };
+                let (d, dty) = self.dest(ins, 2, t)?;
+                let v = Val {
+                    st: n.to_string(),
+                    dom: Dom::Int,
+                    ty: Ty::Elem(Elem::Dint),
+                };
+                let value = match dty.elem() {
+                    Some(e) => cast(&v, e),
+                    None => v.st,
+                };
+                self.when_true(&format!("{d} := {value};"));
+            }
+            "FOR" => {
+                // FOR(Routine, Index, Initial, Terminal, Step): "repeatedly
+                // executes the Routine until the Index value exceeds the Terminal
+                // value" (below it for a negative step), adding Step each time;
+                // BRK ends the loop (1756-RM003 "For (FOR)", "Break (BRK)").
+                self.arity(ins, 5, t)?;
+                if self.in_aoi {
+                    return Err(L5xError::new(
+                        "FOR inside an Add-On Instruction",
+                        t.span(ins.span.clone()),
+                    ));
+                }
+                let name = t.text[ins.operands[0].clone()].trim().to_string();
+                let Some(m) = self.routines.get(&name.to_ascii_lowercase()).cloned() else {
+                    return Err(L5xError::new(
+                        format!("unknown routine `{name}`"),
+                        t.span(ins.operands[0].clone()),
+                    ));
+                };
+                let (idx, ity) = self.dest(ins, 1, t)?;
+                let Some(ie) = ity.elem().filter(|e| e.is_int()) else {
+                    return Err(L5xError::new(
+                        "the FOR index must be an integer",
+                        t.span(ins.operands[1].clone()),
+                    ));
+                };
+                let init = self.val(ins, 2, t)?;
+                let term = self.val(ins, 3, t)?;
+                let step = self.val(ins, 4, t)?;
+                self.temps.insert("lx__fstep : LINT".into());
+                self.temps.insert("lx__fterm : LINT".into());
+                let stmt = format!(
+                    "{idx} := {init};\n    lx__fterm := {term};\n    lx__fstep := {step};\n    lx__for_depth := lx__for_depth + 1;\n    \
+                     WHILE (lx__fstep >= 0 AND {idxl} <= lx__fterm) OR (lx__fstep < 0 AND {idxl} >= lx__fterm) DO\n        \
+                     {m}();\n        IF lx__brk THEN lx__brk := FALSE; EXIT; END_IF;\n        \
+                     {idx} := LINT_TO_{e}({idxl} + lx__fstep);\n    END_WHILE;\n    lx__for_depth := lx__for_depth - 1;",
+                    init = cast(&init, ie),
+                    term = conv(&term, Dom::Int),
+                    step = conv(&step, Dom::Int),
+                    idxl = if ie == Elem::Lint {
+                        idx.clone()
+                    } else {
+                        format!("{}_TO_LINT({idx})", ie.st())
+                    },
+                    e = ie.st(),
+                );
+                self.when_true(&stmt);
+            }
+            "BRK" => {
+                // "If no FOR instruction preceded this BRK instruction in its
+                // execution during this scan then BRK does not initiate."
+                self.when_true("IF lx__for_depth > 0 THEN lx__brk := TRUE; RETURN; END_IF;");
+            }
+            "GSV" | "SSV" => {
+                let what = ins
+                    .operands
+                    .iter()
+                    .take(3)
+                    .map(|r| t.text[r.clone()].trim().to_string())
+                    .collect::<Vec<_>>()
+                    .join(".");
+                self.errors.push(L5xError::warning(
+                    format!(
+                        "{} {what}: plcc has no controller object model; {}",
+                        up,
+                        if up == "GSV" {
+                            "the destination keeps its value"
+                        } else {
+                            "nothing is set"
+                        }
+                    ),
+                    t.span(ins.span.clone()),
+                ));
+            }
+            "MSG" => {
+                self.arity(ins, 1, t)?;
+                self.structure(ins, 0, t, &["MESSAGE"])?;
+                self.errors.push(L5xError::warning(
+                    "MSG: plcc has no CIP messaging; the message never starts (EN, DN and ER stay FALSE)",
+                    t.span(ins.span.clone()),
+                ));
+            }
+            "BSL" | "BSR" => self.bit_shift(ins, t, up == "BSL")?,
             "EVENT" => {
                 self.arity(ins, 1, t)?;
                 let name = t.text[ins.operands[0].clone()].trim();
@@ -917,7 +1227,8 @@ impl<'a, 'x> R<'a, 'x> {
     fn aoi_call(&mut self, sig: &AoiSig, ins: &Instr, t: &Text) -> Res<()> {
         self.arity(ins, 1, t)?;
         let (tag, ty) = self.dest(ins, 0, t)?;
-        let ok = matches!(&ty, Ty::Struct(i) if self.sh.env.get(*i).st == sig.st);
+        let ok =
+            matches!(&ty, Ty::Struct(i) if self.sh.env.get(*i).st.eq_ignore_ascii_case(&sig.st));
         if !ok {
             return Err(L5xError::new(
                 format!(
@@ -958,7 +1269,18 @@ impl<'a, 'x> R<'a, 'x> {
                         Some(e) => cast(&v, e),
                         None => v.st,
                     };
-                    args.push(format!("{} := {a}", p.st));
+                    if p.alias {
+                        // An alias parameter is a member of the backing tag.
+                        self.line(&format!("{tag}.{} := {a};", p.st));
+                    } else {
+                        args.push(format!("{} := {a}", p.st));
+                    }
+                }
+                Usage::InOut if p.alias => {
+                    return Err(L5xError::new(
+                        format!("InOut alias parameter `{}` is not supported", p.logix),
+                        t.span(ins.operands[k + 1].clone()),
+                    ));
                 }
                 Usage::InOut => {
                     let (d, _) = self.dest(ins, k + 1, t)?;
@@ -995,115 +1317,407 @@ impl<'a, 'x> R<'a, 'x> {
         Ok(())
     }
 
-    /// Split `arr[i]` into (`arr` ST, element type, index ST, length of the
-    /// dimension); a plain tag is (tag, type, "0", 1).
-    fn element_base(&self, e: &LExpr, t: &Text) -> Res<(String, Ty, String, u32)> {
-        let LKind::Path(p) = &e.kind else {
-            return Err(L5xError::new("expected a tag", t.span(e.span.clone())));
-        };
-        if let Some(Seg::Index(ix, _)) = p.segs.last()
-            && ix.len() == 1
-        {
-            let base = TagPath {
-                base: p.base.clone(),
-                base_span: p.base_span.clone(),
-                segs: p.segs[..p.segs.len() - 1].to_vec(),
-            };
-            let (st, ty) = self.ctx.path(&base, t)?;
-            if let Ty::Array(el, dims) = ty
-                && dims.len() == 1
-            {
-                let i = self.ctx.value(&ix[0], t)?;
-                return Ok((st, *el, conv(&i, Dom::Int), dims[0]));
-            }
-        }
-        let (st, ty) = self.ctx.path(p, t)?;
-        if let Ty::Array(el, dims) = &ty
-            && dims.len() == 1
-        {
-            return Ok((st, (**el).clone(), "0".into(), dims[0]));
-        }
-        Ok((st, ty, "0".into(), 1))
+    /// Operand `i` when it is a string tag: its ST path and type.
+    fn string_operand(&self, ins: &Instr, i: usize, t: &Text) -> Option<(String, Ty)> {
+        let e = self.operand(ins, i, t).ok()?;
+        string_path(self.ctx, &e, t)
     }
 
-    /// COP/CPS: copy Length elements of the destination's type. Supported when
-    /// source and destination elements have the same type (the byte-level
-    /// reinterpretation of unlike types is not, since plcc's layout differs).
+    /// The ASCII string instructions (see [`crate::strings`]).
+    fn string_instr(&mut self, up: &str, ins: &Instr, t: &Text) -> Res<String> {
+        let mut ops = Vec::new();
+        for i in 0..ins.operands.len() {
+            ops.push(self.operand(ins, i, t)?);
+        }
+        string_code(
+            self.ctx,
+            self.sh.strings,
+            up,
+            &ops,
+            t,
+            t.span(ins.span.clone()),
+        )
+    }
+
+    fn element_base(&self, e: &LExpr, t: &Text) -> Res<(String, Ty, String, u32)> {
+        element_base(self.ctx, e, t)
+    }
+
+    /// COP/CPS (see [`cop_code`]).
     fn cop(&mut self, ins: &Instr, t: &Text) -> Res<()> {
         self.arity(ins, 3, t)?;
         let se = self.operand(ins, 0, t)?;
         let de = self.operand(ins, 1, t)?;
-        let (sb, sty, si, slen) = self.element_base(&se, t)?;
-        let (db, dty, di, dlen) = self.element_base(&de, t)?;
         let len = self.val(ins, 2, t)?;
-        if sty != dty {
-            return Err(L5xError::new(
-                format!(
-                    "COP from {} to {} (unlike types) is not supported",
-                    self.sh.env.logix(&sty),
-                    self.sh.env.logix(&dty)
-                ),
-                t.span(ins.span.clone()),
-            ));
-        }
+        let stmt = cop_code(self.ctx, &se, &de, &len, t, t.span(ins.span.clone()))?;
         self.temps.insert("lx__i : LINT".into());
         self.temps.insert("lx__n : LINT".into());
-        let single = slen == 1 && dlen == 1 && si == "0" && di == "0";
-        if single {
-            self.when_true(&format!("{db} := {sb};"));
-            return Ok(());
-        }
-        let sidx = |x: &str| {
-            if slen == 1 && si == "0" {
-                sb.clone()
-            } else {
-                format!("{sb}[LINT_TO_DINT({si} + {x})]")
-            }
-        };
-        let didx = |x: &str| {
-            if dlen == 1 && di == "0" {
-                db.clone()
-            } else {
-                format!("{db}[LINT_TO_DINT({di} + {x})]")
-            }
-        };
-        // The copy stops at the end of either array (1756-RM003 COP: "the
-        // instruction does not write past the end of the destination").
-        let stmt = format!(
-            "lx__n := {len};\n    IF lx__n > {dlen} - {di} THEN lx__n := {dlen} - {di}; END_IF;\n    IF lx__n > {slen} - {si} THEN lx__n := {slen} - {si}; END_IF;\n    FOR lx__i := 0 TO lx__n - 1 DO\n        {} := {};\n    END_FOR;",
-            didx("lx__i"),
-            sidx("lx__i"),
-            len = conv(&len, Dom::Int),
-        );
         self.when_true(&stmt);
+        Ok(())
+    }
+
+    /// BSL / BSR (1756-RM003 "Bit Shift Left/Right", flow charts): on the
+    /// rung's false→true transition, shift .LEN bits of the DINT array (from
+    /// the given element) one position, unloading the bit shifted out into
+    /// .UL and loading Source Bit into the vacated position; DN := 1,
+    /// POS := LEN. .LEN < 0 sets ER. A false rung clears EN, DN, ER, POS.
+    fn bit_shift(&mut self, ins: &Instr, t: &Text, left: bool) -> Res<()> {
+        self.arity(ins, 3, t)?;
+        let ae = self.operand(ins, 0, t)?;
+        let (arr, ety, start, alen) = self.element_base(&ae, t)?;
+        if ety.elem() != Some(Elem::Dint) {
+            return Err(L5xError::new(
+                format!("{} needs a DINT array", ins.name),
+                t.span(ins.operands[0].clone()),
+            ));
+        }
+        let (c, _) = self.structure(ins, 1, t, &["CONTROL"])?;
+        let src = self.bit(ins, 2, t)?;
+        self.pseudo(ins, t, &c, 3, "LEN");
+        self.temps.insert("lx__i : LINT".into());
+        self.temps.insert("lx__b : BOOL".into());
+        let word = |i: &str| {
+            if alen == 1 && start == "0" {
+                arr.clone()
+            } else {
+                format!("{arr}[LINT_TO_DINT({start} + ({i}) / 32)]")
+            }
+        };
+        let get = |i: &str| format!("lx__getbit(DINT_TO_LINT({}), ({i}) MOD 32)", word(i));
+        let set = |i: &str, v: &str| {
+            format!(
+                "{w} := lx__setbit_dint({w}, ({i}) MOD 32, {v});",
+                w = word(i)
+            )
+        };
+        let cap = format!("({alen} - {start}) * 32");
+        let shift = if left {
+            format!(
+                "{c}.UL := {top};\n            FOR lx__i := {c}.LEN - 1 TO 1 BY -1 DO\n                lx__b := {prev};\n                {setb}\n            END_FOR;\n            {set0}",
+                top = get(&format!("{c}.LEN - 1")),
+                prev = get("lx__i - 1"),
+                setb = set("lx__i", "lx__b"),
+                set0 = set("0", &src),
+            )
+        } else {
+            format!(
+                "{c}.UL := {bottom};\n            FOR lx__i := 0 TO {c}.LEN - 2 DO\n                lx__b := {next};\n                {setb}\n            END_FOR;\n            {setl}",
+                bottom = get("0"),
+                next = get("lx__i + 1"),
+                setb = set("lx__i", "lx__b"),
+                setl = set(&format!("{c}.LEN - 1"), &src),
+            )
+        };
+        self.line(&format!(
+            "IF lx__rc THEN\n    IF NOT {c}.EN THEN\n        {c}.EN := TRUE; {c}.DN := FALSE; {c}.ER := FALSE; {c}.UL := FALSE;\n        \
+             {c}.EU := FALSE; {c}.EM := FALSE; {c}.IN := FALSE; {c}.FD := FALSE;\n        \
+             IF {c}.LEN = 0 THEN\n            {c}.DN := TRUE; {c}.POS := {c}.LEN; {c}.UL := {src};\n        \
+             ELSIF {c}.LEN < 0 OR {c}.LEN > {cap} THEN\n            {c}.ER := TRUE;\n        \
+             ELSE\n            {shift}\n            {c}.DN := TRUE; {c}.POS := {c}.LEN;\n        END_IF;\n    END_IF;\n\
+             ELSE\n    {c}.EN := FALSE; {c}.DN := FALSE; {c}.ER := FALSE; {c}.POS := 0;\nEND_IF;"
+        ));
+        self.pre_line(&format!(
+            "{c}.EN := FALSE; {c}.DN := FALSE; {c}.ER := FALSE; {c}.POS := 0;"
+        ));
         Ok(())
     }
 
     fn fll(&mut self, ins: &Instr, t: &Text) -> Res<()> {
         self.arity(ins, 3, t)?;
-        let v = self.val(ins, 0, t)?;
+        let se = self.operand(ins, 0, t)?;
         let de = self.operand(ins, 1, t)?;
-        let (db, dty, di, dlen) = self.element_base(&de, t)?;
         let len = self.val(ins, 2, t)?;
+        let stmt = fll_code(self.ctx, &se, &de, &len, t, t.span(ins.span.clone()))?;
         self.temps.insert("lx__i : LINT".into());
         self.temps.insert("lx__n : LINT".into());
-        let target = if dlen == 1 && di == "0" {
-            db.clone()
-        } else {
-            format!("{db}[LINT_TO_DINT({di} + lx__i)]")
-        };
-        let Some(e) = dty.elem() else {
-            return Err(L5xError::new(
-                "FLL of a structure is not supported",
-                t.span(ins.span.clone()),
-            ));
-        };
-        let stmt = format!(
-            "lx__n := {len};\n    IF lx__n > {dlen} - {di} THEN lx__n := {dlen} - {di}; END_IF;\n    FOR lx__i := 0 TO lx__n - 1 DO\n        {target} := {};\n    END_FOR;",
-            cast(&v, e),
-            len = conv(&len, Dom::Int),
-        );
         self.when_true(&stmt);
         Ok(())
     }
+}
+
+/// Split `arr[i]` into (`arr` ST, element type, index ST, length of the
+/// dimension); a plain tag is (tag, type, "0", 1).
+pub(crate) fn element_base(ctx: &Ctx, e: &LExpr, t: &dyn SpanOf) -> Res<(String, Ty, String, u32)> {
+    let LKind::Path(p) = &e.kind else {
+        return Err(L5xError::new("expected a tag", t.span_of(e.span.clone())));
+    };
+    if let Some(Seg::Index(ix, _)) = p.segs.last()
+        && ix.len() == 1
+    {
+        let base = TagPath {
+            base: p.base.clone(),
+            base_span: p.base_span.clone(),
+            segs: p.segs[..p.segs.len() - 1].to_vec(),
+        };
+        let (st, ty) = ctx.path(&base, t)?;
+        if let Ty::Array(el, dims) = ty
+            && dims.len() == 1
+        {
+            let i = ctx.value(&ix[0], t)?;
+            return Ok((st, *el, conv(&i, Dom::Int), dims[0]));
+        }
+    }
+    let (st, ty) = ctx.path(p, t)?;
+    if let Ty::Array(el, dims) = &ty
+        && dims.len() == 1
+    {
+        return Ok((st, (**el).clone(), "0".into(), dims[0]));
+    }
+    Ok((st, ty, "0".into(), 1))
+}
+
+/// COP / CPS (1756-RM003 "Copy (COP) - Synchronous Copy (CPS)"): copy Length
+/// elements of the destination's type from Source to Dest, stopping at the end
+/// of either array ("the instruction does not write past the end of the
+/// destination"). Supported when source and destination elements have the
+/// same type, and between string types (LEN and the characters that fit).
+/// Other unlike types are a byte-level reinterpretation in Logix, which
+/// plcc's different memory layout cannot reproduce. Uses `lx__i`, `lx__n`.
+pub(crate) fn cop_code(
+    ctx: &Ctx,
+    se: &LExpr,
+    de: &LExpr,
+    len: &Val,
+    t: &dyn SpanOf,
+    span: Span,
+) -> Res<String> {
+    let (sb, sty, si, slen) = element_base(ctx, se, t)?;
+    let (db, dty, di, dlen) = element_base(ctx, de, t)?;
+    let whole = |b: &str, i: &str, l: u32| -> Option<String> {
+        (l == 1 && i == "0").then(|| b.to_string())
+    };
+    let sidx = |x: &str| {
+        whole(&sb, &si, slen).unwrap_or_else(|| format!("{sb}[LINT_TO_DINT({si} + {x})]"))
+    };
+    let didx = |x: &str| {
+        whole(&db, &di, dlen).unwrap_or_else(|| format!("{db}[LINT_TO_DINT({di} + {x})]"))
+    };
+    let env = ctx.env;
+    if sty != dty {
+        if crate::scope::is_string(env, &sty) && crate::scope::is_string(env, &dty) {
+            // String to string: LEN (clamped to the destination) and DATA.
+            let cap = |ty: &Ty| match ty {
+                Ty::Struct(i) => env.get(*i).field("DATA").and_then(|f| match &f.ty {
+                    Ty::Array(_, d) => d.first().copied(),
+                    _ => None,
+                }),
+                _ => None,
+            };
+            let (Some(sc), Some(dc)) = (cap(&sty), cap(&dty)) else {
+                return Err(L5xError::new("COP between string types", span));
+            };
+            let (s, d) = (sidx("0"), didx("0"));
+            return Ok(format!(
+                "lx__n := DINT_TO_LINT({s}.LEN);\n    IF lx__n > {dc} THEN lx__n := {dc}; END_IF;\n    IF lx__n > {sc} THEN lx__n := {sc}; END_IF;\n    IF lx__n < 0 THEN lx__n := 0; END_IF;\n    \
+                 {d}.LEN := LINT_TO_DINT(lx__n);\n    FOR lx__i := 0 TO lx__n - 1 DO\n        {d}.DATA[LINT_TO_DINT(lx__i)] := {s}.DATA[LINT_TO_DINT(lx__i)];\n    END_FOR;"
+            ));
+        }
+        // Integer to integer (packing SINTs into a DINT and back, ...): a
+        // byte copy, little-endian as on every Logix controller.
+        if let (Some(se_), Some(de_)) = (sty.elem(), dty.elem())
+            && se_.is_int()
+            && de_.is_int()
+        {
+            let (ss, ds) = (se_.bits() / 8, de_.bits() / 8);
+            let wide = |e: crate::types::Elem, x: String| {
+                if e == Elem::Lint {
+                    x
+                } else {
+                    format!("{}_TO_LINT({x})", e.st())
+                }
+            };
+            let narrow = |e: crate::types::Elem, x: String| {
+                if e == Elem::Lint {
+                    x
+                } else {
+                    format!("LINT_TO_{}({x})", e.st())
+                }
+            };
+            let sel = sidx(&format!("lx__i / {ss}"));
+            let del = didx(&format!("lx__i / {ds}"));
+            return Ok(format!(
+                "lx__n := {len} * {ds};\n    IF lx__n > ({dlen} - {di}) * {ds} THEN lx__n := ({dlen} - {di}) * {ds}; END_IF;\n    \
+                 IF lx__n > ({slen} - {si}) * {ss} THEN lx__n := ({slen} - {si}) * {ss}; END_IF;\n    \
+                 FOR lx__i := 0 TO lx__n - 1 DO\n        {del} := {set};\n    END_FOR;",
+                len = conv(len, Dom::Int),
+                set = narrow(
+                    de_,
+                    format!(
+                        "lx__setbyte({}, lx__i MOD {ds}, lx__getbyte({}, lx__i MOD {ss}))",
+                        wide(de_, del.clone()),
+                        wide(se_, sel)
+                    )
+                ),
+            ));
+        }
+        return Err(L5xError::new(
+            format!(
+                "COP from {} to {} (unlike types) is not supported: Logix copies bytes, and plcc lays out data differently",
+                env.logix(&sty),
+                env.logix(&dty)
+            ),
+            span,
+        ));
+    }
+    if slen == 1 && dlen == 1 && si == "0" && di == "0" {
+        return Ok(format!("{db} := {sb};"));
+    }
+    Ok(format!(
+        "lx__n := {len};\n    IF lx__n > {dlen} - {di} THEN lx__n := {dlen} - {di}; END_IF;\n    IF lx__n > {slen} - {si} THEN lx__n := {slen} - {si}; END_IF;\n    FOR lx__i := 0 TO lx__n - 1 DO\n        {} := {};\n    END_FOR;",
+        didx("lx__i"),
+        sidx("lx__i"),
+        len = conv(len, Dom::Int),
+    ))
+}
+
+/// FLL (1756-RM003 "File Fill"): Source into Length destination elements,
+/// stopping at the end of the array. Uses `lx__i`, `lx__n`.
+pub(crate) fn fll_code(
+    ctx: &Ctx,
+    se: &LExpr,
+    de: &LExpr,
+    len: &Val,
+    t: &dyn SpanOf,
+    span: Span,
+) -> Res<String> {
+    let (db, dty, di, dlen) = element_base(ctx, de, t)?;
+    let target = if dlen == 1 && di == "0" {
+        db.clone()
+    } else {
+        format!("{db}[LINT_TO_DINT({di} + lx__i)]")
+    };
+    let value = match dty.elem() {
+        Some(e) => cast(&ctx.value(se, t)?, e),
+        None => {
+            // A structure fill: the source must be a tag of the same type.
+            let LKind::Path(p) = &se.kind else {
+                return Err(L5xError::new("FLL of a structure needs a tag source", span));
+            };
+            let (s, sty) = ctx.path(p, t)?;
+            if sty != dty {
+                return Err(L5xError::new(
+                    format!(
+                        "FLL from {} into {}",
+                        ctx.env.logix(&sty),
+                        ctx.env.logix(&dty)
+                    ),
+                    span,
+                ));
+            }
+            s
+        }
+    };
+    Ok(format!(
+        "lx__n := {len};\n    IF lx__n > {dlen} - {di} THEN lx__n := {dlen} - {di}; END_IF;\n    FOR lx__i := 0 TO lx__n - 1 DO\n        {target} := {value};\n    END_FOR;",
+        len = conv(len, Dom::Int),
+    ))
+}
+
+/// A string tag operand: its ST path and type.
+pub(crate) fn string_path(ctx: &Ctx, e: &LExpr, t: &dyn SpanOf) -> Option<(String, Ty)> {
+    let LKind::Path(p) = &e.kind else { return None };
+    let (s, ty) = ctx.path(p, t).ok()?;
+    crate::strings::cap(ctx.env, &ty).map(|_| (s, ty))
+}
+
+/// CONCAT, MID, DELETE, INSERT, FIND, UPPER, LOWER, DTOS, STOD with the
+/// ladder operand order (also used by ST, which has the same order).
+pub(crate) fn string_code(
+    ctx: &Ctx,
+    h: &crate::strings::Helpers,
+    up: &str,
+    ops: &[LExpr],
+    t: &dyn SpanOf,
+    span: Span,
+) -> Res<String> {
+    let env = ctx.env;
+    let need = match up {
+        "CONCAT" => 3,
+        "MID" | "DELETE" | "INSERT" | "FIND" => 4,
+        _ => 2,
+    };
+    if ops.len() < need {
+        return Err(L5xError::new(
+            format!("{up} expects {need} operands, found {}", ops.len()),
+            span,
+        ));
+    }
+    let sarg = |i: usize| -> Res<(String, Ty)> {
+        string_path(ctx, &ops[i], t).ok_or_else(|| {
+            L5xError::new(
+                format!("{up} needs a string tag here"),
+                t.span_of(ops[i].span.clone()),
+            )
+        })
+    };
+    let iarg = |i: usize| -> Res<String> { Ok(cast(&ctx.value(&ops[i], t)?, Elem::Dint)) };
+    let missing = || L5xError::new(format!("{up} needs string operands"), span);
+    Ok(match up {
+        "CONCAT" => {
+            let ((a, ta), (b, tb), (d, td)) = (sarg(0)?, sarg(1)?, sarg(2)?);
+            let f = h.concat(env, &ta, &tb, &td).ok_or_else(missing)?;
+            format!("{f}({a}, {b}, {d});")
+        }
+        "MID" | "DELETE" => {
+            let (s, ts) = sarg(0)?;
+            let (qty, start) = (iarg(1)?, iarg(2)?);
+            let (d, td) = sarg(3)?;
+            let f = if up == "MID" {
+                h.mid(env, &ts, &td)
+            } else {
+                h.delete(env, &ts, &td)
+            }
+            .ok_or_else(missing)?;
+            format!("{f}(src := {s}, d := {d}, qty := {qty}, start := {start});")
+        }
+        "INSERT" => {
+            let ((a, ta), (b, tb)) = (sarg(0)?, sarg(1)?);
+            let start = iarg(2)?;
+            let (d, td) = sarg(3)?;
+            let f = h.insert(env, &ta, &tb, &td).ok_or_else(missing)?;
+            format!("{f}(sa := {a}, sb := {b}, d := {d}, start := {start});")
+        }
+        "FIND" => {
+            let ((s, ts), (f_, tf)) = (sarg(0)?, sarg(1)?);
+            let start = iarg(2)?;
+            let (r, rty) = ctx.dest(&ops[3], t)?;
+            let f = h.find(env, &ts, &tf).ok_or_else(missing)?;
+            let v = Val {
+                st: format!("DINT_TO_LINT({f}(src := {s}, search := {f_}, start := {start}))"),
+                dom: Dom::Int,
+                ty: Ty::Elem(Elem::Dint),
+            };
+            format!("{r} := {};", cast(&v, rty.elem().unwrap_or(Elem::Dint)))
+        }
+        "UPPER" | "LOWER" => {
+            let ((s, ts), (d, td)) = (sarg(0)?, sarg(1)?);
+            let f = h.case(env, &ts, &td, up == "UPPER").ok_or_else(missing)?;
+            format!("{f}({s}, {d});")
+        }
+        "DTOS" => {
+            let v = ctx.value(&ops[0], t)?;
+            let (d, td) = sarg(1)?;
+            let f = h.dtos(env, &td).ok_or_else(missing)?;
+            // "If the Source is a REAL, the instruction converts it to a DINT
+            // value" (rounding as every REAL → DINT).
+            let x = match v.dom {
+                Dom::Real | Dom::LReal => format!("DINT_TO_LINT({})", cast(&v, Elem::Dint)),
+                _ => conv(&v, Dom::Int),
+            };
+            format!("{f}(v := {x}, d := {d});")
+        }
+        "STOD" => {
+            let (s, ts) = sarg(0)?;
+            let (d, dty) = ctx.dest(&ops[1], t)?;
+            let f = h.stod(env, &ts).ok_or_else(missing)?;
+            let v = Val {
+                st: format!("{f}({s})"),
+                dom: Dom::Int,
+                ty: Ty::Elem(Elem::Lint),
+            };
+            store(env, &d, &dty, &v)
+                .map_err(|m| L5xError::new(m, t.span_of(ops[1].span.clone())))?
+        }
+        _ => return Err(L5xError::new(format!("{up} is not supported yet"), span)),
+    })
 }

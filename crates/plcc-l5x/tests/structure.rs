@@ -56,6 +56,11 @@ fn subroutines_with_parameters_and_ret() {
             5 + 20,
             "JSR inputs copied into the SBR tags"
         );
+        assert_eq!(
+            plc.get("MainProgram.SqOut"),
+            49,
+            "RET(SqTmp) copied into the JSR return operand"
+        );
     });
 }
 

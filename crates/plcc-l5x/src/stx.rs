@@ -24,7 +24,7 @@ use crate::error::L5xError;
 use crate::model::{RoutineDef, Usage};
 use crate::names::ident;
 use crate::operand::{self, LKind};
-use crate::rll::{RoutineOut, Shared, cast};
+use crate::rll::{RoutineOut, Shared, Subs, cast};
 use crate::scope::Ctx;
 use crate::types::Ty;
 use crate::xml::Text;
@@ -35,6 +35,9 @@ use std::ops::Range;
 enum K {
     Ws,
     Comment,
+    /// `#region` / `#endregion` (editor outlining, 1756-PM007 "About
+    /// outlining in Structured Text routines"): no meaning, dropped.
+    Directive,
     Ident,
     Num,
     Str,
@@ -90,6 +93,14 @@ fn lex(s: &str) -> Result<Vec<Tok>, (String, Range<usize>)> {
                 i += 1;
             }
             K::Ws
+        } else if c == b'#'
+            && (s[i + 1..].to_ascii_lowercase().starts_with("region")
+                || s[i + 1..].to_ascii_lowercase().starts_with("endregion"))
+        {
+            while i < b.len() && b[i] != b'\n' {
+                i += 1;
+            }
+            K::Directive
         } else if s[i..].starts_with("//") {
             while i < b.len() && b[i] != b'\n' {
                 i += 1;
@@ -167,9 +178,11 @@ struct W<'a, 'x> {
     text: &'a Text,
     toks: Vec<Tok>,
     routines: &'a HashMap<String, String>,
-    sbr: &'a HashMap<String, Vec<(String, Ty)>>,
+    subs: &'a Subs,
+    method: String,
     in_aoi: bool,
     errors: Vec<L5xError>,
+    temps: std::collections::BTreeSet<String>,
 }
 
 pub(crate) fn routine(
@@ -179,7 +192,7 @@ pub(crate) fn routine(
     routines: &HashMap<String, String>,
     in_aoi: bool,
 ) -> (RoutineOut, Vec<L5xError>) {
-    let empty = HashMap::new();
+    let empty = Subs::default();
     routine_with(sh, ctx, r, routines, in_aoi, &empty)
 }
 
@@ -189,9 +202,13 @@ pub(crate) fn routine_with(
     r: &RoutineDef,
     routines: &HashMap<String, String>,
     in_aoi: bool,
-    sbr: &HashMap<String, Vec<(String, Ty)>>,
+    subs: &Subs,
 ) -> (RoutineOut, Vec<L5xError>) {
     let text = Text::join(&r.lines);
+    let method = routines
+        .get(&r.name.text.to_ascii_lowercase())
+        .cloned()
+        .unwrap_or_default();
     let mut out = RoutineOut {
         temps: Default::default(),
         body: Out::new(),
@@ -207,13 +224,16 @@ pub(crate) fn routine_with(
         text: &text,
         toks,
         routines,
-        sbr,
+        subs,
+        method,
         in_aoi,
         errors: Vec::new(),
+        temps: Default::default(),
     };
     let n = w.toks.len();
     out.body.push_ctx(r.span);
     let body = w.translate(0..n);
+    out.temps = std::mem::take(&mut w.temps);
     out.body.append(body);
     out.body.s("\n");
     out.body.pop_ctx();
@@ -226,7 +246,7 @@ pub(crate) fn sbr_params(ctx: &Ctx, r: &RoutineDef, map: &mut HashMap<String, Ve
     let Ok(toks) = lex(&text.text) else { return };
     let sig: Vec<&Tok> = toks
         .iter()
-        .filter(|t| !matches!(t.k, K::Ws | K::Comment))
+        .filter(|t| !matches!(t.k, K::Ws | K::Comment | K::Directive))
         .collect();
     let Some(first) = sig.first() else { return };
     if !text.text[first.r.clone()].eq_ignore_ascii_case("SBR") {
@@ -259,6 +279,55 @@ pub(crate) fn sbr_params(ctx: &Ctx, r: &RoutineDef, map: &mut HashMap<String, Ve
     map.insert(r.name.text.to_ascii_lowercase(), out);
 }
 
+/// Types of the values the first `RET(v1, ...)` of an ST routine returns.
+pub(crate) fn ret_types(ctx: &Ctx, r: &RoutineDef) -> Option<Vec<Ty>> {
+    use crate::scope::Dom;
+    use crate::types::Elem;
+    let text = Text::join(&r.lines);
+    let toks = lex(&text.text).ok()?;
+    for (i, t) in toks.iter().enumerate() {
+        if t.k != K::Ident || !text.text[t.r.clone()].eq_ignore_ascii_case("RET") {
+            continue;
+        }
+        let open = toks[i + 1..]
+            .iter()
+            .find(|x| !matches!(x.k, K::Ws | K::Comment | K::Directive))?;
+        if &text.text[open.r.clone()] != "(" {
+            continue;
+        }
+        let close = text.text[open.r.end..].find(')')? + open.r.end;
+        let inner = open.r.end..close;
+        if text.text[inner.clone()].trim().is_empty() {
+            continue;
+        }
+        let mut tys = Vec::new();
+        let mut start = inner.start;
+        let mut parts = Vec::new();
+        for (j, c) in text.text[inner.clone()].char_indices() {
+            if c == ',' {
+                parts.push(start..inner.start + j);
+                start = inner.start + j + 1;
+            }
+        }
+        parts.push(start..inner.end);
+        for p in parts {
+            let e = operand::parse_expr(&text.text, p).ok()?;
+            let v = ctx.value(&e, &text).ok()?;
+            tys.push(match v.dom {
+                Dom::Bool => Ty::Elem(Elem::Bool),
+                Dom::Real => Ty::Elem(Elem::Real),
+                Dom::LReal => Ty::Elem(Elem::Lreal),
+                Dom::Int => match v.ty.elem() {
+                    Some(e) if e.is_int() => Ty::Elem(e),
+                    _ => Ty::Elem(Elem::Dint),
+                },
+            });
+        }
+        return Some(tys);
+    }
+    None
+}
+
 impl W<'_, '_> {
     fn s(&self, r: &Range<usize>) -> &str {
         &self.text.text[r.clone()]
@@ -274,13 +343,13 @@ impl W<'_, '_> {
     }
 
     fn sig_next(&self, i: usize, end: usize) -> Option<usize> {
-        (i..end).find(|&j| !matches!(self.toks[j].k, K::Ws | K::Comment))
+        (i..end).find(|&j| !matches!(self.toks[j].k, K::Ws | K::Comment | K::Directive))
     }
 
     fn sig_prev(&self, i: usize, start: usize) -> Option<usize> {
         (start..i)
             .rev()
-            .find(|&j| !matches!(self.toks[j].k, K::Ws | K::Comment))
+            .find(|&j| !matches!(self.toks[j].k, K::Ws | K::Comment | K::Directive))
     }
 
     fn is_p(&self, i: usize, p: &str) -> bool {
@@ -329,7 +398,8 @@ impl W<'_, '_> {
                 _ => {}
             }
         }
-        if (start..close).any(|j| !matches!(self.toks[j].k, K::Ws | K::Comment)) || !out.is_empty()
+        if (start..close).any(|j| !matches!(self.toks[j].k, K::Ws | K::Comment | K::Directive))
+            || !out.is_empty()
         {
             out.push(start..close);
         }
@@ -341,6 +411,21 @@ impl W<'_, '_> {
         let a = self.sig_next(r.start, r.end)?;
         let b = self.sig_prev(r.end, r.start)?;
         Some(self.toks[a].r.start..self.toks[b].r.end)
+    }
+
+    /// Argument `k` of a call as a Logix value (operand syntax).
+    fn arg_value(&mut self, args: &[Range<usize>], k: usize) -> Option<crate::scope::Val> {
+        let r = args.get(k).and_then(|r| self.text_range(r.clone()))?;
+        match operand::parse_expr(&self.text.text, r)
+            .map_err(|e| L5xError::new(e.message, self.text.span(e.span)))
+            .and_then(|e| self.ctx.value(&e, self.text))
+        {
+            Ok(v) => Some(v),
+            Err(e) => {
+                self.errors.push(e);
+                None
+            }
+        }
     }
 
     fn err(&mut self, m: impl Into<String>, r: Range<usize>) {
@@ -391,6 +476,10 @@ impl W<'_, '_> {
         while i < range.end {
             let t = self.toks[i].clone();
             match t.k {
+                K::Directive => {
+                    out.m(" ", self.text.span(t.r.clone()));
+                    i += 1;
+                }
                 K::Ws | K::Comment | K::Num | K::Str => {
                     self.copy(&mut out, t.r.clone());
                     i += 1;
@@ -505,50 +594,96 @@ impl W<'_, '_> {
                 let n: usize = arg_text(self, 1).and_then(|x| x.parse().ok()).unwrap_or(0);
                 let extra = args.len().saturating_sub(2);
                 let mut stmts = String::new();
-                if extra > 0 {
-                    let targets = self
-                        .sbr
-                        .get(&name.to_ascii_lowercase())
-                        .cloned()
-                        .unwrap_or_default();
-                    if extra > n || targets.len() < n {
-                        self.err(
-                            "JSR with return parameters, or input parameters without a matching SBR, is not supported yet",
-                            whole,
-                        );
-                        return Some(after_semi);
-                    }
-                    for (k, (target, tty)) in targets.iter().enumerate().take(n) {
-                        let Some(r) = args.get(2 + k).and_then(|r| self.text_range(r.clone()))
-                        else {
-                            continue;
-                        };
-                        let v = match operand::parse_expr(&self.text.text, r.clone())
-                            .map_err(|e| L5xError::new(e.message, self.text.span(e.span)))
-                            .and_then(|e| self.ctx.value(&e, self.text))
-                        {
-                            Ok(v) => v,
-                            Err(e) => {
-                                self.errors.push(e);
-                                continue;
-                            }
-                        };
-                        let value = match tty.elem() {
-                            Some(e) => cast(&v, e),
-                            None => v.st,
-                        };
-                        stmts.push_str(&format!("{target} := {value}; "));
-                    }
+                let targets = self
+                    .subs
+                    .sbr
+                    .get(&name.to_ascii_lowercase())
+                    .cloned()
+                    .unwrap_or_default();
+                if targets.len() < n.min(extra) {
+                    self.err(
+                        format!("JSR passes {n} input(s) but `{name}` has no SBR taking them"),
+                        whole,
+                    );
+                    return Some(after_semi);
+                }
+                for (k, (target, tty)) in targets.iter().enumerate().take(n.min(extra)) {
+                    let Some(v) = self.arg_value(&args, 2 + k) else {
+                        continue;
+                    };
+                    let value = match tty.elem() {
+                        Some(e) => cast(&v, e),
+                        None => v.st,
+                    };
+                    stmts.push_str(&format!("{target} := {value}; "));
                 }
                 stmts.push_str(&format!("{m}();"));
+                let rtypes = self
+                    .subs
+                    .ret
+                    .get(&m.to_ascii_lowercase())
+                    .cloned()
+                    .unwrap_or_default();
+                for k in 0..extra.saturating_sub(n) {
+                    let Some(r) = args.get(2 + n + k).and_then(|r| self.text_range(r.clone()))
+                    else {
+                        continue;
+                    };
+                    let Some(rt) = rtypes.get(k) else {
+                        self.err(
+                            format!("`{name}` returns fewer values than this JSR expects"),
+                            r,
+                        );
+                        continue;
+                    };
+                    let dest = operand::parse_expr(&self.text.text, r.clone())
+                        .map_err(|e| L5xError::new(e.message, self.text.span(e.span)))
+                        .and_then(|e| self.ctx.dest(&e, self.text));
+                    let (d, dty) = match dest {
+                        Ok(x) => x,
+                        Err(e) => {
+                            self.errors.push(e);
+                            continue;
+                        }
+                    };
+                    let rv = Subs::ret_var(&m, k);
+                    match (dty.elem(), crate::scope::dom_of(rt)) {
+                        (Some(de), Some(rd)) => {
+                            let v = crate::scope::Val {
+                                st: rv,
+                                dom: rd,
+                                ty: rt.clone(),
+                            };
+                            stmts.push_str(&format!(" {d} := {};", cast(&v, de)));
+                        }
+                        _ => stmts.push_str(&format!(" {d} := {rv};")),
+                    }
+                }
                 out.m(&stmts, span);
                 Some(after_semi)
             }
             "RET" | "TND" => {
-                if up == "RET" && !args.is_empty() {
-                    self.err("RET with return parameters is not supported yet", whole);
+                let mut stmts = String::new();
+                if up == "RET" {
+                    let types = self
+                        .subs
+                        .ret
+                        .get(&self.method.to_ascii_lowercase())
+                        .cloned()
+                        .unwrap_or_default();
+                    for k in 0..args.len() {
+                        let Some(v) = self.arg_value(&args, k) else {
+                            continue;
+                        };
+                        let value = match types.get(k).and_then(|t| t.elem()) {
+                            Some(e) => cast(&v, e),
+                            None => v.st,
+                        };
+                        stmts.push_str(&format!("{} := {value}; ", Subs::ret_var(&self.method, k)));
+                    }
                 }
-                out.m("RETURN;", span);
+                stmts.push_str("RETURN;");
+                out.m(&stmts, span);
                 Some(after_semi)
             }
             "SBR" => Some(after_semi),
@@ -580,13 +715,7 @@ impl W<'_, '_> {
                             self.text.span(arr),
                         ));
                     };
-                    let (_, ty) = self.ctx.path(p, self.text)?;
-                    let Ty::Array(_, dims) = ty else {
-                        return Err(L5xError::new(
-                            "SIZE needs an array tag",
-                            self.text.span(arr),
-                        ));
-                    };
+                    let dims = self.ctx.size_dims(p, self.text)?;
                     let d: usize = arg_text(self, 1).and_then(|x| x.parse().ok()).unwrap_or(0);
                     let n = dims
                         .get(d)
@@ -609,7 +738,83 @@ impl W<'_, '_> {
                 };
                 Some(after_semi)
             }
-            "COP" | "CPS" | "FLL" | "MSG" | "GSV" | "SSV" | "BTDT" | "MVMT" | "PID" => {
+            "COP" | "CPS" | "FLL" => {
+                let res = (|| -> Result<String, L5xError> {
+                    let op = |k: usize| -> Result<crate::operand::LExpr, L5xError> {
+                        let r = args
+                            .get(k)
+                            .and_then(|r| self.text_range(r.clone()))
+                            .ok_or_else(|| L5xError::new(format!("{up} needs 3 operands"), span))?;
+                        operand::parse_expr(&self.text.text, r)
+                            .map_err(|e| L5xError::new(e.message, self.text.span(e.span)))
+                    };
+                    let (a, b, l) = (op(0)?, op(1)?, op(2)?);
+                    let len = self.ctx.value(&l, self.text)?;
+                    if up == "FLL" {
+                        crate::rll::fll_code(self.ctx, &a, &b, &len, self.text, span)
+                    } else {
+                        crate::rll::cop_code(self.ctx, &a, &b, &len, self.text, span)
+                    }
+                })();
+                match res {
+                    Ok(s) => {
+                        self.temps.insert("lx__i : LINT".into());
+                        self.temps.insert("lx__n : LINT".into());
+                        out.m(&s, span);
+                    }
+                    Err(e) => self.errors.push(e),
+                }
+                Some(after_semi)
+            }
+            "CONCAT" | "MID" | "DELETE" | "INSERT" | "FIND" | "UPPER" | "LOWER" | "DTOS"
+            | "STOD" => {
+                let mut ops = Vec::new();
+                for r in &args {
+                    let Some(r) = self.text_range(r.clone()) else {
+                        continue;
+                    };
+                    match operand::parse_expr(&self.text.text, r) {
+                        Ok(e) => ops.push(e),
+                        Err(e) => {
+                            self.errors
+                                .push(L5xError::new(e.message, self.text.span(e.span)));
+                            return Some(after_semi);
+                        }
+                    }
+                }
+                match crate::rll::string_code(self.ctx, self.sh.strings, up, &ops, self.text, span)
+                {
+                    Ok(s) => {
+                        out.m(&s, span);
+                    }
+                    Err(e) => self.errors.push(e),
+                }
+                Some(after_semi)
+            }
+            "GSV" | "SSV" => {
+                let what: Vec<String> = (0..3).filter_map(|k| arg_text(self, k)).collect();
+                self.errors.push(L5xError::warning(
+                    format!(
+                        "{up} {}: plcc has no controller object model; {}",
+                        what.join("."),
+                        if up == "GSV" {
+                            "the destination keeps its value"
+                        } else {
+                            "nothing is set"
+                        }
+                    ),
+                    span,
+                ));
+                Some(after_semi)
+            }
+            "MSG" => {
+                self.errors.push(L5xError::warning(
+                    "MSG: plcc has no CIP messaging; the message never starts (EN, DN and ER stay FALSE)",
+                    span,
+                ));
+                Some(after_semi)
+            }
+            "BTDT" | "MVMT" | "PID" => {
                 self.err(
                     format!("{up} in a Structured Text routine is not supported yet"),
                     whole,
@@ -652,14 +857,17 @@ impl W<'_, '_> {
         let tag = self.translate(args[0].clone()).text.trim().to_string();
         let mut call_args = vec!["EnableIn := TRUE".to_string()];
         let mut outs = Vec::new();
+        let mut pre = String::new();
         for (k, p) in req.iter().enumerate() {
             let a = self.translate(args[k + 1].clone()).text.trim().to_string();
             match p.usage {
+                // An alias parameter is a member of the backing tag.
+                Usage::Input if p.alias => pre.push_str(&format!("{tag}.{} := {a}; ", p.st)),
                 Usage::Input | Usage::InOut => call_args.push(format!("{} := {a}", p.st)),
                 _ => outs.push(format!("{a} := {tag}.{};", p.st)),
             }
         }
-        let mut s = format!("{tag}({});", call_args.join(", "));
+        let mut s = format!("{pre}{tag}({});", call_args.join(", "));
         for o in outs {
             s.push(' ');
             s.push_str(&o);

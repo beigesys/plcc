@@ -577,6 +577,28 @@ impl Ctx<'_> {
         }
     }
 
+    /// Dimensions of the array SIZE is asked about: the tag itself, or the
+    /// array an element (`arr[0]`, the usual operand) belongs to.
+    pub fn size_dims(&self, p: &TagPath, sp: &dyn SpanOf) -> Result<Vec<u32>, L5xError> {
+        if let Ok((_, Ty::Array(_, dims))) = self.path(p, sp) {
+            return Ok(dims);
+        }
+        if let Some(Seg::Index(..)) = p.segs.last() {
+            let base = TagPath {
+                base: p.base.clone(),
+                base_span: p.base_span.clone(),
+                segs: p.segs[..p.segs.len() - 1].to_vec(),
+            };
+            if let Ty::Array(_, dims) = self.path(&base, sp)?.1 {
+                return Ok(dims);
+            }
+        }
+        Err(L5xError::new(
+            "SIZE needs an array",
+            sp.span_of(p.base_span.clone()),
+        ))
+    }
+
     /// A writable destination: a tag path (no indirect bits).
     pub fn dest(&self, e: &LExpr, sp: &dyn SpanOf) -> Result<(String, Ty), L5xError> {
         match &e.kind {

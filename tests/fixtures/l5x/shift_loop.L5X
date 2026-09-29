@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- Written for plcc: BSL/BSR bit shifting across DINT elements, FOR/BRK,
+     SIZE, UID/UIE, and the GSV/MSG instructions plcc accepts with a warning. -->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="33.01" TargetName="ShiftLoop" TargetType="Controller">
+<Controller Use="Target" Name="ShiftLoop" ProcessorType="1756-L83E" MajorRev="33">
+<Tags>
+<Tag Name="Clock" TagType="Base" DataType="BOOL"/>
+<Tag Name="Part" TagType="Base" DataType="BOOL"/>
+<Tag Name="Track" TagType="Base" DataType="DINT" Dimensions="2"/>
+<Tag Name="TrackCtl" TagType="Base" DataType="CONTROL"/>
+<Tag Name="Back" TagType="Base" DataType="DINT"><Data Format="L5K"><![CDATA[6]]></Data></Tag>
+<Tag Name="BackCtl" TagType="Base" DataType="CONTROL"/>
+<Tag Name="Idx" TagType="Base" DataType="DINT"/>
+<Tag Name="Total" TagType="Base" DataType="DINT"/>
+<Tag Name="Table" TagType="Base" DataType="DINT" Dimensions="8">
+<Data Format="L5K"><![CDATA[[1,2,3,4,-1,6,7,8]]]></Data>
+</Tag>
+<Tag Name="TableLen" TagType="Base" DataType="INT"/>
+<Tag Name="Now" TagType="Base" DataType="DINT" Dimensions="7"/>
+<Tag Name="Msg1" TagType="Base" DataType="MESSAGE"/>
+<Tag Name="Poll" TagType="Base" DataType="BOOL"/>
+</Tags>
+<Programs>
+<Program Name="MainProgram" MainRoutineName="Main">
+<Routines>
+<Routine Name="Main" Type="RLL">
+<RLLContent>
+<Rung Number="0" Type="N"><Text><![CDATA[XIC(Clock)BSL(Track[0],TrackCtl,Part,40);]]></Text></Rung>
+<Rung Number="1" Type="N"><Text><![CDATA[XIC(Clock)BSR(Back,BackCtl,Part,4);]]></Text></Rung>
+<Rung Number="2" Type="N"><Text><![CDATA[CLR(Total)FOR(AddUp,Idx,0,7,1);]]></Text></Rung>
+<Rung Number="3" Type="N"><Text><![CDATA[SIZE(Table,0,TableLen)UID()UIE();]]></Text></Rung>
+<Rung Number="4" Type="N"><Text><![CDATA[GSV(WallClockTime,,LocalDateTime,Now[0]);]]></Text></Rung>
+<Rung Number="5" Type="N"><Text><![CDATA[XIC(Poll)XIO(Msg1.EN)MSG(Msg1);]]></Text></Rung>
+</RLLContent>
+</Routine>
+<Routine Name="AddUp" Type="RLL">
+<RLLContent>
+<Rung Number="0" Type="N"><Text><![CDATA[LES(Table[Idx],0)BRK();]]></Text></Rung>
+<Rung Number="1" Type="N"><Text><![CDATA[ADD(Total,Table[Idx],Total);]]></Text></Rung>
+</RLLContent>
+</Routine>
+</Routines>
+</Program>
+</Programs>
+</Controller>
+</RSLogix5000Content>

@@ -25,6 +25,7 @@ mod operand;
 mod rll;
 mod rung;
 mod scope;
+mod strings;
 mod stsem;
 mod stx;
 mod types;
@@ -52,6 +53,8 @@ const PRELUDE_ST: &str = include_str!("../st/logix.st");
 /// the lowering calls. Compile it with every L5X input.
 pub fn prelude() -> String {
     let mut s = String::from(PRELUDE_ST);
+    s.push_str("\n(* ---- PID and MESSAGE (1756-RM003), generated from the type table ---- *)\n");
+    s.push_str(&types::TypeEnv::prelude_types());
     s.push_str(
         "\n(* ---- Stores (1756-RM003 \"Data conversions\", \"Math status flags\") ----\n   \
          lx__put_<T>_i / _r store an integer / floating result into a <T>:\n   \
@@ -130,7 +133,7 @@ pub fn is_l5x(source: &str) -> bool {
 
 /// Lower an L5X file to Structured Text: the generated text, its span map, and
 /// the diagnostics found on the way.
-type Lowered = (emit::Out, Vec<L5xError>, types::TypeEnv);
+type Lowered = (emit::Out, Vec<L5xError>, types::TypeEnv, strings::Helpers);
 
 fn lower(source: &str, opts: &Options) -> Result<Lowered, Vec<L5xError>> {
     let opt = roxmltree::ParsingOptions {
@@ -165,14 +168,14 @@ fn lower(source: &str, opts: &Options) -> Result<Lowered, Vec<L5xError>> {
     let mut lw = lower::Lower::new(source, opts.io_map.clone());
     lw.errors = reader.errors;
     let out = lw.project(&project);
-    Ok((out, lw.errors, lw.env))
+    Ok((out, lw.errors, lw.env, lw.strings))
 }
 
 /// The Structured Text an L5X file lowers to (for inspection:
 /// `plcc parse --dump-st`), with the diagnostics of the lowering.
 pub fn to_st(source: &str, opts: &Options) -> (String, Vec<L5xError>) {
     match lower(source, opts) {
-        Ok((out, errs, _)) => (out.text, errs),
+        Ok((out, errs, _, _)) => (out.text, errs),
         Err(errs) => (String::new(), errs),
     }
 }
@@ -188,7 +191,7 @@ pub fn parse_with(source: &str, opts: &Options) -> (CompilationUnit, Vec<L5xErro
         declarations: Vec::new(),
         span: Span::new(0, source.len()),
     };
-    let (out, mut errors, env) = match lower(source, opts) {
+    let (out, mut errors, env, strings) = match lower(source, opts) {
         Ok(x) => x,
         Err(errs) => return (empty, errs),
     };
@@ -210,7 +213,17 @@ pub fn parse_with(source: &str, opts: &Options) -> (CompilationUnit, Vec<L5xErro
         )));
     }
     let mut declarations = unit.declarations;
-    stsem::apply(&mut declarations, &env);
+    let before = strings.names();
+    stsem::apply(&mut declarations, &env, &strings);
+    // String helpers first needed by the AST pass (ST string compares and
+    // assignments) are parsed and added now; they point at the file start.
+    let extra = strings.source_except(&before);
+    if !extra.is_empty() {
+        let (u, errs) = plcc_st::parse(&extra);
+        if errs.is_empty() {
+            declarations.extend(emit::zero_spans(u.declarations));
+        }
+    }
     let declarations = map.remap(declarations);
     (
         CompilationUnit {

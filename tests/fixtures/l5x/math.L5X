@@ -54,6 +54,9 @@
 <Tag Name="PowOut" TagType="Base" DataType="DINT"/>
 <Tag Name="NegFlag" TagType="Base" DataType="BOOL"/>
 <Tag Name="Counter" TagType="Base" DataType="DINT"/>
+<Tag Name="Word4" TagType="Base" DataType="DINT"><Data Format="L5K"><![CDATA[67305985]]></Data></Tag>
+<Tag Name="Bytes" TagType="Base" DataType="SINT" Dimensions="6"/>
+<Tag Name="Packed" TagType="Base" DataType="DINT"/>
 </Tags>
 <Programs>
 <Program Name="MainProgram" MainRoutineName="MainRoutine">
@@ -78,6 +81,7 @@
 <Rung Number="15" Type="N"><Text><![CDATA[TRN(-3.7,TrnOut)TOD(1234,TodOut)FRD(16#1234,FrdOut);]]></Text></Rung>
 <Rung Number="16" Type="N"><Text><![CDATA[CPT(RealOut,1.5 * 4 - 0.5)XPY(2,10,PowOut);]]></Text></Rung>
 <Rung Number="17" Type="N"><Text><![CDATA[XIO(Ovf1)ADD(Counter,1,Counter);]]></Text></Rung>
+<Rung Number="18" Type="N"><Text><![CDATA[COP(Word4,Bytes[1],4)COP(Bytes[1],Packed,1);]]></Text></Rung>
 </RLLContent>
 </Routine>
 </Routines>

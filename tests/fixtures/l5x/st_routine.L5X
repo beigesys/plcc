@@ -30,6 +30,22 @@
 </Routine>
 </Routines>
 </AddOnInstructionDefinition>
+<AddOnInstructionDefinition Name="Lamp_AOI" Revision="1.0" ExecutePrescan="false" ExecutePostscan="false" ExecuteEnableInFalse="false">
+<Parameters>
+<Parameter Name="EnableIn" TagType="Base" DataType="BOOL" Usage="Input" Required="false" Visible="false"/>
+<Parameter Name="EnableOut" TagType="Base" DataType="BOOL" Usage="Output" Required="false" Visible="false"/>
+<Parameter Name="Cmd" TagType="Base" DataType="DINT" Usage="Input" Required="false" Visible="true"/>
+<Parameter Name="Red" TagType="Alias" Usage="Input" AliasFor="Cmd.0" Required="true" Visible="true"/>
+<Parameter Name="Lit" TagType="Base" DataType="BOOL" Usage="Output" Required="true" Visible="true"/>
+</Parameters>
+<Routines>
+<Routine Name="Logic" Type="RLL">
+<RLLContent>
+<Rung Number="0" Type="N"><Text><![CDATA[XIC(Red)OTE(Lit);]]></Text></Rung>
+</RLLContent>
+</Routine>
+</Routines>
+</AddOnInstructionDefinition>
 </AddOnInstructionDefinitions>
 <Tags>
 <Tag Name="State" TagType="Base" DataType="DINT"/>
@@ -47,6 +63,7 @@
 <Tag Name="Raw" TagType="Base" DataType="DINT"><Data Format="L5K"><![CDATA[150]]></Data></Tag>
 <Tag Name="Clamped" TagType="Base" DataType="DINT"/>
 <Tag Name="Doubled" TagType="Base" DataType="DINT"/>
+<Tag Name="Doubled2" TagType="Base" DataType="REAL"/>
 <Tag Name="Elements" TagType="Base" DataType="DINT"/>
 <Tag Name="Zero" TagType="Base" DataType="DINT"/>
 <Tag Name="Quot" TagType="Base" DataType="DINT"/>
@@ -55,6 +72,10 @@
 <Tag Name="Rounded" TagType="Base" DataType="DINT"/>
 <Tag Name="Loops" TagType="Base" DataType="DINT"/>
 <Tag Name="Word" TagType="Base" DataType="INT"/>
+<Tag Name="Lamp1" TagType="Base" DataType="Lamp_AOI"/>
+<Tag Name="LampOn" TagType="Base" DataType="BOOL"/>
+<Tag Name="Copied" TagType="Base" DataType="DINT" Dimensions="3"/>
+<Tag Name="Stamp" TagType="Base" DataType="DINT" Dimensions="7"/>
 </Tags>
 <Programs>
 <Program Name="MainProgram" MainRoutineName="Main">
@@ -85,17 +106,20 @@
 <Line Number="18"><![CDATA[Done [:=] Delay.DN;]]></Line>
 <Line Number="19"><![CDATA[Time := Delay.ACC;]]></Line>
 <Line Number="20"><![CDATA[Clamp_AOI(Clamp1, Raw, 0, 100, Clamped);]]></Line>
-<Line Number="21"><![CDATA[JSR(Doubler, 1, Clamped);]]></Line>
+<Line Number="21"><![CDATA[JSR(Doubler, 1, Clamped, Doubled2);]]></Line>
 <Line Number="22"><![CDATA[SIZE(Values, 0, Elements);]]></Line>
 <Line Number="23"><![CDATA[Quot := Raw / Zero;   /* Logix: Source A */]]></Line>
 <Line Number="24"><![CDATA[Rem := Raw MOD Zero;]]></Line>
 <Line Number="25"><![CDATA[Rounded := Half;]]></Line>
 <Line Number="26"><![CDATA[Word := 16#7FFF + 1;]]></Line>
+<Line Number="27"><![CDATA[Lamp_AOI(Lamp1, Go, LampOn);]]></Line>
+<Line Number="28"><![CDATA[COP(Values[1], Copied[0], 5);  // stops at the end of Copied]]></Line>
+<Line Number="29"><![CDATA[GSV(WallClockTime, , LocalDateTime, Stamp[0]);]]></Line>
 </STContent>
 </Routine>
 <Routine Name="Doubler" Type="RLL">
 <RLLContent>
-<Rung Number="0" Type="N"><Text><![CDATA[SBR(Arg)MUL(Arg,2,Doubled);]]></Text></Rung>
+<Rung Number="0" Type="N"><Text><![CDATA[SBR(Arg)MUL(Arg,2,Doubled)RET(Doubled);]]></Text></Rung>
 </RLLContent>
 </Routine>
 </Routines>

@@ -13,6 +13,12 @@
 //!   Components: Expressions").
 //! * REAL → integer assignment rounds half to even (1756-RM003 "Data
 //!   conversions"), where plcc (like CODESYS) rounds half away from zero.
+//!
+//! and Logix strings (structures `LEN` + `DATA`) get their ST meaning: a
+//! string literal assigned to a string tag sets LEN and the characters, a
+//! string assigned to a string of another type is copied, and the relational
+//! operators compare strings (1756-RM003 "Use relational operators", "How
+//! strings are evaluated").
 
 use crate::types::{Elem, Ty, TypeEnv};
 use plcc_st::Span;
@@ -21,7 +27,7 @@ use std::collections::HashMap;
 
 type Vars = HashMap<String, Ty>;
 
-pub(crate) fn apply(decls: &mut [Declaration], env: &TypeEnv) {
+pub(crate) fn apply(decls: &mut [Declaration], env: &TypeEnv, strings: &crate::strings::Helpers) {
     let mut globals = Vars::new();
     for d in decls.iter() {
         if let Declaration::GlobalVarDecl(b) = d {
@@ -35,14 +41,22 @@ pub(crate) fn apply(decls: &mut [Declaration], env: &TypeEnv) {
                 for b in &fb.var_blocks {
                     add_block(&mut vars, b, env);
                 }
-                let cx = Cx { vars: &vars, env };
+                let cx = Cx {
+                    vars: &vars,
+                    env,
+                    strings,
+                };
                 stmts(&mut fb.body, &cx);
                 for m in &mut fb.methods {
                     let mut mv = vars.clone();
                     for b in &m.var_blocks {
                         add_block(&mut mv, b, env);
                     }
-                    let cx = Cx { vars: &mv, env };
+                    let cx = Cx {
+                        vars: &mv,
+                        env,
+                        strings,
+                    };
                     stmts(&mut m.body, &cx);
                 }
             }
@@ -51,7 +65,11 @@ pub(crate) fn apply(decls: &mut [Declaration], env: &TypeEnv) {
                 for b in &p.var_blocks {
                     add_block(&mut vars, b, env);
                 }
-                let cx = Cx { vars: &vars, env };
+                let cx = Cx {
+                    vars: &vars,
+                    env,
+                    strings,
+                };
                 stmts(&mut p.body, &cx);
             }
             _ => {}
@@ -89,6 +107,103 @@ fn ty_of_spec(t: &TypeSpec, env: &TypeEnv) -> Option<Ty> {
 struct Cx<'a> {
     vars: &'a Vars,
     env: &'a TypeEnv,
+    strings: &'a crate::strings::Helpers,
+}
+
+impl Cx<'_> {
+    fn string_ty(&self, e: &Expression) -> Option<Ty> {
+        let t = self.ty(e)?;
+        crate::strings::cap(self.env, &t).map(|_| t)
+    }
+}
+
+fn member(obj: &Expression, m: &str) -> Expression {
+    Expression {
+        kind: ExpressionKind::MemberAccess {
+            object: Box::new(obj.clone()),
+            member: Ident::new(m, obj.span),
+        },
+        span: obj.span,
+    }
+}
+
+fn int(v: i128, span: Span) -> Expression {
+    Expression {
+        kind: ExpressionKind::IntegerLiteral(v),
+        span,
+    }
+}
+
+fn assign(target: Expression, value: Expression, span: Span) -> Statement {
+    Statement {
+        kind: StatementKind::Assignment { target, value },
+        span,
+    }
+}
+
+/// `s := 'text'`: LEN and the characters (truncated to the capacity).
+fn string_literal_assign(target: &Expression, text: &str, cap: u32, span: Span) -> Statement {
+    let bytes = crate::data::decode_string(text);
+    let n = bytes.len().min(cap as usize);
+    let mut body = vec![assign(member(target, "LEN"), int(n as i128, span), span)];
+    for (i, b) in bytes.iter().take(n).enumerate() {
+        let el = Expression {
+            kind: ExpressionKind::ArrayIndex {
+                array: Box::new(member(target, "DATA")),
+                indices: vec![int(i as i128, span)],
+            },
+            span,
+        };
+        body.push(assign(el, int(*b as i8 as i128, span), span));
+    }
+    Statement {
+        kind: StatementKind::If {
+            condition: Expression {
+                kind: ExpressionKind::BoolLiteral(true),
+                span,
+            },
+            then_body: body,
+            elsif_branches: Vec::new(),
+            else_body: None,
+        },
+        span,
+    }
+}
+
+/// `s = 'text'` / `s <> 'text'`: LEN and every character.
+fn string_literal_equal(s: &Expression, text: &str, span: Span) -> Expression {
+    let bytes = crate::data::decode_string(text);
+    let and = |l: Expression, r: Expression| Expression {
+        kind: ExpressionKind::BinaryOp {
+            op: BinaryOp::And,
+            left: Box::new(l),
+            right: Box::new(r),
+        },
+        span,
+    };
+    let eq = |l: Expression, r: Expression| Expression {
+        kind: ExpressionKind::BinaryOp {
+            op: BinaryOp::Equal,
+            left: Box::new(l),
+            right: Box::new(r),
+        },
+        span,
+    };
+    let mut e = eq(member(s, "LEN"), int(bytes.len() as i128, span));
+    for (i, b) in bytes.iter().enumerate() {
+        let el = Expression {
+            kind: ExpressionKind::ArrayIndex {
+                array: Box::new(member(s, "DATA")),
+                indices: vec![int(i as i128, span)],
+            },
+            span,
+        };
+        e = and(e, eq(el, int(*b as i8 as i128, span)));
+    }
+    Expression {
+        kind: ExpressionKind::Parenthesized(Box::new(e)),
+        span,
+    }
 }
 
 fn promote(a: Elem, b: Elem) -> Option<Elem> {
@@ -239,6 +354,38 @@ fn stmt(s: &mut Statement, cx: &Cx) {
         StatementKind::Assignment { target, value } => {
             expr(target, cx);
             expr(value, cx);
+            if let Some(tt) = cx.string_ty(target) {
+                let cap = crate::strings::cap(cx.env, &tt).unwrap_or(0);
+                if let ExpressionKind::StringLiteral(text) = &value.kind {
+                    let span = s.span;
+                    *s = string_literal_assign(target, text, cap, span);
+                    return;
+                }
+                if let Some(vt) = cx.string_ty(value)
+                    && vt != tt
+                    && let Some(f) = cx.strings.copy(cx.env, &vt, &tt)
+                {
+                    let span = s.span;
+                    let call_stmt = Statement {
+                        kind: StatementKind::FunctionCall {
+                            callee: ident_expr(&f, span),
+                            args: [value.clone(), target.clone()]
+                                .into_iter()
+                                .map(|value| CallArg {
+                                    name: None,
+                                    span: value.span,
+                                    value,
+                                    is_output: false,
+                                    negated: false,
+                                })
+                                .collect(),
+                        },
+                        span,
+                    };
+                    *s = call_stmt;
+                    return;
+                }
+            }
             let tt = cx.ty(target).and_then(|t| t.elem());
             let vt = cx.ty(value).and_then(|t| t.elem());
             if let (Some(t), Some(v)) = (tt, vt)
@@ -334,6 +481,63 @@ fn expr(e: &mut Expression, cx: &Cx) {
         }
         ExpressionKind::MemberAccess { object, .. } => expr(object, cx),
         _ => {}
+    }
+    // String comparisons.
+    if let ExpressionKind::BinaryOp { op, left, right } = &e.kind
+        && matches!(
+            op,
+            BinaryOp::Equal
+                | BinaryOp::NotEqual
+                | BinaryOp::Less
+                | BinaryOp::LessEqual
+                | BinaryOp::Greater
+                | BinaryOp::GreaterEqual
+        )
+    {
+        let sp = e.span;
+        let (lt, rt) = (cx.string_ty(left), cx.string_ty(right));
+        // Against a literal: equality only.
+        let lit = |x: &Expression| match &x.kind {
+            ExpressionKind::StringLiteral(t) => Some(t.clone()),
+            _ => None,
+        };
+        if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
+            let pair = match (&lt, &rt, lit(left), lit(right)) {
+                (Some(_), _, _, Some(t)) => Some(((**left).clone(), t)),
+                (_, Some(_), Some(t), _) => Some(((**right).clone(), t)),
+                _ => None,
+            };
+            if let Some((s_expr, text)) = pair {
+                let eq = string_literal_equal(&s_expr, &text, sp);
+                *e = if *op == BinaryOp::Equal {
+                    eq
+                } else {
+                    Expression {
+                        kind: ExpressionKind::UnaryOp {
+                            op: UnaryOp::Not,
+                            operand: Box::new(eq),
+                        },
+                        span: sp,
+                    }
+                };
+                return;
+            }
+        }
+        if let (Some(a), Some(b)) = (lt, rt)
+            && let Some(f) = cx.strings.compare(cx.env, &a, &b)
+        {
+            let op = *op;
+            let cmp = call(&f, vec![(**left).clone(), (**right).clone()], sp);
+            *e = Expression {
+                kind: ExpressionKind::BinaryOp {
+                    op,
+                    left: Box::new(cmp),
+                    right: Box::new(int(0, sp)),
+                },
+                span: sp,
+            };
+            return;
+        }
     }
     // Integer division and modulo.
     let ExpressionKind::BinaryOp { op, left, right } = &e.kind else {

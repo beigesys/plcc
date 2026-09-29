@@ -103,6 +103,32 @@ impl Out {
     }
 }
 
+/// Every span in `value` set to the start of the file (for generated code
+/// that stands for nothing in it).
+pub(crate) fn zero_spans<T: serde::Serialize + serde::de::DeserializeOwned>(value: T) -> T {
+    fn walk(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Object(map) => {
+                if map.len() == 2 && map.contains_key("start") && map.contains_key("end") {
+                    map.insert("start".into(), 0.into());
+                    map.insert("end".into(), 0.into());
+                    return;
+                }
+                for (_, c) in map.iter_mut() {
+                    walk(c);
+                }
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(walk),
+            _ => {}
+        }
+    }
+    let Ok(mut json) = serde_json::to_value(&value) else {
+        return value;
+    };
+    walk(&mut json);
+    serde_json::from_value(json).unwrap_or(value)
+}
+
 pub(crate) struct SpanMap {
     segs: Vec<Segment>,
 }

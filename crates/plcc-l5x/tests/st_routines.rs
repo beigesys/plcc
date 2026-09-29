@@ -20,6 +20,11 @@ fn st_routine_runs_with_logix_semantics() {
             200,
             "JSR(Doubler, 1, Clamped) → SBR(Arg)"
         );
+        assert_eq!(
+            plc.get_real("Doubled2"),
+            200.0,
+            "RET(Doubled) → JSR return operand (REAL)"
+        );
         assert_eq!(plc.get("Elements"), 5);
         // Integer divide by zero: Source A; MOD by zero: 0 (1756-RM003 DIV/MOD).
         assert_eq!(plc.get("Quot"), 150);
@@ -28,10 +33,15 @@ fn st_routine_runs_with_logix_semantics() {
         assert_eq!(plc.get("Rounded"), 2);
         // INT := 16#7FFF + 1 is computed in DINT and truncated.
         assert_eq!(plc.get("Word__"), -32768);
+        assert_eq!(plc.get("Copied[0]"), 2, "COP in ST");
+        assert_eq!(plc.get("Copied[2]"), 4);
+        assert!(!plc.get_bool("LampOn"));
 
         plc.set_bool("Go", true);
         plc.scan();
         assert_eq!(plc.get("State"), 1, "GoAlias → Go");
+        assert!(plc.get_bool("LampOn"), "AOI alias parameter Red → Cmd.0");
+        assert_eq!(plc.get("Lamp1.Cmd"), 1);
         plc.scan();
         plc.scan();
         assert_eq!(plc.get("State"), 3);

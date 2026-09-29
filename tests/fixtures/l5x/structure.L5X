@@ -116,6 +116,9 @@
 <Tag Name="P1" TagType="Base" DataType="DINT"/>
 <Tag Name="P2" TagType="Base" DataType="DINT"/>
 <Tag Name="PSum" TagType="Base" DataType="DINT"/>
+<Tag Name="SqIn" TagType="Base" DataType="INT"/>
+<Tag Name="SqOut" TagType="Base" DataType="DINT"/>
+<Tag Name="SqTmp" TagType="Base" DataType="DINT"/>
 <Tag Name="LocalRun" TagType="Alias" AliasFor="M2.Fault"/>
 <Tag Name="SawFault" TagType="Base" DataType="BOOL"/>
 </Tags>
@@ -123,7 +126,7 @@
 <Routine Name="MainRoutine" Type="RLL">
 <RLLContent>
 <Rung Number="0" Type="N"><Text><![CDATA[JSR(Sub1,0);]]></Text></Rung>
-<Rung Number="1" Type="N"><Text><![CDATA[JSR(SubParams,2,5,Arr[1]);]]></Text></Rung>
+<Rung Number="1" Type="N"><Text><![CDATA[JSR(SubParams,2,5,Arr[1])JSR(Square,1,7,SqOut);]]></Text></Rung>
 <Rung Number="2" Type="N"><Text><![CDATA[XIC(AoiGate)Scale_AOI(ScaleTag,RawIn,Scaled,RefCount)OTE(AoiOut);]]></Text></Rung>
 <Rung Number="3" Type="N"><Text><![CDATA[COP(Arr[0],Arr2[2],3)FLL(7,Arr3[1],10);]]></Text></Rung>
 <Rung Number="4" Type="N"><Text><![CDATA[XIC(StartAlias)MOV(M1.Speed,SpeedCopy);]]></Text></Rung>
@@ -145,6 +148,12 @@
 <Rung Number="0" Type="N"><Text><![CDATA[ADD(SubCalls,1,SubCalls);]]></Text></Rung>
 <Rung Number="1" Type="N"><Text><![CDATA[RET();]]></Text></Rung>
 <Rung Number="2" Type="N"><Text><![CDATA[OTE(AfterRet);]]></Text></Rung>
+</RLLContent>
+</Routine>
+<Routine Name="Square" Type="RLL">
+<RLLContent>
+<Rung Number="0" Type="N"><Text><![CDATA[SBR(SqIn)[LES(SqIn,0) RET(0) ,MUL(SqIn,SqIn,SqTmp) ];]]></Text></Rung>
+<Rung Number="1" Type="N"><Text><![CDATA[RET(SqTmp);]]></Text></Rung>
 </RLLContent>
 </Routine>
 <Routine Name="SubParams" Type="RLL">
