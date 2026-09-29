@@ -1277,7 +1277,13 @@ pub fn desugar(unit: &CompilationUnit) -> (Option<CompilationUnit>, Vec<DesugarE
                 );
             }
             Declaration::GlobalVarDecl(b) => init_exprs(&mut rw, std::slice::from_mut(b)),
-            Declaration::TypeDecl(_) | Declaration::Configuration(_) => {}
+            Declaration::TypeDecl(t) => {
+                type_exprs(&mut rw, &mut t.type_spec);
+                if let Some(init) = &t.initializer {
+                    t.initializer = Some(rw.expr(init));
+                }
+            }
+            Declaration::Configuration(_) => {}
         }
         changed |= rw.changed;
         enum_strings.extend(rw.enum_strings);
@@ -1449,7 +1455,46 @@ fn init_exprs(rw: &mut Rewriter, blocks: &mut [VarBlock]) {
             if let Some(init) = &d.initializer {
                 d.initializer = Some(rw.expr(init));
             }
+            type_exprs(rw, &mut d.type_spec);
         }
+    }
+}
+
+/// The expressions inside a type: array bounds, subrange bounds, string
+/// lengths, struct field defaults (`DINT(GVL.MIN..GVL.MAX)`).
+fn type_exprs(rw: &mut Rewriter, ts: &mut TypeSpec) {
+    match &mut ts.kind {
+        TypeSpecKind::Array { ranges, base } => {
+            for r in ranges {
+                r.low = rw.expr(&r.low);
+                r.high = rw.expr(&r.high);
+            }
+            type_exprs(rw, base);
+        }
+        TypeSpecKind::Subrange { low, high, .. } => {
+            **low = rw.expr(low);
+            **high = rw.expr(high);
+        }
+        TypeSpecKind::StringType {
+            length: Some(len), ..
+        } => **len = rw.expr(len),
+        TypeSpecKind::Pointer(base) | TypeSpecKind::Reference(base) => type_exprs(rw, base),
+        TypeSpecKind::Struct(fields) | TypeSpecKind::Union(fields) => {
+            for f in fields {
+                type_exprs(rw, &mut f.type_spec);
+                if let Some(init) = &f.initializer {
+                    f.initializer = Some(rw.expr(init));
+                }
+            }
+        }
+        TypeSpecKind::Enum(spec) => {
+            for v in &mut spec.values {
+                if let Some(val) = &v.value {
+                    v.value = Some(rw.expr(val));
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1467,6 +1512,7 @@ fn lower_members(
 ) {
     rw.ctx.pou = Some(pou.to_string());
     for m in methods.iter_mut() {
+        init_exprs(rw, &mut m.var_blocks);
         rw.ctx.locals = locals_of(&m.var_blocks);
         rw.ctx.getter = None;
         let mut stat = own_stat.clone();

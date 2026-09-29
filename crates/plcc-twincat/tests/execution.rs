@@ -39,6 +39,8 @@ fn demo_project_runs() {
         assert!(!plc.get_bool("MAIN.bAtLimit"));
         // DUT struct field and qualified enum.
         assert_eq!(plc.get("MAIN.stSample.nValue"), 3);
+        // An array bound written with a GVL-qualified constant.
+        assert_eq!(plc.get("MAIN.nLast"), 300);
         assert_eq!(plc.get("MAIN.eMode"), 11, "E_Mode.Done");
         // PRG_Stats runs only when MAIN calls it (it is in no task): samples 7,
         // 14, 21 through its method; Mean is its property.

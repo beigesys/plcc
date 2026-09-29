@@ -6,6 +6,7 @@ STRUCT
     nValue : DINT;
     fScale : LREAL := 2.5;
     eMode  : E_Mode := E_Mode.Idle;
+    aLast  : ARRAY[1..GVL_Main.MAX_STEP] OF DINT;
 END_STRUCT
 END_TYPE
 ]]></Declaration>

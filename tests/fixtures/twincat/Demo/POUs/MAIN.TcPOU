@@ -16,6 +16,7 @@ VAR
     nItfStep : DINT;
     nStatsMax : DINT;
     nStatsMean : DINT;
+    nLast : DINT;
 END_VAR
 ]]></Declaration>
     <Implementation>
@@ -57,6 +58,8 @@ END_IF
 
 // DUT struct and enum.
 stSample.nValue := stSample.nValue + 1;
+stSample.aLast[GVL_Main.MAX_STEP] := stSample.nValue * 100;
+nLast := stSample.aLast[7];
 CASE eMode OF
     E_Mode.Idle: eMode := E_Mode.Running;
     E_Mode.Running: IF stSample.nValue >= 3 THEN eMode := E_Mode.Done; END_IF
