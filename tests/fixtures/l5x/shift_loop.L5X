@@ -1,9 +1,38 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <!-- SPDX-License-Identifier: MPL-2.0 -->
 <!-- Written for plcc: BSL/BSR bit shifting across DINT elements, FOR/BRK,
-     SIZE, UID/UIE, and the GSV/MSG instructions plcc accepts with a warning. -->
+     SIZE, UID/UIE, the GSV/MSG instructions plcc accepts with a warning, and
+     an AOI taking a MODULE reference (passed by module name). -->
 <RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="33.01" TargetName="ShiftLoop" TargetType="Controller">
 <Controller Use="Target" Name="ShiftLoop" ProcessorType="1756-L83E" MajorRev="33">
+<Modules>
+<Module Name="Local" CatalogNumber="1756-L83E" Vendor="1" ProductType="14" ProductCode="166" Major="33" Minor="11" ParentModule="Local" ParentModPortId="1" Inhibited="false" MajorFault="true">
+<Ports><Port Id="1" Address="0" Type="ICP" Upstream="false"><Bus Size="10"/></Port></Ports>
+</Module>
+<Module Name="Drive1" CatalogNumber="PowerFlex 525-EENET" Vendor="1" ProductType="150" ProductCode="9" Major="7" Minor="1" ParentModule="Local" ParentModPortId="2" Inhibited="false" MajorFault="false"/>
+</Modules>
+<AddOnInstructionDefinitions>
+<AddOnInstructionDefinition Name="ModStatus" Revision="1.0" ExecutePrescan="false" ExecutePostscan="false" ExecuteEnableInFalse="false">
+<Parameters>
+<Parameter Name="EnableIn" TagType="Base" DataType="BOOL" Usage="Input" Radix="Decimal" Required="false" Visible="false"/>
+<Parameter Name="EnableOut" TagType="Base" DataType="BOOL" Usage="Output" Radix="Decimal" Required="false" Visible="false"/>
+<Parameter Name="Ref_Module" TagType="Base" DataType="MODULE" Usage="InOut" Required="true" Visible="true"/>
+<Parameter Name="Calls" TagType="Base" DataType="DINT" Usage="Output" Radix="Decimal" Required="true" Visible="true"/>
+</Parameters>
+<LocalTags>
+<LocalTag Name="EntryStatus" DataType="INT" Radix="Decimal"/>
+<LocalTag Name="N" DataType="DINT" Radix="Decimal"/>
+</LocalTags>
+<Routines>
+<Routine Name="Logic" Type="ST">
+<STContent>
+<Line Number="0"><![CDATA[GSV(Module, Ref_Module, EntryStatus, EntryStatus);]]></Line>
+<Line Number="1"><![CDATA[N := N + 1; Calls := N;]]></Line>
+</STContent>
+</Routine>
+</Routines>
+</AddOnInstructionDefinition>
+</AddOnInstructionDefinitions>
 <Tags>
 <Tag Name="Clock" TagType="Base" DataType="BOOL"/>
 <Tag Name="Part" TagType="Base" DataType="BOOL"/>
@@ -20,6 +49,8 @@
 <Tag Name="Now" TagType="Base" DataType="DINT" Dimensions="7"/>
 <Tag Name="Msg1" TagType="Base" DataType="MESSAGE"/>
 <Tag Name="Poll" TagType="Base" DataType="BOOL"/>
+<Tag Name="DriveStatus" TagType="Base" DataType="ModStatus"/>
+<Tag Name="StatusCalls" TagType="Base" DataType="DINT"/>
 </Tags>
 <Programs>
 <Program Name="MainProgram" MainRoutineName="Main">
@@ -32,6 +63,7 @@
 <Rung Number="3" Type="N"><Text><![CDATA[SIZE(Table,0,TableLen)UID()UIE();]]></Text></Rung>
 <Rung Number="4" Type="N"><Text><![CDATA[GSV(WallClockTime,,LocalDateTime,Now[0]);]]></Text></Rung>
 <Rung Number="5" Type="N"><Text><![CDATA[XIC(Poll)XIO(Msg1.EN)MSG(Msg1);]]></Text></Rung>
+<Rung Number="6" Type="N"><Text><![CDATA[ModStatus(DriveStatus,Drive1,StatusCalls);]]></Text></Rung>
 </RLLContent>
 </Routine>
 <Routine Name="AddUp" Type="RLL">

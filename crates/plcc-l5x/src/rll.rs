@@ -1033,9 +1033,24 @@ impl<'a, 'x> R<'a, 'x> {
                         .get(&name.to_ascii_lowercase())
                         .cloned()
                         .unwrap_or_default();
+                    // More inputs than the SBR takes: the extras are not
+                    // received. Fewer: "A major fault will occur if: JSR
+                    // instruction has fewer input parameters than SBR
+                    // instruction" (4/31, 1756-RM003 JSR/SBR/RET).
                     if targets.len() < n {
+                        self.errors.push(L5xError::warning(
+                            format!(
+                                "JSR passes {n} input(s) but `{name}` takes {}; the rest are ignored",
+                                targets.len()
+                            ),
+                            t.span(ins.span.clone()),
+                        ));
+                    } else if targets.len() > n {
                         return Err(L5xError::new(
-                            format!("JSR passes {n} input(s) but `{name}` has no SBR taking them"),
+                            format!(
+                                "JSR passes {n} input(s) but the SBR of `{name}` takes {} (a major fault 4/31 on a controller)",
+                                targets.len()
+                            ),
                             t.span(ins.span.clone()),
                         ));
                     }
@@ -1231,6 +1246,16 @@ impl<'a, 'x> R<'a, 'x> {
                 ));
             }
             "BSL" | "BSR" => self.bit_shift(ins, t, up == "BSL")?,
+            "FFL" | "LFL" => self.stack_load(ins, t)?,
+            "FFU" | "LFU" => self.stack_unload(ins, t, up == "LFU")?,
+            "SWPB" => {
+                self.arity(ins, 3, t)?;
+                let se = self.operand(ins, 0, t)?;
+                let de = self.operand(ins, 2, t)?;
+                let mode = t.text[ins.operands[1].clone()].trim();
+                let stmt = swpb_code(self.ctx, &se, mode, &de, t, t.span(ins.span.clone()))?;
+                self.when_true(&stmt);
+            }
             "EVENT" => {
                 self.arity(ins, 1, t)?;
                 let name = t.text[ins.operands[0].clone()].trim();
@@ -1448,6 +1473,150 @@ impl<'a, 'x> R<'a, 'x> {
         Ok(())
     }
 
+    /// The FIFO/LIFO operand of FFL/FFU/LFL/LFU (its first element) and an
+    /// accessor for element `k` counted from there.
+    fn stack_array(&self, ins: &Instr, i: usize, t: &Text) -> Res<(Ty, impl Fn(&str) -> String + use<>)> {
+        let e = self.operand(ins, i, t)?;
+        let indexed = match &e.kind {
+            LKind::Path(p) => {
+                matches!(p.segs.last(), Some(Seg::Index(..)))
+                    || matches!(self.ctx.path(p, t)?.1, Ty::Array(..))
+            }
+            _ => false,
+        };
+        if !indexed {
+            return Err(L5xError::new(
+                format!("{} needs an array", ins.name),
+                t.span(ins.operands[i].clone()),
+            ));
+        }
+        let (arr, ety, start, _) = self.element_base(&e, t)?;
+        Ok((ety, move |k: &str| format!("{arr}[LINT_TO_DINT({start} + ({k}))]")))
+    }
+
+    /// `dest := src` between a FIFO element and the Source/Destination:
+    /// numbers converted without touching the status flags ("If Source and
+    /// FIFO data types mismatch, the instruction converts the Source value"),
+    /// strings by LEN and characters, structures of the same type as a whole.
+    fn stack_move(&self, d: &str, dty: &Ty, s: &str, sty: &Ty, sp: Span) -> Res<String> {
+        if let (Some(e), Some(dom)) = (dty.elem(), dom_of(sty)) {
+            let v = Val { st: s.to_string(), dom, ty: sty.clone() };
+            return Ok(format!("{d} := {};", cast(&v, e)));
+        }
+        if sty == dty {
+            return Ok(format!("{d} := {s};"));
+        }
+        if let Some(f) = self.sh.strings.copy(self.sh.env, sty, dty) {
+            return Ok(format!("{f}({s}, {d});"));
+        }
+        Err(L5xError::new(
+            format!(
+                "cannot move a {} into a {}",
+                self.sh.env.logix(sty),
+                self.sh.env.logix(dty)
+            ),
+            sp,
+        ))
+    }
+
+    /// A zero of type `ty` (FFU/LFU return 0 from an empty stack, LFU clears
+    /// the unloaded element): a literal, or a hidden never-written variable.
+    fn zero_of(&mut self, ty: &Ty) -> String {
+        match dom_of(ty) {
+            Some(Dom::Bool) => "FALSE".into(),
+            Some(Dom::Int) => "0".into(),
+            Some(_) => "0.0".into(),
+            None => {
+                let st = self.sh.env.st(ty);
+                let name = format!("lx__zero_{}", st.replace(|c: char| !c.is_ascii_alphanumeric(), "_"));
+                self.temps.insert(format!("{name} : {st}"));
+                name
+            }
+        }
+    }
+
+    /// FFL / LFL (1756-RM003 "FIFO Load (FFL)", "LIFO Load (LFL)", their
+    /// flow charts): on the rung's false-to-true transition (EN), load Source
+    /// at `.POS` and advance `.POS` unless the stack is full (DN); every
+    /// execution updates DN (`.POS >= .LEN`) and EM (`.POS = 0`), both set
+    /// when `.LEN <= 0` or `.POS < 0`. Prescan sets EN "to prevent a false
+    /// load when scan begins".
+    fn stack_load(&mut self, ins: &Instr, t: &Text) -> Res<()> {
+        self.arity(ins, 5, t)?;
+        let (ety, el) = self.stack_array(ins, 1, t)?;
+        let (c, _) = self.structure(ins, 2, t, &["CONTROL"])?;
+        self.pseudo(ins, t, &c, 3, "LEN");
+        self.pseudo(ins, t, &c, 4, "POS");
+        let sp = t.span(ins.span.clone());
+        let numeric = ety.elem().filter(|_| dom_of(&ety).is_some());
+        let load = if let Some(e) = numeric {
+            let v = self.val(ins, 0, t)?;
+            format!("{} := {};", el(&format!("{c}.POS - 1")), cast(&v, e))
+        } else {
+            let se = self.operand(ins, 0, t)?;
+            let (s, sty) = match &se.kind {
+                LKind::Path(p) => self.ctx.path(p, t)?,
+                _ => return Err(L5xError::new("the Source must be a tag", t.span(se.span.clone()))),
+            };
+            self.stack_move(&el(&format!("{c}.POS - 1")), &ety, &s, &sty, sp)?
+        };
+        let status = stack_status(&c);
+        self.line(&format!(
+            "IF lx__rc THEN\n    IF {c}.LEN <= 0 OR {c}.POS < 0 THEN\n        {c}.DN := TRUE; {c}.EM := TRUE;\n    \
+             ELSIF NOT {c}.EN THEN\n        {c}.DN := FALSE; {c}.EM := FALSE;\n        {c}.EN := TRUE;\n        \
+             {c}.POS := {c}.POS + 1;\n        IF {c}.POS >= {c}.LEN THEN {c}.DN := TRUE; END_IF;\n        \
+             IF {c}.POS > {c}.LEN THEN\n            {c}.POS := {c}.POS - 1;\n        ELSE\n            {load}\n        END_IF;\n    \
+             ELSE\n        {status}\n    END_IF;\nELSE\n    {c}.EN := FALSE;\n    {status}\nEND_IF;"
+        ));
+        self.pre_line(&format!("{c}.EN := TRUE; {status}"));
+        Ok(())
+    }
+
+    /// FFU / LFU (1756-RM003 "FIFO Unload (FFU)", "LIFO Unload (LFU)"): on
+    /// the rung's false-to-true transition (EU), an empty stack (`.POS < 1`)
+    /// returns 0; otherwise FFU returns element 0 and shifts elements
+    /// 1..LEN-1 down one, LFU returns element `.POS - 1` and stores 0 there;
+    /// `.POS` goes down by one and EM is set when the stack is now empty.
+    /// Status bits as for FFL; prescan sets EU.
+    fn stack_unload(&mut self, ins: &Instr, t: &Text, lifo: bool) -> Res<()> {
+        self.arity(ins, 5, t)?;
+        let (ety, el) = self.stack_array(ins, 0, t)?;
+        let (d, dty) = self.dest(ins, 1, t)?;
+        let (c, _) = self.structure(ins, 2, t, &["CONTROL"])?;
+        self.pseudo(ins, t, &c, 3, "LEN");
+        self.pseudo(ins, t, &c, 4, "POS");
+        let sp = t.span(ins.span.clone());
+        let dz = self.zero_of(&dty);
+        let dzero = self.stack_move(&d, &dty, &dz, &dty, sp)?;
+        let unload = if lifo {
+            let ez = self.zero_of(&ety);
+            format!(
+                "IF {c}.POS > {c}.LEN THEN {c}.POS := {c}.LEN; END_IF;\n            {c}.POS := {c}.POS - 1;\n            \
+                 {get}\n            {clear}",
+                get = self.stack_move(&d, &dty, &el(&format!("{c}.POS")), &ety, sp)?,
+                clear = self.stack_move(&el(&format!("{c}.POS")), &ety, &ez, &ety, sp)?,
+            )
+        } else {
+            self.temps.insert("lx__i : LINT".into());
+            format!(
+                "{c}.POS := {c}.POS - 1;\n            {get}\n            \
+                 FOR lx__i := 1 TO DINT_TO_LINT({c}.LEN) - 1 DO\n                {shift}\n            END_FOR;",
+                get = self.stack_move(&d, &dty, &el("0"), &ety, sp)?,
+                shift = self.stack_move(&el("lx__i - 1"), &ety, &el("lx__i"), &ety, sp)?,
+            )
+        };
+        let status = stack_status(&c);
+        self.line(&format!(
+            "IF lx__rc THEN\n    IF {c}.LEN <= 0 OR {c}.POS < 0 THEN\n        {c}.DN := TRUE; {c}.EM := TRUE;\n    \
+             ELSIF NOT {c}.EU THEN\n        {c}.DN := FALSE; {c}.EM := FALSE;\n        {c}.EU := TRUE;\n        \
+             IF {c}.POS <= 1 THEN {c}.EM := TRUE; END_IF;\n        IF {c}.POS < 1 THEN\n            {dzero}\n        \
+             ELSE\n            {unload}\n        END_IF;\n    ELSE\n        {status}\n    END_IF;\nELSE\n    \
+             {c}.EU := FALSE;\n    {status}\nEND_IF;"
+        ));
+        self.pre_line(&format!("{c}.EU := TRUE; {status}"));
+        Ok(())
+    }
+
     fn fll(&mut self, ins: &Instr, t: &Text) -> Res<()> {
         self.arity(ins, 3, t)?;
         let se = self.operand(ins, 0, t)?;
@@ -1458,6 +1627,65 @@ impl<'a, 'x> R<'a, 'x> {
         self.temps.insert("lx__n : LINT".into());
         self.when_true(&stmt);
         Ok(())
+    }
+}
+
+/// DN and EM of a FIFO/LIFO CONTROL from `.POS` and `.LEN` (the status
+/// branch of the FFL/FFU/LFL/LFU flow charts).
+fn stack_status(c: &str) -> String {
+    format!(
+        "IF {c}.LEN <= 0 OR {c}.POS < 0 THEN {c}.DN := TRUE; {c}.EM := TRUE; \
+         ELSE {c}.DN := {c}.POS >= {c}.LEN; {c}.EM := {c}.POS = 0; END_IF;"
+    )
+}
+
+/// SWPB(Source, Order Mode, Dest) (1756-RM003 "Swap Byte (SWPB)"): an INT
+/// swaps its two bytes whatever the mode (sign-extended into a DINT Dest); a
+/// DINT ABCD becomes DCBA (REVERSE), CDAB (WORD) or BADC (HIGH/LOW). No
+/// status flags.
+pub(crate) fn swpb_code(
+    ctx: &Ctx,
+    se: &LExpr,
+    mode: &str,
+    de: &LExpr,
+    t: &dyn SpanOf,
+    span: Span,
+) -> Res<String> {
+    let LKind::Path(p) = &se.kind else {
+        return Err(L5xError::new("the SWPB Source must be a tag", t.span_of(se.span.clone())));
+    };
+    let (s, sty) = ctx.path(p, t)?;
+    let (d, dty) = ctx.dest(de, t)?;
+    let m = mode.to_ascii_uppercase().replace('/', "");
+    let v = match (sty.elem(), m.as_str()) {
+        (Some(Elem::Int), _) => format!("WORD_TO_INT(ROL(INT_TO_WORD({s}), 8))"),
+        (Some(Elem::Dint), "REVERSE") => format!("lx__swpb_reverse({s})"),
+        (Some(Elem::Dint), "WORD") => format!("DWORD_TO_DINT(ROL(DINT_TO_DWORD({s}), 16))"),
+        (Some(Elem::Dint), "HIGHLOW") => format!("lx__swpb_highlow({s})"),
+        (Some(Elem::Dint), _) => {
+            return Err(L5xError::new(
+                format!("SWPB order mode `{mode}`: expected REVERSE, WORD or HIGH/LOW"),
+                span,
+            ));
+        }
+        _ => {
+            return Err(L5xError::new(
+                format!("SWPB needs an INT or DINT Source, found {}", ctx.env.logix(&sty)),
+                span,
+            ));
+        }
+    };
+    match (sty.elem(), dty.elem()) {
+        (Some(Elem::Int), Some(Elem::Int)) | (Some(Elem::Dint), Some(Elem::Dint)) => Ok(format!("{d} := {v};")),
+        (Some(Elem::Int), Some(Elem::Dint)) => Ok(format!("{d} := INT_TO_DINT({v});")),
+        _ => Err(L5xError::new(
+            format!(
+                "SWPB from {} into {}: the Dest must be an INT or DINT at least as wide",
+                ctx.env.logix(&sty),
+                ctx.env.logix(&dty)
+            ),
+            span,
+        )),
     }
 }
 

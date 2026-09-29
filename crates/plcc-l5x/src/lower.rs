@@ -495,6 +495,33 @@ impl<'s> Lower<'s> {
         }
     }
 
+    /// A module's name used as an operand (the MODULE InOut of an AOI that
+    /// reads the module with GSV): a hidden global of the opaque MODULE type,
+    /// unless a tag already has the name.
+    fn module_refs(&mut self, p: &Project, globals: &mut Out) {
+        let Some(id) = self.env.lookup("MODULE") else {
+            return;
+        };
+        for m in &p.modules {
+            let name = &m.name.text;
+            if self.ctrl.get(name).is_some() || name.contains(':') {
+                continue;
+            }
+            let st = format!("lx__module_{}", ident(name));
+            let ty = Ty::Struct(id);
+            self.declare_global(globals, name, &st, &ty, None, m.name.span);
+            self.ctrl.insert(
+                name,
+                Sym {
+                    st,
+                    ty: Some(ty),
+                    unknown_type: None,
+                    decl: m.name.span,
+                },
+            );
+        }
+    }
+
     fn declare_global(
         &mut self,
         out: &mut Out,
@@ -708,6 +735,7 @@ impl<'s> Lower<'s> {
         let mut ctrl = std::mem::take(&mut self.ctrl);
         self.scope_tags(&p.tags, &mut ctrl, &mut globals, true);
         self.ctrl = ctrl;
+        self.module_refs(p, &mut globals);
         self.scope_aliases(&p.tags, None);
 
         // Programs: scopes first (for Program:X.Tag and aliases).

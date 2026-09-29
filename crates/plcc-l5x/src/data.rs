@@ -223,6 +223,11 @@ fn value_node(env: &TypeEnv, ty: &Ty, n: XNode) -> Option<String> {
                     continue;
                 };
                 let Some(f) = def.field(name) else { continue };
+                // An AOI alias member (`Src_Oper` AliasFor `eSources[1]`)
+                // views another member, whose own entry carries the value.
+                if f.st.contains(['.', '[']) {
+                    continue;
+                }
                 if let Some(v) = value_node(env, &f.ty, m) {
                     parts.push(format!("{} := {v}", f.st));
                 }

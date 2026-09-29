@@ -44,9 +44,16 @@ fn aliases_resolve_to_their_targets() {
 #[test]
 fn subroutines_with_parameters_and_ret() {
     with_plc("structure.L5X", |plc| {
+        let diags = diagnostics("structure.L5X");
+        assert!(
+            diags.iter().any(|d| d.contains("JSR passes 1 input(s) but `Sub1` takes 0")),
+            "{diags:?}"
+        );
         plc.scan();
         plc.scan();
-        assert_eq!(plc.get("MainProgram.SubCalls"), 2);
+        // Two JSRs per scan; the second passes an input Sub1 has no SBR for,
+        // which is not received (only too few inputs is a fault, 4/31).
+        assert_eq!(plc.get("MainProgram.SubCalls"), 4);
         assert!(
             !plc.get_bool("MainProgram.AfterRet"),
             "RET ends the subroutine"
@@ -79,6 +86,10 @@ fn add_on_instruction_call() {
         plc.scan();
         assert_eq!(plc.get("ScaleTag.Calls"), 2);
         assert_eq!(plc.get("RefCount"), 2);
+        // Decorated data of an AOI tag: the alias member ModeBit0 (a view of
+        // Mode.0) is skipped; Mode's own entry carries the value.
+        assert_eq!(plc.get("ScaleTag2.Mode"), 6);
+        assert_eq!(plc.get("ScaleTag.Mode"), 5, "parameter default");
     });
 }
 

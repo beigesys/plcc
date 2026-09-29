@@ -39,6 +39,10 @@
 <DefaultData Format="Decorated"><DataValue DataType="REAL" Radix="Float" Value="20.0"/></DefaultData>
 </Parameter>
 <Parameter Name="Ref" TagType="Base" DataType="DINT" Usage="InOut" Radix="Decimal" Required="true" Visible="true"/>
+<Parameter Name="Mode" TagType="Base" DataType="DINT" Usage="Input" Radix="Decimal" Required="false" Visible="false">
+<DefaultData Format="L5K"><![CDATA[5]]></DefaultData>
+</Parameter>
+<Parameter Name="ModeBit0" TagType="Alias" Usage="Input" AliasFor="Mode.0" Required="false" Visible="false"/>
 </Parameters>
 <LocalTags>
 <LocalTag Name="Calls" DataType="DINT" Radix="Decimal">
@@ -94,6 +98,16 @@
 </Tag>
 <Tag Name="GridSum" TagType="Base" DataType="DINT"/>
 <Tag Name="ScaleTag" TagType="Base" DataType="Scale_AOI"/>
+<Tag Name="ScaleTag2" TagType="Base" DataType="Scale_AOI">
+<Data Format="Decorated">
+<Structure DataType="Scale_AOI">
+<DataValueMember Name="EnableIn" DataType="BOOL" Value="1"/>
+<DataValueMember Name="MinOut" DataType="REAL" Radix="Float" Value="0.0"/>
+<DataValueMember Name="Mode" DataType="DINT" Radix="Decimal" Value="6"/>
+<DataValueMember Name="ModeBit0" DataType="BOOL" Value="1"/>
+</Structure>
+</Data>
+</Tag>
 <Tag Name="RawIn" TagType="Base" DataType="REAL"><Data Format="L5K"><![CDATA[5.00000000e+001]]></Data></Tag>
 <Tag Name="Scaled" TagType="Base" DataType="REAL"/>
 <Tag Name="RefCount" TagType="Base" DataType="DINT"/>
@@ -125,7 +139,7 @@
 <Routines>
 <Routine Name="MainRoutine" Type="RLL">
 <RLLContent>
-<Rung Number="0" Type="N"><Text><![CDATA[JSR(Sub1,0);]]></Text></Rung>
+<Rung Number="0" Type="N"><Text><![CDATA[JSR(Sub1,0)JSR(Sub1,1,P1);]]></Text></Rung>
 <Rung Number="1" Type="N"><Text><![CDATA[JSR(SubParams,2,5,Arr[1])JSR(Square,1,7,SqOut);]]></Text></Rung>
 <Rung Number="2" Type="N"><Text><![CDATA[XIC(AoiGate)Scale_AOI(ScaleTag,RawIn,Scaled,RefCount)OTE(AoiOut);]]></Text></Rung>
 <Rung Number="3" Type="N"><Text><![CDATA[COP(Arr[0],Arr2[2],3)FLL(7,Arr3[1],10);]]></Text></Rung>

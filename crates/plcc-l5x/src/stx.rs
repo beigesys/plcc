@@ -626,9 +626,23 @@ impl W<'_, '_> {
                     .get(&name.to_ascii_lowercase())
                     .cloned()
                     .unwrap_or_default();
-                if targets.len() < n.min(extra) {
+                // Extra inputs are not received; too few is a major fault
+                // 4/31 (1756-RM003 JSR/SBR/RET), as in ladder.
+                let given = n.min(extra);
+                if targets.len() < given {
+                    self.errors.push(L5xError::warning(
+                        format!(
+                            "JSR passes {given} input(s) but `{name}` takes {}; the rest are ignored",
+                            targets.len()
+                        ),
+                        self.text.span(whole.clone()),
+                    ));
+                } else if targets.len() > given {
                     self.err(
-                        format!("JSR passes {n} input(s) but `{name}` has no SBR taking them"),
+                        format!(
+                            "JSR passes {given} input(s) but the SBR of `{name}` takes {} (a major fault 4/31 on a controller)",
+                            targets.len()
+                        ),
                         whole,
                     );
                     return Some(after_semi);
@@ -786,6 +800,28 @@ impl W<'_, '_> {
                     Ok(s) => {
                         self.temps.insert("lx__i : LINT".into());
                         self.temps.insert("lx__n : LINT".into());
+                        out.m(&s, span);
+                    }
+                    Err(e) => self.errors.push(e),
+                }
+                Some(after_semi)
+            }
+            "SWPB" => {
+                let res = (|| -> Result<String, L5xError> {
+                    let op = |k: usize| -> Result<crate::operand::LExpr, L5xError> {
+                        let r = args
+                            .get(k)
+                            .and_then(|r| self.text_range(r.clone()))
+                            .ok_or_else(|| L5xError::new("SWPB needs 3 operands", span))?;
+                        operand::parse_expr(&self.text.text, r)
+                            .map_err(|e| L5xError::new(e.message, self.text.span(e.span)))
+                    };
+                    let (a, b) = (op(0)?, op(2)?);
+                    let mode = arg_text(self, 1).unwrap_or_default();
+                    crate::rll::swpb_code(self.ctx, &a, &mode, &b, self.text, span)
+                })();
+                match res {
+                    Ok(s) => {
                         out.m(&s, span);
                     }
                     Err(e) => self.errors.push(e),

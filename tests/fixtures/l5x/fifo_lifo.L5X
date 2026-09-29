@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- Written for plcc: FFL/FFU and LFL/LFU stacks sharing a CONTROL (the
+     load/unload pairs of 1756-RM003), a stack of a UDT, and SWPB in ladder
+     and Structured Text. -->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="33.01" TargetName="Stacks" TargetType="Controller">
+<Controller Use="Target" Name="Stacks" ProcessorType="1756-L83E" MajorRev="33">
+<DataTypes>
+<DataType Name="Part" Family="NoFamily" Class="User">
+<Members>
+<Member Name="Id" DataType="DINT" Dimension="0" Radix="Decimal" Hidden="false" ExternalAccess="Read/Write"/>
+<Member Name="Weight" DataType="REAL" Dimension="0" Radix="Float" Hidden="false" ExternalAccess="Read/Write"/>
+</Members>
+</DataType>
+</DataTypes>
+<Tags>
+<Tag Name="Load" TagType="Base" DataType="BOOL"/>
+<Tag Name="Unload" TagType="Base" DataType="BOOL"/>
+<Tag Name="In" TagType="Base" DataType="DINT"/>
+<Tag Name="Out" TagType="Base" DataType="DINT"/>
+<Tag Name="Fifo" TagType="Base" DataType="DINT" Dimensions="4"/>
+<Tag Name="FifoCtl" TagType="Base" DataType="CONTROL"/>
+<Tag Name="LOut" TagType="Base" DataType="INT"/>
+<Tag Name="Lifo" TagType="Base" DataType="INT" Dimensions="5"/>
+<Tag Name="LifoCtl" TagType="Base" DataType="CONTROL"/>
+<Tag Name="NewPart" TagType="Base" DataType="Part"/>
+<Tag Name="GotPart" TagType="Base" DataType="Part"/>
+<Tag Name="Parts" TagType="Base" DataType="Part" Dimensions="3"/>
+<Tag Name="PartCtl" TagType="Base" DataType="CONTROL"/>
+<Tag Name="Word" TagType="Base" DataType="INT"><Data Format="L5K"><![CDATA[4660]]></Data></Tag>
+<Tag Name="WordSw" TagType="Base" DataType="INT"/>
+<Tag Name="WordDint" TagType="Base" DataType="DINT"/>
+<Tag Name="Quad" TagType="Base" DataType="DINT"><Data Format="L5K"><![CDATA[16#11223344]]></Data></Tag>
+<Tag Name="Rev" TagType="Base" DataType="DINT"/>
+<Tag Name="Wrd" TagType="Base" DataType="DINT"/>
+<Tag Name="HiLo" TagType="Base" DataType="DINT"/>
+<Tag Name="StRev" TagType="Base" DataType="DINT"/>
+</Tags>
+<Programs>
+<Program Name="MainProgram" MainRoutineName="Main">
+<Routines>
+<Routine Name="Main" Type="RLL">
+<RLLContent>
+<Rung Number="0" Type="N"><Text><![CDATA[XIC(Load)FFL(In,Fifo[0],FifoCtl,4,0);]]></Text></Rung>
+<Rung Number="1" Type="N"><Text><![CDATA[XIC(Unload)FFU(Fifo[0],Out,FifoCtl,4,0);]]></Text></Rung>
+<Rung Number="2" Type="N"><Text><![CDATA[XIC(Load)LFL(In,Lifo[1],LifoCtl,3,0);]]></Text></Rung>
+<Rung Number="3" Type="N"><Text><![CDATA[XIC(Unload)LFU(Lifo[1],LOut,LifoCtl,3,0);]]></Text></Rung>
+<Rung Number="4" Type="N"><Text><![CDATA[XIC(Load)FFL(NewPart,Parts[0],PartCtl,3,0);]]></Text></Rung>
+<Rung Number="5" Type="N"><Text><![CDATA[XIC(Unload)FFU(Parts[0],GotPart,PartCtl,3,0);]]></Text></Rung>
+<Rung Number="6" Type="N"><Text><![CDATA[SWPB(Word,REVERSE,WordSw)SWPB(Word,WORD,WordDint)SWPB(Quad,REVERSE,Rev)SWPB(Quad,WORD,Wrd)SWPB(Quad,HIGH/LOW,HiLo);]]></Text></Rung>
+<Rung Number="7" Type="N"><Text><![CDATA[JSR(StSwap,0);]]></Text></Rung>
+</RLLContent>
+</Routine>
+<Routine Name="StSwap" Type="ST">
+<STContent>
+<Line Number="0"><![CDATA[SWPB(Quad, REVERSE, StRev);]]></Line>
+</STContent>
+</Routine>
+</Routines>
+</Program>
+</Programs>
+</Controller>
+</RSLogix5000Content>

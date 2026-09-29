@@ -140,6 +140,20 @@ VAR m : LWORD; END_VAR
     END_IF;
 END_FUNCTION
 
+(* SWPB order modes of a DINT (1756-RM003 "Swap Byte (SWPB)"):
+   HIGH/LOW ABCD -> BADC, REVERSE ABCD -> DCBA. *)
+FUNCTION lx__swpb_highlow : DINT
+VAR_INPUT v : DINT; END_VAR
+VAR x : DWORD; END_VAR
+    x := DINT_TO_DWORD(v);
+    lx__swpb_highlow := DWORD_TO_DINT(SHL(x AND DWORD#16#00FF00FF, 8) OR (SHR(x, 8) AND DWORD#16#00FF00FF));
+END_FUNCTION
+
+FUNCTION lx__swpb_reverse : DINT
+VAR_INPUT v : DINT; END_VAR
+    lx__swpb_reverse := DWORD_TO_DINT(ROL(DINT_TO_DWORD(lx__swpb_highlow(v)), 16));
+END_FUNCTION
+
 (* One bit of a DINT set or cleared (bit-array instructions BSL/BSR). *)
 FUNCTION lx__setbit_dint : DINT
 VAR_INPUT v : DINT; n : LINT; b : BOOL; END_VAR

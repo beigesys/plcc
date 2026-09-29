@@ -427,6 +427,21 @@ impl TypeEnv {
             ]),
             opaque: false,
         });
+        // MODULE (1756-RM003 "GSV/SSV Objects", MODULE object): an AOI
+        // InOut parameter of this type refers to an I/O module by name for
+        // GSV/SSV. plcc has no module objects; a MODULE is an opaque
+        // placeholder (one hidden member) so such AOIs and their calls compile.
+        env.add(StructDef {
+            logix: "MODULE".into(),
+            st: "LX_MODULE".into(),
+            kind: StructKind::Builtin,
+            fields: vec![Field {
+                logix: "lx__id".into(),
+                st: "lx__id".into(),
+                ty: Ty::Elem(Elem::Dint),
+            }],
+            opaque: false,
+        });
         // The MESSAGE configuration strings (1756-RM003 "Access the Message
         // object": Path, RemoteElement).
         if let (Some(msg), Some(s)) = (env.lookup("MESSAGE"), env.lookup("STRING")) {
@@ -446,13 +461,13 @@ impl TypeEnv {
     }
 
     /// ST declarations of the predefined structures the prelude file does not
-    /// spell out itself (PID, MESSAGE): generated from this table, so the two
+    /// spell out itself (PID, MESSAGE, MODULE): generated from this table, so the two
     /// cannot drift apart.
     pub fn prelude_types() -> String {
         let env = TypeEnv::new();
         let mut s = String::new();
         for d in &env.structs {
-            if !matches!(d.st.as_str(), "LX_PID" | "LX_MESSAGE") {
+            if !matches!(d.st.as_str(), "LX_PID" | "LX_MESSAGE" | "LX_MODULE") {
                 continue;
             }
             s.push_str(&format!("TYPE {} :\nSTRUCT\n", d.st));

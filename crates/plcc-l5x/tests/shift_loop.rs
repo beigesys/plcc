@@ -27,6 +27,7 @@ fn bit_shifts_loops_and_size() {
             "BRK at the first negative entry"
         );
         assert_eq!(plc.get("TableLen"), 8);
+        assert_eq!(plc.get("StatusCalls"), 1, "AOI with a MODULE reference ran");
         // Shift a 1 in, then zeros: it walks up the 40-bit register, across
         // the DINT boundary.
         for k in 0..36 {
