@@ -120,6 +120,7 @@
 <Tag Name="Landed" TagType="Base" DataType="BOOL"/>
 <Tag Name="Iter" TagType="Base" DataType="DINT"/>
 <Tag Name="DoTnd" TagType="Base" DataType="BOOL"/>
+<Tag Name="PSumCopy" TagType="Base" DataType="DINT"/>
 <Tag Name="AfterTnd" TagType="Base" DataType="BOOL"/>
 </Tags>
 <Programs>
@@ -154,7 +155,7 @@
 <Rung Number="12" Type="N"><Text><![CDATA[LBL(Skip)OTE(Landed)CLR(Iter);]]></Text></Rung>
 <Rung Number="13" Type="N"><Text><![CDATA[LBL(Again)ADD(Iter,1,Iter)LES(Iter,5)JMP(Again);]]></Text></Rung>
 <Rung Number="14" Type="N"><Text><![CDATA[XIC(DoTnd)TND();]]></Text></Rung>
-<Rung Number="15" Type="N"><Text><![CDATA[OTE(AfterTnd);]]></Text></Rung>
+<Rung Number="15" Type="N"><Text><![CDATA[OTE(AfterTnd)MOV(\MainProgram.PSum,PSumCopy);]]></Text></Rung>
 </RLLContent>
 </Routine>
 <Routine Name="Sub1" Type="RLL">

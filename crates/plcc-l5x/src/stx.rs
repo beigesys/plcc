@@ -126,7 +126,12 @@ fn lex(s: &str) -> Result<Vec<Tok>, (String, Range<usize>)> {
             }
             i += 1;
             K::Str
-        } else if c.is_ascii_alphabetic() || c == b'_' {
+        } else if c.is_ascii_alphabetic()
+            || c == b'_'
+            || (c == b'\\' && b.get(i + 1).is_some_and(|n| n.is_ascii_alphabetic() || *n == b'_'))
+        {
+            // `\Program.Tag` is a program-scope reference (Program:Program.Tag).
+            i += 1;
             while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
                 i += 1;
             }

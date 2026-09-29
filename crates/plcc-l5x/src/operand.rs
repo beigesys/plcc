@@ -127,6 +127,16 @@ impl<'a> Lexer<'a> {
             self.pos = p;
             return Ok(Some((Tok::Ident(self.src[start..p].to_string()), start..p)));
         }
+        // `\Program.Tag`: another program's tag, the same as `Program:Program.Tag`
+        // (the form Logix uses for program-parameter connections).
+        if c == b'\\' && start + 1 < self.end && (b[start + 1].is_ascii_alphabetic() || b[start + 1] == b'_') {
+            let mut p = start + 1;
+            while p < self.end && (b[p].is_ascii_alphanumeric() || b[p] == b'_') {
+                p += 1;
+            }
+            self.pos = p;
+            return Ok(Some((Tok::Ident(format!("Program:{}", &self.src[start + 1..p])), start..p)));
+        }
         if c.is_ascii_digit() {
             return self.number().map(Some);
         }

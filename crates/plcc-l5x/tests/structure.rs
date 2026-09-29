@@ -30,6 +30,7 @@ fn aliases_resolve_to_their_targets() {
     with_plc("structure.L5X", |plc| {
         plc.scan();
         assert_eq!(plc.get("SpeedCopy"), 1500, "XIC(StartAlias) reads M1.Run");
+        assert_eq!(plc.get("PSumCopy"), 25, "`\\MainProgram.PSum` is Program:MainProgram.PSum");
         assert!(
             plc.get_bool("MainProgram.SawFault"),
             "program alias LocalRun → M2.Fault"
