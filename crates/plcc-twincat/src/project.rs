@@ -58,7 +58,9 @@ pub fn project_files(project: &Path, source: &str) -> Result<Vec<PathBuf>, TwinC
         if !is_object_file(&rel) {
             continue;
         }
-        let path = dir.join(&rel);
+        // TwinCAT runs on Windows, whose paths ignore case: `Constants.TcGVL`
+        // may name `CONSTANTS.TcGVL`.
+        let path = resolve_case_insensitive(dir, &rel).unwrap_or_else(|| dir.join(&rel));
         if !path.exists() {
             let r = item.range();
             return Err(TwinCatError::new(
@@ -69,6 +71,27 @@ pub fn project_files(project: &Path, source: &str) -> Result<Vec<PathBuf>, TwinC
         files.push(path);
     }
     Ok(files)
+}
+
+/// `dir/rel`, matching each component without regard to case when the exact
+/// spelling does not exist.
+fn resolve_case_insensitive(dir: &Path, rel: &Path) -> Option<PathBuf> {
+    let mut cur = dir.to_path_buf();
+    for comp in rel.components() {
+        let want = comp.as_os_str();
+        let exact = cur.join(want);
+        if exact.exists() {
+            cur = exact;
+            continue;
+        }
+        let want = want.to_string_lossy().to_lowercase();
+        let found = std::fs::read_dir(&cur).ok()?.find_map(|e| {
+            let e = e.ok()?;
+            (e.file_name().to_string_lossy().to_lowercase() == want).then(|| e.path())
+        })?;
+        cur = found;
+    }
+    Some(cur)
 }
 
 /// Libraries a `.plcproj` references (`<PlaceholderReference>` and

@@ -490,8 +490,12 @@ version = "0.1.0"
 name = "plcc-twincat"
 version = "0.1.0"
 dependencies = [
+ "inkwell",
  "miette",
+ "plcc-codegen",
+ "plcc-hir",
  "plcc-st",
+ "plcc-stdlib",
  "roxmltree",
  "serde",
  "serde_json",

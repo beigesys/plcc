@@ -2392,7 +2392,30 @@ impl<'s> Parser<'s> {
                 }
                 Some(Token::LParen) => {
                     self.ts.advance();
-                    let args = self.parse_call_args();
+                    // CODESYS `__NEW(<type>[, <count>])`: the first argument is a
+                    // type (`POINTER TO X`, `ARRAY ...`), kept as its source text.
+                    let is_new = matches!(&expr.kind, ExpressionKind::Identifier(id)
+                        if id.name.eq_ignore_ascii_case("__NEW"));
+                    let args = if is_new {
+                        let ts = self.parse_type_spec();
+                        let text = self.source[ts.span.start..ts.span.end].to_string();
+                        let mut args = vec![CallArg {
+                            name: None,
+                            value: Expression {
+                                kind: ExpressionKind::Identifier(Ident::new(text, ts.span)),
+                                span: ts.span,
+                            },
+                            is_output: false,
+                            negated: false,
+                            span: ts.span,
+                        }];
+                        if self.ts.eat(&Token::Comma).is_some() {
+                            args.extend(self.parse_call_args());
+                        }
+                        args
+                    } else {
+                        self.parse_call_args()
+                    };
                     let end = self
                         .ts
                         .expect(&Token::RParen, &mut self.errors)

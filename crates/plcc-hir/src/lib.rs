@@ -2,6 +2,8 @@
 
 pub mod check;
 pub mod consts;
+pub mod desugar;
+pub mod libraries;
 pub mod scope;
 pub mod types;
 

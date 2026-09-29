@@ -170,23 +170,42 @@ struct Origin {
 struct Parsed {
     unit: plcc_st::ast::CompilationUnit,
     origins: Vec<Origin>,
+    /// Libraries the TwinCAT projects reference that neither plcc nor another
+    /// input provides; named when the type check fails.
+    missing_libraries: Vec<String>,
 }
 
 /// The source files the command-line inputs stand for, and the TwinCAT tasks
 /// among them. A `.plcproj` is the object files it compiles; a directory is the
 /// one `.plcproj` below it, or else every TwinCAT object file below it; a
 /// `.TcTTO` contributes its task (see [`twincat_configuration`]).
+///
+/// The first TwinCAT project is the application. Every later one is a library
+/// it uses (TwinCAT references libraries by name; plcc needs their sources):
+/// its tasks are ignored, and a declaration whose name the application (or an
+/// earlier library) already declares — a library's own test `MAIN`, say — is
+/// left out.
 struct Inputs {
-    files: Vec<PathBuf>,
+    /// Each file, and whether it belongs to a library project.
+    files: Vec<(PathBuf, bool)>,
     tasks: Vec<(PathBuf, plcc_twincat::Task)>,
+    /// Set while expanding a project after the first.
+    library: bool,
+    projects: usize,
+    /// (library references, project name) of every TwinCAT project.
+    references: Vec<(Vec<String>, String)>,
 }
 
 fn expand_inputs(inputs: &[PathBuf]) -> Result<Inputs> {
     let mut out = Inputs {
         files: Vec::new(),
         tasks: Vec::new(),
+        library: false,
+        projects: 0,
+        references: Vec::new(),
     };
     for input in inputs {
+        out.library = false;
         let project = if input.is_dir() {
             match plcc_twincat::directory_input(input) {
                 Ok(plcc_twincat::DirectoryInput::Project(p)) => p,
@@ -205,7 +224,15 @@ fn expand_inputs(inputs: &[PathBuf]) -> Result<Inputs> {
             add_input_files(&mut out, vec![input.clone()])?;
             continue;
         };
+        out.projects += 1;
+        out.library = out.projects > 1;
         let source = read_source(&project)?;
+        let stem = project
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        out.references
+            .push((plcc_twincat::project_libraries(&source), stem));
         match plcc_twincat::project_files(&project, &source) {
             Ok(files) => add_input_files(&mut out, files)?,
             Err(e) => {
@@ -224,7 +251,10 @@ fn expand_inputs(inputs: &[PathBuf]) -> Result<Inputs> {
 fn add_input_files(out: &mut Inputs, files: Vec<PathBuf>) -> Result<()> {
     for file in files {
         if !plcc_twincat::is_task_file(&file) {
-            out.files.push(file);
+            out.files.push((file, out.library));
+            continue;
+        }
+        if out.library {
             continue;
         }
         let source = read_source(&file)?;
@@ -284,7 +314,9 @@ fn parse_inputs(inputs: &[PathBuf], stdlib: StdlibOpt) -> Result<Parsed> {
     let mut all_declarations = Vec::new();
     let mut origins = Vec::new();
     let mut failed = false;
-    for input in &inputs.files {
+    let mut defined: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut shadowed = Vec::new();
+    for (input, library) in &inputs.files {
         let source = read_source(input)?;
         let (unit, errors) = parse_file(input, &source);
         failed |= print_parse_diagnostics(input, &source, errors);
@@ -293,11 +325,27 @@ fn parse_inputs(inputs: &[PathBuf], stdlib: StdlibOpt) -> Result<Parsed> {
             source: std::rc::Rc::new(source),
             prelude: false,
         };
-        origins.extend(std::iter::repeat_n(origin, unit.declarations.len()));
-        all_declarations.extend(unit.declarations);
+        for decl in unit.declarations {
+            let name = declaration_name(&decl);
+            if *library && name.as_ref().is_some_and(|n| defined.contains(n)) {
+                shadowed.push(name.unwrap_or_default());
+                continue;
+            }
+            defined.extend(name);
+            origins.push(origin.clone());
+            all_declarations.push(decl);
+        }
     }
     if failed {
         std::process::exit(1);
+    }
+    if !shadowed.is_empty() {
+        eprintln!(
+            "note: {} declaration(s) of library projects left out: the application already \
+             declares {}",
+            shadowed.len(),
+            shadowed.join(", ")
+        );
     }
     if let Some((text, unit)) = twincat_configuration(&inputs, &all_declarations) {
         let origin = Origin {
@@ -365,12 +413,27 @@ fn parse_inputs(inputs: &[PathBuf], stdlib: StdlibOpt) -> Result<Parsed> {
         origins = prelude_origins;
     }
 
+    let given: Vec<String> = inputs
+        .references
+        .iter()
+        .map(|(_, name)| name.to_uppercase())
+        .collect();
+    let mut missing_libraries: Vec<String> = Vec::new();
+    for lib in inputs.references.iter().flat_map(|(libs, _)| libs) {
+        if !plcc_hir::libraries::provided(lib)
+            && !given.contains(&lib.to_uppercase())
+            && !missing_libraries.iter().any(|m| m.eq_ignore_ascii_case(lib))
+        {
+            missing_libraries.push(lib.clone());
+        }
+    }
     Ok(Parsed {
         unit: plcc_st::ast::CompilationUnit {
             declarations: all_declarations,
             span: plcc_st::span::Span::empty(),
         },
         origins,
+        missing_libraries,
     })
 }
 
@@ -404,6 +467,13 @@ fn run_typecheck(parsed: &Parsed) -> bool {
     if errors > 0 || warnings > 0 {
         eprintln!("type check: {errors} error(s), {warnings} warning(s)");
     }
+    if errors > 0 && !parsed.missing_libraries.is_empty() {
+        eprintln!(
+            "note: the TwinCAT project references libraries plcc does not provide: {} \
+             (pass the .plcproj of an open-source library after the application's)",
+            parsed.missing_libraries.join(", ")
+        );
+    }
     errors > 0
 }
 
@@ -419,7 +489,7 @@ fn main() -> Result<()> {
                 span: plcc_st::span::Span::empty(),
             };
             let mut error_count = 0;
-            for file in &inputs.files {
+            for (file, _) in &inputs.files {
                 let source = read_source(file)?;
                 let (file_unit, errors) = parse_file(file, &source);
                 error_count += errors

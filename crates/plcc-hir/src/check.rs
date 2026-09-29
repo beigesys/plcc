@@ -46,6 +46,21 @@ pub enum CheckError {
         span: miette::SourceSpan,
     },
 
+    /// A name from a vendor library plcc does not implement (Beckhoff
+    /// Tc2_System, Tc2_Utilities, Tc2_MC2, ...): see [`crate::libraries`].
+    #[error("`{name}` is part of the {library} library, which plcc does not provide")]
+    #[diagnostic(help(
+        "plcc implements the IEC 61131-3 standard functions and function blocks (and the \
+         Tc2_Standard timers, counters and edge detectors of the same names); vendor \
+         libraries that wrap runtime services are not available"
+    ))]
+    MissingLibrary {
+        name: String,
+        library: String,
+        #[label("from {library}")]
+        span: miette::SourceSpan,
+    },
+
     #[error("{message}")]
     General {
         message: String,
@@ -206,6 +221,9 @@ impl TypeChecker {
         mut self,
         unit: &CompilationUnit,
     ) -> (SymbolTable, Vec<(usize, CheckError)>) {
+        // PROPERTY, ACTION, VAR_STAT, qualified names: see `crate::desugar`.
+        let (desugared, sugar_errors) = crate::desugar::desugar(unit);
+        let unit = desugared.as_ref().unwrap_or(unit);
         // Named constants in array bounds and string lengths, folded to literals.
         let (folded, unresolved) = crate::consts::fold_type_constants(unit);
         let unit = folded.as_ref().unwrap_or(unit);
@@ -221,6 +239,15 @@ impl TypeChecker {
                 )
             })
             .collect();
+        located.extend(sugar_errors.into_iter().map(|(i, span, message)| {
+            (
+                i,
+                CheckError::General {
+                    message,
+                    span: span.into(),
+                },
+            )
+        }));
 
         // First pass: register all POUs and types
         for decl in &unit.declarations {
@@ -229,6 +256,7 @@ impl TypeChecker {
 
         // Second pass: type-check bodies
         for (i, decl) in unit.declarations.iter().enumerate() {
+            self.check_library_types(decl);
             self.check_declaration(decl);
             located.extend(self.errors.drain(..).map(|e| (i, e)));
         }
@@ -402,6 +430,101 @@ impl TypeChecker {
         }
     }
 
+    /// A call plcc cannot compile, reported here with its location: a function
+    /// or FB of a vendor library plcc does not provide, or `__NEW` / `__DELETE`.
+    /// Returns whether one was reported.
+    fn unsupported_call(&mut self, callee: &Expression, scope: &Scope) -> bool {
+        let ExpressionKind::Identifier(id) = &callee.kind else {
+            return false;
+        };
+        let upper = id.name.to_uppercase();
+        if matches!(upper.as_str(), "__NEW" | "__DELETE") {
+            self.errors.push(CheckError::General {
+                message: format!(
+                    "`{}` (dynamic memory) is not supported: plcc allocates every \
+                     variable statically",
+                    id.name
+                ),
+                span: callee.span.into(),
+            });
+            return true;
+        }
+        if scope.lookup(&id.name).is_some() || self.symbols.lookup_pou(&id.name).is_some() {
+            return false;
+        }
+        match crate::libraries::library_of(&id.name) {
+            Some(library) => {
+                self.errors.push(CheckError::MissingLibrary {
+                    name: id.name.clone(),
+                    library,
+                    span: callee.span.into(),
+                });
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Declared types from a vendor library plcc does not provide
+    /// (`fbTime : FB_LocalSystemTime;`), in every variable of `decl`.
+    fn check_library_types(&mut self, decl: &Declaration) {
+        let mut blocks: Vec<&VarBlock> = Vec::new();
+        match decl {
+            Declaration::Program(p) => blocks.extend(&p.var_blocks),
+            Declaration::Function(f) => blocks.extend(&f.var_blocks),
+            Declaration::FunctionBlock(fb) => {
+                blocks.extend(&fb.var_blocks);
+                for m in &fb.methods {
+                    blocks.extend(&m.var_blocks);
+                }
+            }
+            Declaration::Class(c) => {
+                blocks.extend(&c.var_blocks);
+                for m in &c.methods {
+                    blocks.extend(&m.var_blocks);
+                }
+            }
+            Declaration::GlobalVarDecl(b) => blocks.push(b),
+            Declaration::TypeDecl(t) => {
+                if let TypeSpecKind::Struct(fields) = &t.type_spec.kind {
+                    for f in fields {
+                        self.check_library_type(&f.type_spec);
+                    }
+                }
+            }
+            _ => {}
+        }
+        for b in blocks {
+            for d in &b.declarations {
+                self.check_library_type(&d.type_spec);
+            }
+        }
+    }
+
+    fn check_library_type(&mut self, ts: &TypeSpec) {
+        match &ts.kind {
+            TypeSpecKind::Named(id) => {
+                if resolve_type_name(&id.name).is_some()
+                    || self.types.resolve(&id.name).is_some()
+                    || self.symbols.lookup_pou(&id.name).is_some()
+                {
+                    return;
+                }
+                if let Some(library) = crate::libraries::library_of(&id.name) {
+                    self.errors.push(CheckError::MissingLibrary {
+                        name: id.name.clone(),
+                        library,
+                        span: id.span.into(),
+                    });
+                }
+            }
+            TypeSpecKind::Array { base, .. }
+            | TypeSpecKind::Pointer(base)
+            | TypeSpecKind::Reference(base) => self.check_library_type(base),
+            _ => {}
+        }
+    }
+
     fn build_scope(&mut self, var_blocks: &[VarBlock]) -> Scope {
         let mut scope = Scope::new();
         for block in var_blocks {
@@ -547,6 +670,9 @@ impl TypeChecker {
                 // MEMCPY, ...); an unknown one is reported by codegen as an unknown
                 // function, so only a callee expression (`a.b(..)`, `arr[i](..)`) is
                 // checked here.
+                if self.unsupported_call(callee, scope) {
+                    return;
+                }
                 if !matches!(callee.kind, ExpressionKind::Identifier(_)) {
                     self.check_expression(callee, scope);
                 }
@@ -671,6 +797,13 @@ impl TypeChecker {
                     // A global, an enumerator, a POU or a type name. Their types are
                     // not tracked here yet.
                     IecType::Void
+                } else if let Some(library) = crate::libraries::library_of(&ident.name) {
+                    self.errors.push(CheckError::MissingLibrary {
+                        name: ident.name.clone(),
+                        library,
+                        span: expr.span.into(),
+                    });
+                    IecType::Void
                 } else {
                     // CODESYS: "Identifier '<name>' not defined" (an error). Codegen
                     // would otherwise be the first to notice, with no location.
@@ -737,6 +870,9 @@ impl TypeChecker {
                 }
             }
             ExpressionKind::FunctionCall { callee, args } => {
+                if self.unsupported_call(callee, scope) {
+                    return IecType::Void;
+                }
                 for arg in args {
                     self.check_expression(&arg.value, scope);
                 }

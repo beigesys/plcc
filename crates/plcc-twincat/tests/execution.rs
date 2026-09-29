@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: MPL-2.0
+
+//! TwinCAT projects compiled and run: a function block with a method,
+//! properties and an action, an interface property, a GVL, DUTs, Tc2_Standard
+//! timers, and the task from the .TcTTO.
+
+mod common;
+use common::{MS, check_errors, with_plc};
+
+const DEMO: &str = "Demo/Demo.plcproj";
+
+#[test]
+fn demo_project_type_checks() {
+    let errors = check_errors(DEMO);
+    assert!(errors.is_empty(), "{errors:#?}");
+}
+
+#[test]
+fn demo_project_runs() {
+    with_plc(DEMO, |plc| {
+        // The task comes from PlcTask.TcTTO: 10 ms, priority 20, calling MAIN.
+        assert_eq!(plc.tasks().len(), 1);
+        assert_eq!(plc.task_name(0), "PlcTask");
+        assert_eq!(plc.tasks()[0].interval_ns, 10 * MS);
+        assert_eq!(plc.tasks()[0].priority, 20);
+
+        for _ in 0..3 {
+            plc.scan();
+            plc.advance(10 * MS);
+        }
+        // GVL_Main.nScans, written through the qualified name.
+        assert_eq!(plc.get("nScans"), 3);
+        // Property SET (Step := MAX_STEP) then GET, through the instance and
+        // through the interface.
+        assert_eq!(plc.get("MAIN.nStepSeen"), 7);
+        assert_eq!(plc.get("MAIN.nItfStep"), 7);
+        // Method Increment, called from the FB body, three times.
+        assert_eq!(plc.get("MAIN.fbCounter.nCount"), 21);
+        assert!(!plc.get_bool("MAIN.bAtLimit"));
+        // DUT struct field and qualified enum.
+        assert_eq!(plc.get("MAIN.stSample.nValue"), 3);
+        assert_eq!(plc.get("MAIN.eMode"), 11, "E_Mode.Done");
+
+        for _ in 3..14 {
+            plc.scan();
+            plc.advance(10 * MS);
+        }
+        assert_eq!(plc.get("MAIN.fbCounter.nCount"), 98);
+        assert!(!plc.get_bool("MAIN.bLimitReached"));
+        assert_eq!(plc.get("MAIN.fbCounter.nResets"), 0);
+        // Scan 15 reaches the limit: the AtLimit property reads TRUE, S= latches,
+        // and the Reset action clears the count.
+        plc.scan();
+        assert!(plc.get_bool("MAIN.bAtLimit"));
+        assert!(plc.get_bool("MAIN.bLimitReached"));
+        assert_eq!(plc.get("MAIN.fbCounter.nCount"), 0);
+        assert_eq!(plc.get("MAIN.fbCounter.nResets"), 1);
+        // Tc2_Standard.TON with PT := T#50MS, 10 ms per scan.
+        assert!(plc.get_bool("MAIN.bTimerQ"));
+        assert!(plc.get_bool("bTimerDone"));
+    });
+}

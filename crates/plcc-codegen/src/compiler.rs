@@ -2742,6 +2742,13 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     pub fn compile(&mut self, unit: &CompilationUnit) -> Result<(), CodegenError> {
+        // PROPERTY / ACTION / VAR_STAT / qualified names become methods, globals
+        // and plain names (the type checker runs the same pass).
+        let (desugared, sugar_errors) = plcc_hir::desugar::desugar(unit);
+        if let Some((_, span, message)) = sugar_errors.into_iter().next() {
+            return Err(CodegenError::Located { message, span });
+        }
+        let unit = desugared.as_ref().unwrap_or(unit);
         // `ARRAY[1..N]`, `STRING(LEN)` with named constants: fold to literals. A
         // bound that is not a constant used to become a one-element array.
         let (folded, unresolved) = plcc_hir::consts::fold_type_constants(unit);
