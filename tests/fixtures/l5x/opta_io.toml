@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: MPL-2.0
+# I/O map for opta_io.L5X on the Arduino Opta generic runtime
+# (~/opta_plcc/runtime: %IX0.0..7 = I1..I8, %IW1..8 = I1..I8 analog,
+#  %QX0.0..3 = relays 1..4, %QX0.4 = USER LED). See docs/l5x.md.
+"Local:1:I.Data.0" = "%IX0.0"   # I1: start push button (alias StartPB)
+"Local:1:I.Data.1" = "%IX0.1"   # I2: stop push button  (alias StopPB)
+"Local:2:O.Data.0" = "%QX0.0"   # relay 1: motor contactor
+
+[io]
+"Level" = "%IW2"                # I2 analog, raw 0..4095
+"High"  = "%QX0.4"              # USER LED

@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- Written for plcc: a CompactLogix seal-in on local 1769 I/O modules
+     (slot 1 inputs, slot 2 outputs), run on plcc hardware through the I/O map
+     opta_io.toml (Opta I1/I2 → Local:1:I.Data.0/1, relay 1 ← Local:2:O.Data.0). -->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="33.01" TargetName="OptaSealIn" TargetType="Controller" ContainsContext="false" ExportOptions="NoRawData L5KData DecoratedData">
+<Controller Use="Target" Name="OptaSealIn" ProcessorType="1769-L33ER" MajorRev="33" MinorRev="11">
+<DataTypes/>
+<Modules>
+<Module Name="Local" CatalogNumber="1769-L33ER" Vendor="1" ProductType="14" ProductCode="153" Major="33" Minor="11" ParentModule="Local" ParentModPortId="1" Inhibited="false" MajorFault="true">
+<EKey State="Disabled"/>
+<Ports>
+<Port Id="1" Address="0" Type="Compact" Upstream="false"><Bus Size="4"/></Port>
+<Port Id="2" Type="Ethernet" Upstream="false"><Bus/></Port>
+</Ports>
+</Module>
+<Module Name="Inputs" CatalogNumber="1769-IQ16/A" Vendor="1" ProductType="7" ProductCode="4" Major="1" Minor="1" ParentModule="Local" ParentModPortId="1" Inhibited="false" MajorFault="false">
+<EKey State="CompatibleModule"/>
+<Ports>
+<Port Id="1" Address="1" Type="Compact" Upstream="true"/>
+</Ports>
+<Communications CommMethod="536870913">
+<Connections>
+<Connection Name="Standard" RPI="2000" Type="Input" EventID="0" ProgrammaticallySendEventTrigger="false">
+<InputTag ExternalAccess="Read/Write">
+<Data Format="Decorated">
+<Structure DataType="AB:1769_DI16:I:0">
+<DataValueMember Name="Fault" DataType="DINT" Radix="Binary" Value="2#0000_0000_0000_0000_0000_0000_0000_0000"/>
+<DataValueMember Name="Data" DataType="INT" Radix="Binary" Value="2#0000_0000_0000_0000"/>
+</Structure>
+</Data>
+</InputTag>
+</Connection>
+</Connections>
+</Communications>
+</Module>
+<Module Name="Outputs" CatalogNumber="1769-OB16/B" Vendor="1" ProductType="7" ProductCode="5" Major="2" Minor="1" ParentModule="Local" ParentModPortId="1" Inhibited="false" MajorFault="false">
+<EKey State="CompatibleModule"/>
+<Ports>
+<Port Id="1" Address="2" Type="Compact" Upstream="true"/>
+</Ports>
+<Communications CommMethod="536870913">
+<Connections>
+<Connection Name="Standard" RPI="2000" Type="Output" EventID="0" ProgrammaticallySendEventTrigger="false">
+<InputTag ExternalAccess="Read/Write">
+<Data Format="Decorated">
+<Structure DataType="AB:1769_DO16:I:0">
+<DataValueMember Name="Fault" DataType="DINT" Radix="Binary" Value="2#0000_0000_0000_0000_0000_0000_0000_0000"/>
+<DataValueMember Name="Data" DataType="INT" Radix="Binary" Value="2#0000_0000_0000_0000"/>
+</Structure>
+</Data>
+</InputTag>
+<OutputTag ExternalAccess="Read/Write">
+<Data Format="Decorated">
+<Structure DataType="AB:1769_DO16:O:0">
+<DataValueMember Name="Data" DataType="INT" Radix="Binary" Value="2#0000_0000_0000_0000"/>
+</Structure>
+</Data>
+</OutputTag>
+</Connection>
+</Connections>
+</Communications>
+</Module>
+</Modules>
+<Tags>
+<Tag Name="StartPB" TagType="Alias" Radix="Decimal" AliasFor="Local:1:I.Data.0" ExternalAccess="Read/Write"/>
+<Tag Name="StopPB" TagType="Alias" Radix="Decimal" AliasFor="Local:1:I.Data.1" ExternalAccess="Read/Write"/>
+<Tag Name="Motor" TagType="Base" DataType="BOOL" Radix="Decimal"/>
+<Tag Name="Level" TagType="Base" DataType="INT" Radix="Decimal"/>
+<Tag Name="High" TagType="Base" DataType="BOOL" Radix="Decimal"/>
+</Tags>
+<Programs>
+<Program Name="MainProgram" MainRoutineName="MainRoutine">
+<Routines>
+<Routine Name="MainRoutine" Type="RLL">
+<RLLContent>
+<Rung Number="0" Type="N"><Text><![CDATA[[XIC(StartPB) ,XIC(Motor) ]XIO(StopPB)OTE(Motor);]]></Text></Rung>
+<Rung Number="1" Type="N"><Text><![CDATA[XIC(Motor)OTE(Local:2:O.Data.0);]]></Text></Rung>
+<Rung Number="2" Type="N"><Text><![CDATA[GRT(Level,2000)OTE(High);]]></Text></Rung>
+</RLLContent>
+</Routine>
+</Routines>
+</Program>
+</Programs>
+<Tasks>
+<Task Name="MainTask" Type="PERIODIC" Rate="20" Priority="10" Watchdog="500">
+<ScheduledPrograms><ScheduledProgram Name="MainProgram"/></ScheduledPrograms>
+</Task>
+</Tasks>
+</Controller>
+</RSLogix5000Content>

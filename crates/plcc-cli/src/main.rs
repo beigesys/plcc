@@ -175,6 +175,25 @@ fn parse_file(
     (unit, reports, failed)
 }
 
+/// Diagnostics shown in full per file; the rest are only counted. Rendering a
+/// diagnostic scans its file up to the span, so thousands of them against a
+/// multi-megabyte export would take minutes.
+const MAX_SHOWN_REPORTS: usize = 200;
+
+fn print_reports(file_name: &str, source: &std::sync::Arc<String>, reports: Vec<miette::Report>) {
+    let total = reports.len();
+    for report in reports.into_iter().take(MAX_SHOWN_REPORTS) {
+        let report = report.with_source_code(NamedSource::new(file_name, source.clone()));
+        eprintln!("{report:?}");
+    }
+    if total > MAX_SHOWN_REPORTS {
+        eprintln!(
+            "{file_name}: {} more diagnostic(s) not shown",
+            total - MAX_SHOWN_REPORTS
+        );
+    }
+}
+
 fn is_l5x_input(path: &std::path::Path, source: &str) -> bool {
     path.extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("l5x"))
@@ -326,12 +345,13 @@ fn add_input_files(out: &mut Inputs, files: Vec<PathBuf>) -> Result<()> {
 /// Print a file's parse diagnostics; returns whether any is an error (warnings,
 /// such as an ignored SFC transition in a TwinCAT POU, do not stop a build).
 fn print_parse_diagnostics(path: &std::path::Path, source: &str, reports: Vec<miette::Report>) -> bool {
-    let mut failed = false;
-    let file_name = path.display().to_string();
-    for report in reports {
-        failed |= report.severity() != Some(miette::Severity::Warning);
-        let report = report.with_source_code(NamedSource::new(&file_name, source.to_string()));
-        eprintln!("{:?}", report);
+    let failed = reports
+        .iter()
+        .any(|r| r.severity() != Some(miette::Severity::Warning));
+    if !reports.is_empty() {
+        // One shared copy: a large project can have thousands of diagnostics.
+        let shared = std::sync::Arc::new(source.to_string());
+        print_reports(&path.display().to_string(), &shared, reports);
     }
     failed
 }
@@ -576,11 +596,8 @@ fn main() -> Result<()> {
                 let (st, diags) = plcc_l5x::to_st(&source, &plcc_l5x::Options::default());
                 println!("{st}");
                 let file_name = input.display().to_string();
-                for d in diags {
-                    let report = miette::Report::new(d)
-                        .with_source_code(NamedSource::new(&file_name, source.clone()));
-                    eprintln!("{report:?}");
-                }
+                let shared = std::sync::Arc::new(source.clone());
+                print_reports(&file_name, &shared, diags.into_iter().map(miette::Report::new).collect());
                 return Ok(());
             }
             // A TwinCAT project or directory parses every file it stands for.

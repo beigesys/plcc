@@ -397,12 +397,7 @@ impl<'s> Lower<'s> {
             return;
         }
         out.push_ctx(span);
-        let at = self.io.at_for(logix, ty, &self.env);
-        out.s("    ").s(st);
-        if let Some(a) = &at {
-            out.s(" AT ").s(a);
-        }
-        out.s(" : ").s(&self.env.st(ty));
+        out.s("    ").s(st).s(" : ").s(&self.env.st(ty));
         if let Some(i) = init {
             out.s(" := ").s(&i);
         }
@@ -619,6 +614,14 @@ impl<'s> Lower<'s> {
         }
         for (idx, pr) in p.programs.iter().enumerate() {
             self.scope_aliases(&pr.tags, Some(idx));
+        }
+        // I/O map: every scope is known now.
+        if !self.io.is_empty() {
+            let mut io = std::mem::take(&mut self.io);
+            let errs = io.resolve(&self.ctx_for(None), p.root_span);
+            self.errors.extend(errs);
+            globals.append(io.hidden_decls());
+            self.io = io;
         }
         for (idx, pr) in p.programs.iter().enumerate() {
             let (inst, _) = self.programs[&pr.name.text.to_ascii_lowercase()].clone();
