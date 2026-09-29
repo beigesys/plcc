@@ -54,7 +54,8 @@ pub struct App {
     tasks: *const Task,
     image: *const Image,
     init: extern "C" fn(),
-    run_task: extern "C" fn(u32),
+    // C-unwind: a runtime fault unwinds out of it (see `fault_handler`).
+    run_task: extern "C-unwind" fn(u32),
     retain: *const u8,
     retain_count: u32,
     retain_signature: u32,
@@ -68,6 +69,30 @@ extern "C" fn fake_monotonic_ns() -> i64 {
 }
 
 pub const MS: i64 = 1_000_000;
+
+/// `plcc_fault`: unwind back to `Plc::try_scan` with `(code, where)`.
+extern "C-unwind" fn fault_handler(code: u32, site: *const c_char) {
+    let site = if site.is_null() {
+        String::new()
+    } else {
+        unsafe { CStr::from_ptr(site) }.to_string_lossy().into_owned()
+    };
+    std::panic::resume_unwind(Box::new((code, site)));
+}
+
+/// Uppercase names of the POUs a unit declares.
+fn pou_names(unit: &plcc_st::CompilationUnit) -> Vec<String> {
+    use plcc_st::Declaration as D;
+    unit.declarations
+        .iter()
+        .filter_map(|d| match d {
+            D::Program(p) => Some(p.name.name.to_ascii_uppercase()),
+            D::Function(p) => Some(p.name.name.to_ascii_uppercase()),
+            D::FunctionBlock(p) => Some(p.name.name.to_ascii_uppercase()),
+            _ => None,
+        })
+        .collect()
+}
 
 pub fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -339,6 +364,19 @@ impl Plc<'_> {
         (self.app.run_task)(0)
     }
 
+    /// Run task 0 once; a runtime fault (`plcc_fault`) comes back as
+    /// `Err((code, where))` instead of trapping.
+    pub fn try_scan(&self) -> Result<(), (u32, String)> {
+        let run = self.app.run_task;
+        match std::panic::catch_unwind(move || run(0)) {
+            Ok(()) => Ok(()),
+            Err(p) => match p.downcast::<(u32, String)>() {
+                Ok(f) => Err(*f),
+                Err(other) => std::panic::resume_unwind(other),
+            },
+        }
+    }
+
     /// Run the task called `name` once.
     pub fn run_task(&self, name: &str) {
         let i = (0..self.tasks().len())
@@ -375,9 +413,17 @@ pub fn with_plc_src<R>(
 ) -> R {
     let _clock: MutexGuard<'_, ()> = CLOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     FAKE_NOW_NS.store(1_000 * MS, Ordering::SeqCst);
-    let unit = with_preludes(lower_src(name, src, opts));
+    let lowered = lower_src(name, src, opts);
+    // Logix code faults on an out-of-range subscript, like the CLI sets up.
+    let mut logix = pou_names(&lowered);
+    let (pu, _) = plcc_st::parse(&plcc_l5x::prelude());
+    logix.extend(pou_names(&pu));
+    let l5x_pous = pou_names(&lowered);
+    let unit = with_preludes(lowered);
     let ctx = Context::create();
     let mut compiler = Compiler::new(&ctx, name);
+    compiler.fault_on_array_bounds(&logix);
+    compiler.add_source_file(name, src, &l5x_pous);
     if let Err(e) = compiler.compile(&unit) {
         let detail = match e.span() {
             Some(s) if s.end <= src.len() => format!(" at `{}`", &src[s.start..s.end]),
@@ -400,12 +446,17 @@ pub fn with_plc_src<R>(
         b.build_return(Some(&gv.as_pointer_value())).expect("ret");
     }
     let clock = compiler.module().get_function("plcc_monotonic_ns");
+    compiler.use_external_fault_handler();
+    let fault = compiler.module().get_function("plcc_fault");
     let ee = compiler
         .module()
         .create_jit_execution_engine(OptimizationLevel::None)
         .expect("JIT");
     if let Some(decl) = clock {
         ee.add_global_mapping(&decl, fake_monotonic_ns as *const () as usize);
+    }
+    if let Some(decl) = fault {
+        ee.add_global_mapping(&decl, fault_handler as *const () as usize);
     }
     let get = ee
         .get_function_address("plcc_get_app")

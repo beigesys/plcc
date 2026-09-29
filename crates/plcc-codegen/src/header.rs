@@ -231,6 +231,7 @@ pub fn c_header(contract: &RuntimeContract, guard: &str) -> String {
     for code in plcc_runtime::fault::FaultCode::ALL {
         let note = match code {
             plcc_runtime::fault::FaultCode::DivByZero => "",
+            plcc_runtime::fault::FaultCode::ArrayBounds => " /* Logix (L5X) code only */",
             _ => " /* reserved: not raised yet */",
         };
         let _ = writeln!(

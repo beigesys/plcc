@@ -7448,6 +7448,17 @@ impl<'ctx> Compiler<'ctx> {
                         .builder
                         .build_int_compare(IntPredicate::SGT, adjusted, last, "idx_hi")
                         .map_err(err)?;
+                    // Where the dialect faults on a bad subscript (Logix), the
+                        // clamp below only runs on the not-faulted path.
+                    if self.faults_on_bounds() {
+                        let out = self.builder.build_or(below, above, "idx_out").map_err(err)?;
+                        let in_range = out.is_const() && out.get_zero_extended_constant() == Some(0);
+                        if !in_range {
+                            self.fault.span.set(Some(idx_expr.span));
+                            self.fault_if(out, plcc_runtime::fault::FaultCode::ArrayBounds)?;
+                            self.fault.span.set(None);
+                        }
+                    }
                     let clamped = self
                         .builder
                         .build_select(below, i64t.const_zero(), adjusted, "idx_clamp_lo")

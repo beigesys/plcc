@@ -28,8 +28,10 @@ pub enum FaultCode {
     /// Integer `/` or `MOD` (also `DIV`, `MOD`, `DIV_TIME` and TIME division)
     /// with a divisor of zero.
     DivByZero = 1,
-    /// Reserved: an array subscript out of range. Subscripts are clamped today
-    /// (see docs/codesys-compatibility.md); a strict mode would fault instead.
+    /// An array subscript out of range, in POUs compiled with
+    /// `Compiler::fault_on_array_bounds` (Logix 5000 code: major fault 4/20).
+    /// Structured Text subscripts are clamped instead (see
+    /// docs/codesys-compatibility.md).
     ArrayBounds = 2,
     /// Reserved: a call through an unbound interface reference or a NULL
     /// pointer / reference.

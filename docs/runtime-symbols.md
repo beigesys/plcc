@@ -64,7 +64,7 @@ stderr.
 
 ```c
 #define PLCC_FAULT_DIV_BY_ZERO    1u
-#define PLCC_FAULT_ARRAY_BOUNDS   2u   /* reserved */
+#define PLCC_FAULT_ARRAY_BOUNDS   2u   /* Logix (L5X) code only */
 #define PLCC_FAULT_NULL_REFERENCE 3u   /* reserved */
 #define PLCC_FAULT_USER_BASE 0x10000u  /* first code free for the runtime */
 
@@ -74,7 +74,10 @@ void plcc_fault(uint32_t code, const char *where);
 Called when an ST operation cannot continue — today, an integer `/` or `MOD`
 (also `DIV()`, `DIV_TIME`, TIME / integer) whose divisor is zero. CODESYS raises
 an exception there and stops the task; plcc hands the same decision to the
-runtime.
+runtime. In code compiled from a Rockwell `.L5X` project, an array subscript out
+of range is `PLCC_FAULT_ARRAY_BOUNDS`: a Logix controller raises a major fault
+there (type 4, code 20); Structured Text clamps the subscript instead
+([l5x.md](l5x.md)).
 
 Contract:
 

@@ -184,3 +184,18 @@ fn neq_leq_geq_equ_nop_sub() {
         assert_eq!(plc.get("Diff"), -32768 - 20 + 65536, "INT result keeps its low 16 bits");
     });
 }
+
+#[test]
+fn out_of_range_subscript_is_a_major_fault() {
+    with_plc("bits_branches.L5X", |plc| {
+        plc.set("Idx", 31);
+        assert_eq!(plc.try_scan(), Ok(()));
+        // XIC(Flags[Idx]) with Flags : BOOL[32]: "If an array subscript is too
+        // large (out of range), a major fault (type 4, code 20) generates"
+        // (1756-RM003 "Math status flags"). plcc: plcc_fault(ARRAY_BOUNDS).
+        plc.set("Idx", 32);
+        let (code, site) = plc.try_scan().expect_err("Flags[32] faults");
+        assert_eq!(code, 2, "PLCC_FAULT_ARRAY_BOUNDS");
+        assert!(site.starts_with("bits_branches.L5X:"), "{site}");
+    });
+}

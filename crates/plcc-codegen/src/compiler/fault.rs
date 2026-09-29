@@ -60,6 +60,9 @@ pub(super) struct FaultState<'ctx> {
     pub(super) files: std::collections::HashMap<String, Rc<SourceFile>>,
     /// Interned site strings.
     pub(super) strings: std::cell::RefCell<std::collections::HashMap<String, GlobalValue<'ctx>>>,
+    /// Uppercase POUs in which an out-of-range array subscript faults
+    /// (`ArrayBounds`) instead of being clamped.
+    pub(super) bounds_pous: std::collections::HashSet<String>,
 }
 
 impl<'ctx> Compiler<'ctx> {
@@ -80,6 +83,25 @@ impl<'ctx> Compiler<'ctx> {
         for p in pous {
             self.fault.files.insert(p.as_ref().to_uppercase(), f.clone());
         }
+    }
+
+    /// Make an out-of-range array subscript in these POUs a runtime fault
+    /// (`PLCC_FAULT_ARRAY_BOUNDS`) instead of clamping it into range. For
+    /// dialects whose controllers fault there: a Logix 5000 controller raises
+    /// major fault type 4, code 20 (1756-RM003 "Index Through Arrays").
+    pub fn fault_on_array_bounds<I, S>(&mut self, pous: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.fault
+            .bounds_pous
+            .extend(pous.into_iter().map(|p| p.as_ref().to_uppercase()));
+    }
+
+    /// Whether the body being compiled faults on an out-of-range subscript.
+    pub(super) fn faults_on_bounds(&self) -> bool {
+        !self.fault.bounds_pous.is_empty() && self.fault.bounds_pous.contains(&self.fault.source_pou)
     }
 
     /// Remove the body of the weak default `plcc_fault`, leaving an external

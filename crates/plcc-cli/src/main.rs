@@ -233,6 +233,9 @@ struct Origin {
     source: std::rc::Rc<String>,
     /// Part of the bundled standard library rather than the user's input.
     prelude: bool,
+    /// Lowered from a Rockwell L5X project (or the Logix prelude): Logix
+    /// semantics, e.g. an out-of-range subscript is a fault (docs/l5x.md).
+    logix: bool,
 }
 
 /// The merged compilation unit of every input (plus the prelude), and the origin of
@@ -400,6 +403,7 @@ fn parse_inputs(inputs: &[PathBuf], stdlib: StdlibOpt, l5x: &plcc_l5x::Options) 
             name: input.display().to_string(),
             source: std::rc::Rc::new(source),
             prelude: false,
+            logix,
         };
         for decl in unit.declarations {
             let name = declaration_name(&decl);
@@ -428,6 +432,7 @@ fn parse_inputs(inputs: &[PathBuf], stdlib: StdlibOpt, l5x: &plcc_l5x::Options) 
             name: "<TwinCAT task configuration>".to_string(),
             source: std::rc::Rc::new(text),
             prelude: false,
+            logix: false,
         };
         origins.extend(std::iter::repeat_n(origin, unit.declarations.len()));
         all_declarations.extend(unit.declarations);
@@ -451,6 +456,7 @@ fn parse_inputs(inputs: &[PathBuf], stdlib: StdlibOpt, l5x: &plcc_l5x::Options) 
             name: plcc_l5x::PRELUDE_NAME.to_string(),
             source: std::rc::Rc::new(src),
             prelude: true,
+            logix: true,
         };
         let mut decls = unit.declarations;
         let mut os: Vec<Origin> = std::iter::repeat_n(origin, decls.len()).collect();
@@ -500,6 +506,7 @@ fn parse_inputs(inputs: &[PathBuf], stdlib: StdlibOpt, l5x: &plcc_l5x::Options) 
                 name: unit_src.name.to_string(),
                 source: std::rc::Rc::new(unit_src.source.to_string()),
                 prelude: true,
+                logix: false,
             };
             for decl in unit.declarations {
                 let superseded = declaration_name(&decl).is_some_and(|n| user_names.contains(&n));
@@ -998,6 +1005,9 @@ fn register_sources(compiler: &mut plcc_codegen::Compiler<'_>, parsed: &Parsed) 
         }
     }
     for (origin, pous) in files {
+        if origin.logix {
+            compiler.fault_on_array_bounds(&pous);
+        }
         compiler.add_source_file(&origin.name, &origin.source, pous);
     }
 }
