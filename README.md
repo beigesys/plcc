@@ -25,10 +25,15 @@ plcc compile main.st motor.st utils.st -o system.o
 
 # Ladder / FBD / ST from a PLCopen XML project (mixes with .st files)
 plcc compile plant.xml utils.st -o plant.o
+
+# A Beckhoff TwinCAT 3 PLC project (.plcproj, or its directory)
+plcc compile MyPlc/MyPlc.plcproj -o plc.o
 ```
 
 Ladder Diagram and FBD come in as PLCopen XML (IEC 61131-10) and lower to the
-same AST as ST; see [docs/ladder.md](docs/ladder.md).
+same AST as ST; see [docs/ladder.md](docs/ladder.md). TwinCAT 3 projects
+(`.plcproj`, `.TcPOU`, `.TcDUT`, `.TcGVL`, `.TcIO`, `.TcTTO`) compile with their
+ST bodies, tasks and CODESYS extensions; see [docs/twincat.md](docs/twincat.md).
 
 ## What It Compiles
 
@@ -86,6 +91,7 @@ plcc/
 ├── crates/
 │   ├── plcc-st/           Lexer (logos) + recursive-descent parser + AST
 │   ├── plcc-plcopen/      PLCopen XML reader: LD/FBD/ST bodies lowered to the ST AST
+│   ├── plcc-twincat/      TwinCAT 3 reader: .plcproj, .TcPOU/.TcDUT/.TcGVL/.TcIO/.TcTTO
 │   ├── plcc-hir/          Type checker, name resolution, IEC type hierarchy
 │   ├── plcc-codegen/      LLVM codegen via inkwell
 │   ├── plcc-stdlib/       IEC standard FBs as bundled ST source (TON, CTU, ...)
@@ -106,6 +112,8 @@ Complete IEC 61131-3:2013 (3rd edition) Structured Text:
 | PROGRAM, FUNCTION, FUNCTION_BLOCK | Full |
 | CLASS, METHOD, EXTENDS, THIS^, SUPER^ (OOP) | Full — methods are late-bound for every call through a variable of a known FB/CLASS type (an inherited method is compiled per derived POU); `SUPER^()` runs the base body |
 | INTERFACE | Full — `itf := inst`, late-bound `itf.M(..)` (inputs, outputs, in-outs), `itf = 0` / `itf <> 0`, interface-typed FB inputs, FUNCTION parameters and arrays, EXTENDS between interfaces, IMPLEMENTS inherited from a base; no `__QUERYINTERFACE` yet |
+| PROPERTY (GET/SET), ACTION, FB_init, VAR_STAT, AND_THEN / OR_ELSE, REFERENCE TO (CODESYS / TwinCAT) | Full — see [docs/twincat.md](docs/twincat.md) |
+| TwinCAT 3 projects (`.plcproj`, `.TcPOU`, `.TcDUT`, `.TcGVL`, `.TcIO`, `.TcTTO` tasks) | ST bodies, with diagnostics at the line in the TwinCAT file; LD/FBD/CFC/SFC bodies and Beckhoff libraries (Tc2_System, ...) are reported, not compiled. of 61 open-source projects, all parse, 5 compile and 44 more stop only at Beckhoff libraries ([docs/twincat.md](docs/twincat.md)) |
 | VAR, VAR_INPUT, VAR_OUTPUT, VAR_IN_OUT (by reference), VAR_TEMP, VAR_GLOBAL | Full |
 | VAR CONSTANT, VAR RETAIN | Full |
 | All elementary types (BOOL through LREAL, STRING, WSTRING, TIME, DATE) | Full — every TIME/date type is i64 nanoseconds (since 1970-01-01 for DATE and DT, since midnight for TOD); converted to/from numbers in CODESYS units (see Standard Library) |

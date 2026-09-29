@@ -28,10 +28,13 @@ implemented (a compile error, "unknown function"). The opposite direction is:
 
 | Construct | Example | Status |
 |---|---|---|
-| PROPERTY (CODESYS GET/SET) | `PROPERTY Level : REAL` | not parsed |
-| Variable-length arrays | `VAR_IN_OUT a : ARRAY[*] OF INT; END_VAR`, `LOWER_BOUND(a, 1)` | not parsed |
+| Variable-length arrays | `VAR_IN_OUT a : ARRAY[*] OF INT; END_VAR`, `LOWER_BOUND(a, 1)` | parsed; "not supported yet" at the declaration |
 | WSTRING values in expressions | `LEN(ws)`, `CONCAT(ws, "x")`, `ws = "abc"` | WSTRING works in declarations, initializers and `:=` of literals/variables only |
 | A member of a call's result | `Add3(a, b).x` | "does not resolve to a field" |
-| `__NEW` / `__DELETE`, `__QUERYINTERFACE` | | unknown function |
-| Calling a PROGRAM with a CONFIGURATION present | `Sub();` | unknown function (fine without a CONFIGURATION) |
+| `__NEW` / `__DELETE` | | "dynamic memory is not supported" |
+| `__QUERYINTERFACE`, `__QUERYPOINTER` | | unknown function |
+| `ANY` parameters, `__SYSTEM.TYPE_CLASS` | `data.pValue`, `data.TypeClass` | undefined |
+| `SIZEOF` in an array bound | `ARRAY[0..SIZEOF(ST_X) - 1] OF BYTE` | "not a constant integer expression" |
+| TwinCAT LD/FBD, CFC, SFC bodies | `.TcPOU` with `<NWL>` | "not yet supported" naming the POU (PLCopen XML LD/FBD compiles) |
+| Calling a PROGRAM that a CONFIGURATION instantiates more than once | `Sub();` | unknown function (fine with one instance named like the program, or without a CONFIGURATION) |
 | `SUPER^` of `SUPER^` late binding | see above | static inside the base implementation |
