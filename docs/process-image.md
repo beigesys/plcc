@@ -80,8 +80,10 @@ an image: compile all `.st` files of a PLC into one object (`plcc compile a.st b
 
 ### Imported (the runtime supplies them)
 
-Unchanged — see [runtime-symbols.md](runtime-symbols.md): `plcc_monotonic_ns()` and
-`plcc_print()`.
+See [runtime-symbols.md](runtime-symbols.md): `plcc_monotonic_ns()`,
+`plcc_print()`, and `plcc_fault()` (the module carries a weak default that traps,
+so defining it is optional but strongly advised — see
+[Runtime faults](#runtime-faults)).
 
 ## Process image
 
@@ -260,6 +262,63 @@ Not covered yet: RETAIN inside arrays of FB instances, and `PERSISTENT`.
 signature, then each region as `u32 size` + bytes (little-endian integers); any
 format works as long as save and restore agree.
 
+## Runtime faults
+
+An integer division or `MOD` by zero does what it does in CODESYS: the task stops
+with an exception, the PLC goes to STOP. Compiled code calls
+
+```c
+void plcc_fault(uint32_t code, const char *where);   /* must not return */
+```
+
+with `code` = `PLCC_FAULT_DIV_BY_ZERO` and `where` = `"plc.st:42:13: Mixer"`
+(file:line:column and POU; `FB.METHOD` for a method) — see
+[runtime-symbols.md](runtime-symbols.md#plcc_fault) for the full contract. The
+fault happens in the middle of `plcc_run_task`: the statements after the division
+have not run, and the instance state is part-way through a scan. The runtime must:
+
+1. **Put the outputs in their safe state.** Clear `plcc_image_q` and write it to the
+   hardware *from inside the hook* — the scan that faulted never reaches the flush.
+   (All-zero is the CODESYS default; a runtime may apply its own per-channel safe
+   values.)
+2. **Stop every task.** Nothing may call `plcc_run_task` again until the PLC is
+   restarted. After the restart, call `plcc_init()` (cold) or restore RETAIN
+   (warm) — the interrupted instance state is not trustworthy.
+3. **Report** `code` and `where` (log, LED blink code, HMI).
+4. **Not return.** Park, reset the MCU, or `longjmp` back to the scan loop. If the
+   hook returns, the compiled code executes a trap instruction (HardFault on a
+   Cortex-M).
+
+A minimal bare-metal handler:
+
+```c
+#include "plc.h"
+
+void plcc_fault(uint32_t code, const char *where) {
+    memset(plcc_image_q, 0, PLCC_IMAGE_Q_SIZE);           /* 1. safe outputs */
+    board_write_outputs(plcc_image_q, PLCC_IMAGE_Q_SIZE);
+    plc_state = PLC_FAULTED;                               /* 2. no more tasks */
+    log_printf("PLC fault %lu at %s\n", (unsigned long)code, where);   /* 3. */
+    for (;;) board_blink_error_led(code);                  /* 4. never return */
+}
+```
+
+A runtime that wants to keep serving (Modbus, a web UI) after a fault can
+`longjmp` from the hook to a `setjmp` taken around its `plcc_run_task` calls
+instead of parking, then refuse to run tasks until a restart.
+
+`plcc_hal::scan::ScanCycle` does exactly this on a host: the JIT maps `plcc_fault`
+onto `plcc_hal::fault::unwinding_fault_handler`, which unwinds back to
+`Application::try_run_task`; `ScanCycle::step` then stops all tasks in the platform
+scheduler, clears `%Q` and flushes it, reports a `DiagLevel::Fatal` /
+`DiagCode::DivisionByZero` diagnostic through the platform's `DiagnosticSink`, and
+returns `ScanError::Fault { task, fault }` — and keeps returning it until
+`ScanCycle::start` restarts the program. `plcc sim` prints the fault and exits with
+status 3.
+
+A runtime that does not define `plcc_fault` still links: the module's weak default
+traps, which on a PLC is a crash rather than a controlled stop — define the hook.
+
 ## Header and symbol table
 
 `--emit-header prog.h` (C11 and C++11 — an Arduino sketch includes it directly):
@@ -270,6 +329,8 @@ format works as long as save and restore agree.
 - `PLCC_TASK_COUNT`, and per task `PLCC_TASK_<NAME>` (index),
   `…_INTERVAL_NS`, `…_PRIORITY`
 - `PLCC_RETAIN_COUNT`, `PLCC_RETAIN_SIZE`, `PLCC_RETAIN_SIGNATURE`
+- `PLCC_FAULT_DIV_BY_ZERO` (and the reserved `PLCC_FAULT_*` codes,
+  `PLCC_FAULT_USER_BASE`) and the `plcc_fault` prototype
 - every AT binding as macros — `PLCC_AT_MAIN_START_AREA` (`'I'`), `…_OFFSET`
   (byte), `…_BIT` (0–7 or -1), `…_PTR` (`&plcc_image_i[0]`) — and as a table
   `plcc_at_bindings[]` of `{name, area, size, bit, byte_offset, byte_size, iec_type}`
@@ -285,7 +346,8 @@ asserts fail at compile time instead of silently misreading state.
 `--emit-symbols prog.json` has the same data plus a flattened list of every
 program-instance and VAR_GLOBAL variable — `{path, symbol, offset, size, iec_type,
 retain, bit}` — for HMI, OPC UA or Modbus mapping. `symbol` is the object the offset
-is relative to (`plcc_inst_cpu_loop1`, `plcc_globals`, or an image area).
+is relative to (`plcc_inst_cpu_loop1`, `plcc_globals`, or an image area). Its
+`fault` object lists the fault codes.
 
 ## A complete runtime in C
 
@@ -298,6 +360,15 @@ the program.
 
 int64_t plcc_monotonic_ns(void) { return board_micros64() * 1000; }
 void plcc_print(const char *msg) { (void)msg; }
+
+static volatile uint8_t faulted;
+void plcc_fault(uint32_t code, const char *where) {    /* see "Runtime faults" */
+    (void)code; (void)where;
+    memset(plcc_image_q, 0, PLCC_IMAGE_Q_SIZE);
+    board_write_outputs(plcc_image_q, PLCC_IMAGE_Q_SIZE);
+    faulted = 1;
+    for (;;) { }
+}
 
 static int64_t next_due[PLCC_TASK_COUNT];
 static uint8_t prev_single[PLCC_TASK_COUNT];
@@ -367,3 +438,4 @@ In Rust, `plcc_hal::scan::ScanCycle` is the same loop over any `plcc_hal::Platfo
 | Overrun | implementation-defined | run once, skip missed activations | CODESYS default behaviour |
 | Resource-scoped VAR_GLOBAL | visible in its resource | visible everywhere | one module per PLC |
 | Task-level I/O images | implementation-defined | one image, latched/flushed per scan pass | single-core runtimes |
+| Integer division / MOD by zero | error, handling implementation-defined | `plcc_fault(PLCC_FAULT_DIV_BY_ZERO, where)`; the runtime stops the PLC | CODESYS raises an exception and stops the task |

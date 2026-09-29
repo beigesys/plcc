@@ -259,3 +259,75 @@ fn retain_survives_a_restart() {
         assert_eq!(cycle.start(&mut plat), StartKind::Cold);
     }
 }
+
+const DIVIDER: &str = r#"
+PROGRAM Divider
+VAR
+    divisor AT %IB0 : BYTE;
+    lamp AT %QX0.0 : BOOL;
+    quotient AT %QB1 : BYTE;
+END_VAR
+    lamp := TRUE;
+    quotient := 100 / divisor;
+END_PROGRAM
+
+CONFIGURATION Plant
+    RESOURCE Cpu ON Board
+        TASK Main (INTERVAL := T#10ms, PRIORITY := 1);
+        PROGRAM d WITH Main : Divider;
+    END_RESOURCE
+END_CONFIGURATION
+"#;
+
+#[test]
+fn a_division_by_zero_stops_the_plc_clears_outputs_and_reports() {
+    use plcc_hal::diagnostics::{DiagCode, DiagLevel};
+    use plcc_hal::fault::FaultCode;
+    use plcc_hal::scan::ScanError;
+
+    let module = load(DIVIDER);
+    let mut plat = sim();
+    plat.init().unwrap();
+    let mut cycle = ScanCycle::new(module.application().unwrap(), &mut plat).unwrap();
+    cycle.start(&mut plat);
+    let out = |p: &LinuxSimulator, byte| p.process_image().read_output(byte).unwrap();
+
+    plat.process_image_mut().write_input(0, 4);
+    cycle.step_at(&mut plat, 0).unwrap();
+    assert_eq!(out(&plat, 0) & 1, 1);
+    assert_eq!(out(&plat, 1), 25);
+
+    // Divisor 0: the task faults part-way through its scan.
+    plat.process_image_mut().write_input(0, 0);
+    let err = cycle.step_at(&mut plat, 10 * MS).unwrap_err();
+    let ScanError::Fault { task, fault } = err else {
+        panic!("expected a fault, got {err}");
+    };
+    assert_eq!(task, "Main");
+    assert_eq!(fault.kind(), Some(FaultCode::DivByZero));
+    assert_eq!(fault.site, "test.st:9:17: Divider");
+    // Safe state: outputs cleared, tasks stopped, reported as fatal.
+    assert_eq!(out(&plat, 0), 0);
+    assert_eq!(out(&plat, 1), 0);
+    assert!(!plat.task_scheduler().is_running(0).unwrap());
+    let recs = plat.diagnostic_sink().records();
+    assert_eq!(recs.len(), 1);
+    assert_eq!(recs[0].level, DiagLevel::Fatal);
+    assert_eq!(recs[0].code, DiagCode::DivisionByZero);
+    assert!(recs[0].message.contains("integer division by zero"), "{}", recs[0].message);
+
+    // Stays stopped, even with a good divisor.
+    plat.process_image_mut().write_input(0, 5);
+    assert!(matches!(cycle.step_at(&mut plat, 20 * MS), Err(ScanError::Fault { .. })));
+    assert_eq!(out(&plat, 0), 0);
+    assert!(cycle.fault().is_some());
+
+    // A restart (reset + start) runs again.
+    cycle.start(&mut plat);
+    assert!(cycle.fault().is_none());
+    assert!(plat.task_scheduler().is_running(0).unwrap());
+    let r = cycle.step_at(&mut plat, 30 * MS).unwrap();
+    assert_eq!(r.ran, [0]);
+    assert_eq!(out(&plat, 1), 20);
+    assert_eq!(out(&plat, 0) & 1, 1);
+}

@@ -4,7 +4,8 @@
 //!
 //! * `x / 0`, `x MOD 0`, `MIN / -1`: `sdiv`/`srem` raised SIGFPE on x86 and killed
 //!   the whole process (the JIT test itself), returned 0 on ARM, and were UB for
-//!   the optimizer. Now: division/MOD by zero is 0, `MIN / -1` wraps to MIN.
+//!   the optimizer. Now: division/MOD by zero is a runtime fault (see
+//!   `div_by_zero_fault.rs`), `MIN / -1` wraps to MIN.
 //! * `SHL`/`SHR` by the width of IN or more: `shl`/`lshr` poison; x86 masked the
 //!   count, so `SHL(dint, 32)` returned the input. An N wider than IN was
 //!   truncated first, so `SHL(byte, 256)` shifted by 0. Now 0.
@@ -15,31 +16,23 @@ use common::{run, run_o3};
 const DIV: &str = r#"
 PROGRAM p
 VAR
-  z : INT := 0; m1 : INT := -1; mn : INT := -32768; dz : DINT := 0;
-  a : INT; b : INT; c : INT; d : INT; e : DINT; f : UDINT; g : DINT; h : LINT;
+  m1 : INT := -1; mn : INT := -32768;
+  c : INT; d : INT; g : DINT; h : LINT;
   lmn : LINT := LINT#-9223372036854775808; lm1 : LINT := -1;
-  u : UDINT := 7;
 END_VAR
-a := 10 / z;
-b := 10 MOD z;
 c := mn / m1;
 d := mn MOD m1;
-e := -7 / dz;
-f := u / UDINT#0;
 g := -7 MOD 3;
 h := lmn / lm1;
 END_PROGRAM
 "#;
 
 #[test]
-fn division_by_zero_and_min_over_minus_one_are_defined() {
+fn min_over_minus_one_is_defined() {
     for s in [run(DIV), run_o3(DIV)] {
-        assert_eq!(s.i64("a"), 0);
-        assert_eq!(s.i64("b"), 0);
+        assert_eq!(s.fault, None);
         assert_eq!(s.i64("c"), -32768, "MIN / -1 wraps");
         assert_eq!(s.i64("d"), 0);
-        assert_eq!(s.i64("e"), 0);
-        assert_eq!(s.u64("f"), 0);
         assert_eq!(s.i64("g"), -1, "MOD keeps the dividend's sign");
         assert_eq!(s.i64("h"), i64::MIN);
     }

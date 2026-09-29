@@ -23,10 +23,33 @@ extern "C" fn test_clock() -> i64 {
     CLOCK_NS.with(|c| c.get())
 }
 
+/// A `plcc_fault` call: the code and the site string.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fault {
+    pub code: u32,
+    pub site: String,
+}
+
+/// The test's `plcc_fault`: unwind out of the JIT-compiled scan (it must not
+/// return), carrying the fault to the `catch_unwind` around the scan call.
+/// `resume_unwind` does not run the panic hook, so nothing is printed.
+extern "C-unwind" fn test_fault(code: u32, site: *const std::ffi::c_char) {
+    let site = if site.is_null() {
+        String::new()
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(site) }.to_string_lossy().into_owned()
+    };
+    std::panic::resume_unwind(Box::new(Fault { code, site }));
+}
+
 /// Values of PROGRAM `p` after the run, by (case-insensitive) variable name.
 pub struct State {
     bytes: Vec<u8>,
     fields: HashMap<String, (usize, usize)>,
+    /// The runtime fault that stopped the run, if any. Scans stop at a fault.
+    pub fault: Option<Fault>,
+    /// Scans that completed.
+    pub scans: usize,
 }
 
 impl State {
@@ -143,6 +166,14 @@ pub fn try_run_with(src: &str, scans: usize, dt_ms: i64, optimize: bool) -> Resu
             .run_passes("default<O3>", &tm, PassBuilderOptions::create())
             .unwrap();
     }
+    // Replace the module's weak default `plcc_fault` (a trap) with the test's
+    // handler: drop the default body, then map the declaration.
+    if let Some(f) = compiler.module().get_function("plcc_fault") {
+        for bb in f.get_basic_blocks() {
+            unsafe { bb.delete() }.unwrap();
+        }
+        f.set_linkage(inkwell::module::Linkage::External);
+    }
     let ee = compiler
         .module()
         .create_jit_execution_engine(if optimize {
@@ -154,21 +185,45 @@ pub fn try_run_with(src: &str, scans: usize, dt_ms: i64, optimize: bool) -> Resu
     if let Some(f) = compiler.module().get_function("plcc_monotonic_ns") {
         ee.add_global_mapping(&f, test_clock as *const () as usize);
     }
+    if let Some(f) = compiler.module().get_function("plcc_fault") {
+        ee.add_global_mapping(&f, test_fault as *const () as usize);
+    }
     let mut bytes = vec![0u8; ty.size as usize + 64];
     CLOCK_NS.with(|c| c.set(0));
-    unsafe {
-        if let Ok(a) = ee.get_function_address(&prog.init_fn) {
-            let f: extern "C" fn(*mut u8) = std::mem::transmute(a);
-            f(bytes.as_mut_ptr());
+    let mut fault = None;
+    let mut done = 0;
+    // Run one JIT-compiled call, catching a fault unwound out of it.
+    let mut call = |f: extern "C-unwind" fn(*mut u8), p: *mut u8| -> bool {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(p))) {
+            Ok(()) => true,
+            Err(payload) => match payload.downcast::<Fault>() {
+                Ok(fl) => {
+                    fault = Some(*fl);
+                    false
+                }
+                Err(other) => std::panic::resume_unwind(other),
+            },
         }
-        let a = ee.get_function_address(&prog.scan_fn).unwrap();
-        let f: extern "C" fn(*mut u8) = std::mem::transmute(a);
-        for _ in 0..scans {
-            f(bytes.as_mut_ptr());
-            CLOCK_NS.with(|c| c.set(c.get() + dt_ms * 1_000_000));
+    };
+    unsafe {
+        let p = bytes.as_mut_ptr();
+        let init_ok = match ee.get_function_address(&prog.init_fn) {
+            Ok(a) => call(std::mem::transmute::<usize, extern "C-unwind" fn(*mut u8)>(a), p),
+            Err(_) => true,
+        };
+        if init_ok {
+            let a = ee.get_function_address(&prog.scan_fn).unwrap();
+            let f: extern "C-unwind" fn(*mut u8) = std::mem::transmute(a);
+            for _ in 0..scans {
+                if !call(f, p) {
+                    break;
+                }
+                done += 1;
+                CLOCK_NS.with(|c| c.set(c.get() + dt_ms * 1_000_000));
+            }
         }
     }
-    Ok(State { bytes, fields })
+    Ok(State { bytes, fields, fault, scans: done })
 }
 
 /// One scan, unoptimized.

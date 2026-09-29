@@ -21,6 +21,7 @@ pub mod contract;
 mod bits;
 mod convert;
 mod enums;
+mod fault;
 mod image;
 mod interfaces;
 mod ondemand;
@@ -504,6 +505,8 @@ pub struct Compiler<'ctx> {
     /// Uppercase name of the FB/CLASS whose body or method is being compiled, for
     /// calls to its methods written without `THIS^.`.
     current_pou: Option<String>,
+    /// Runtime fault sites (see `fault.rs`).
+    fault: fault::FaultState<'ctx>,
 }
 
 impl<'ctx> Compiler<'ctx> {
@@ -538,6 +541,7 @@ impl<'ctx> Compiler<'ctx> {
             interfaces: interfaces::InterfaceTable::default(),
             reference_inputs: std::collections::HashSet::new(),
             current_pou: None,
+            fault: fault::FaultState::default(),
         }
     }
 
@@ -4851,6 +4855,7 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     fn compile_program(&mut self, prog: &ProgramDecl) -> Result<(), CodegenError> {
+        self.set_fault_site(&prog.name.name, &prog.name.name);
         // Create a scan() function for this program
         let fn_name = format!("{}_scan", prog.name.name.to_lowercase());
 
@@ -4939,6 +4944,7 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     fn compile_function(&mut self, func: &FunctionDecl) -> Result<(), CodegenError> {
+        self.set_fault_site(&func.name.name, &func.name.name);
         let ret_iec_ty = func
             .return_type
             .as_ref()
@@ -5054,6 +5060,7 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     fn compile_function_block(&mut self, fb: &FunctionBlockDecl) -> Result<(), CodegenError> {
+        self.set_fault_site(&fb.name.name, &fb.name.name);
         // Similar to program — fills in the body of the scan function that
         // `record_pou_layout` already declared.
         let fn_name = Self::scan_fn_name_for(&fb.name.name);
@@ -5123,6 +5130,7 @@ impl<'ctx> Compiler<'ctx> {
 
     /// Compile a CLASS declaration. A CLASS is like an FB but has no scan body — only methods.
     fn compile_class(&mut self, cls: &ClassDecl) -> Result<(), CodegenError> {
+        self.set_fault_site(&cls.name.name, &cls.name.name);
         let fn_name = Self::scan_fn_name_for(&cls.name.name);
 
         let fields = self.resolve_pou_fields(&cls.var_blocks);
@@ -5471,6 +5479,16 @@ impl<'ctx> Compiler<'ctx> {
         let ret_iec_ty = info.return_type.clone();
         let params = info.params.clone();
 
+        // An inherited method's spans point into the POU that declared it.
+        let saved_site = (self.fault.site.clone(), self.fault.source_pou.clone());
+        let declaring = self
+            .hierarchy
+            .origins
+            .get(&(fb_name.to_uppercase(), method.name.name.to_uppercase()))
+            .cloned()
+            .unwrap_or_else(|| fb_name.to_uppercase());
+        self.set_fault_site(&format!("{fb_name}.{}", method.name.name), &declaring);
+
         let entry = self.context.append_basic_block(function, "entry");
         self.builder.position_at_end(entry);
 
@@ -5579,6 +5597,7 @@ impl<'ctx> Compiler<'ctx> {
         // Restore saved state
         self.variables = saved_vars;
         self.current_pou = saved_pou;
+        (self.fault.site, self.fault.source_pou) = saved_site;
         self.current_struct_type = saved_struct_type;
         self.current_state_ptr = saved_state_ptr;
 
@@ -7509,8 +7528,11 @@ impl<'ctx> Compiler<'ctx> {
                     (Some(l), Some(r)) => {
                         let l_ty = self.rvalue_iec_type(left);
                         let r_ty = self.rvalue_iec_type(right);
+                        self.fault.span.set(Some(expr.span));
                         let result =
-                            self.compile_binary_op(*op, l, l_ty.as_ref(), r, r_ty.as_ref())?;
+                            self.compile_binary_op(*op, l, l_ty.as_ref(), r, r_ty.as_ref());
+                        self.fault.span.set(None);
+                        let result = result?;
                         Ok(Some(result))
                     }
                     _ => Ok(None),
@@ -8228,20 +8250,18 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
-    /// Integer `/` and `MOD` with a defined result for every operand pair.
+    /// Integer `/` and `MOD`, with no undefined behaviour left for LLVM.
     ///
     /// LLVM's `sdiv`/`udiv`/`srem`/`urem` are undefined behaviour for a zero divisor
     /// and for `MIN / -1`; on x86 both raise SIGFPE and kill the process, on ARM a
     /// division by zero quietly yields 0, and under optimization anything may
     /// happen. So:
     ///
-    /// * `x / 0` and `x MOD 0` are **0**;
-    /// * `MIN / -1` is MIN (two's complement wrap, like every other overflow here)
-    ///   and `MIN MOD -1` is 0.
-    ///
-    /// CODESYS raises a target-dependent runtime exception for a zero divisor unless
-    /// the project adds a `CheckDivDInt`-style implicit check; see
-    /// docs/codesys-compatibility.md for why plcc defines a value instead.
+    /// * a zero divisor is a **runtime fault**: `plcc_fault(PLCC_FAULT_DIV_BY_ZERO,
+    ///   where)`, as CODESYS stops the task with an exception (see `fault.rs` and
+    ///   docs/codesys-compatibility.md). A constant non-zero divisor pays nothing;
+    /// * `MIN / -1` is MIN (two's complement wrap, like every other overflow here,
+    ///   and what CODESYS gives on ARM) and `MIN MOD -1` is 0.
     fn checked_int_div(
         &self,
         op: BinaryOp,
@@ -8253,16 +8273,26 @@ impl<'ctx> Compiler<'ctx> {
         let ty = r.get_type();
         let zero = ty.const_zero();
         let one = ty.const_int(1, false);
-        let is_zero = self
-            .builder
-            .build_int_compare(IntPredicate::EQ, r, zero, "div_by_zero")
-            .map_err(err)?;
-        let mut safe_r = self
-            .builder
-            .build_select(is_zero, one, r, "divisor")
-            .map_err(err)?
-            .into_int_value();
-        if !unsigned {
+        let const_r = if r.is_const() { r.get_sign_extended_constant() } else { None };
+        let mut safe_r = r;
+        // Where no fault can be branched to (no enclosing function), fall back to
+        // a defined 0.
+        let mut select_zero = None;
+        if const_r.is_none_or(|c| c == 0) {
+            let is_zero = self
+                .builder
+                .build_int_compare(IntPredicate::EQ, r, zero, "div_by_zero")
+                .map_err(err)?;
+            if !self.fault_if(is_zero, plcc_runtime::fault::FaultCode::DivByZero)? {
+                safe_r = self
+                    .builder
+                    .build_select(is_zero, one, r, "divisor")
+                    .map_err(err)?
+                    .into_int_value();
+                select_zero = Some(is_zero);
+            }
+        }
+        if !unsigned && const_r.is_none_or(|c| c == -1) {
             // MIN / -1 overflows; MIN / 1 is the wrapped answer, MIN MOD 1 is 0.
             let bits = ty.get_bit_width();
             let min = ty.const_int(1u64 << (bits - 1).min(63), false);
@@ -8289,11 +8319,14 @@ impl<'ctx> Compiler<'ctx> {
             (_, false) => self.builder.build_int_signed_rem(l, safe_r, "mod"),
         }
         .map_err(err)?;
-        Ok(self
-            .builder
-            .build_select(is_zero, zero, q, "div_result")
-            .map_err(err)?
-            .into_int_value())
+        Ok(match select_zero {
+            Some(is_zero) => self
+                .builder
+                .build_select(is_zero, zero, q, "div_result")
+                .map_err(err)?
+                .into_int_value(),
+            None => q,
+        })
     }
 
     /// A binary operator with at least one POINTER operand.

@@ -226,6 +226,27 @@ pub fn c_header(contract: &RuntimeContract, guard: &str) -> String {
         o.push_str("extern plcc_globals_t plcc_globals;\n");
     }
 
+    // ── Runtime faults ──
+    o.push_str("\n/* ── Runtime faults ────────────────────────────────────────────────\n * Compiled code calls plcc_fault() when an ST operation cannot continue (as\n * CODESYS raises an exception and stops the task). It must not return: if it\n * does, the compiled code executes a trap instruction. The object carries a weak\n * default that traps; define plcc_fault in the runtime to override it — put the\n * outputs in a safe state, stop the tasks, report `code` and `where`\n * (\"file:line:col: POU\", or just the POU). See docs/runtime-symbols.md. */\n");
+    for code in plcc_runtime::fault::FaultCode::ALL {
+        let note = match code {
+            plcc_runtime::fault::FaultCode::DivByZero => "",
+            _ => " /* reserved: not raised yet */",
+        };
+        let _ = writeln!(
+            o,
+            "#define PLCC_FAULT_{} {}u{note}",
+            code.c_name(),
+            code.code()
+        );
+    }
+    let _ = writeln!(
+        o,
+        "#define PLCC_FAULT_USER_BASE 0x{:x}u /* first code free for the runtime's own faults */",
+        plcc_runtime::fault::FAULT_USER_BASE
+    );
+    o.push_str("void plcc_fault(uint32_t code, const char *where);\n");
+
     let _ = writeln!(o, "\n#ifdef __cplusplus\n}}\n#endif\n#endif /* {g} */");
     o
 }
@@ -295,6 +316,15 @@ pub fn symbols_json(contract: &RuntimeContract) -> String {
             "retain": v.retain,
             "bit": v.bit,
         })).collect::<Vec<_>>(),
+        "fault": {
+            "symbol": plcc_runtime::fault::FAULT_SYMBOL,
+            "codes": plcc_runtime::fault::FaultCode::ALL.iter().map(|f| json!({
+                "name": f.c_name(),
+                "code": f.code(),
+                "description": f.describe(),
+            })).collect::<Vec<_>>(),
+            "user_base": plcc_runtime::fault::FAULT_USER_BASE,
+        },
         "retain": {
             "signature": c.retain_signature,
             "regions": c.retain.iter().map(|r| json!({

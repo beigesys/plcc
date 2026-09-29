@@ -4,7 +4,9 @@
 //! This is the simulator path: the same module a target build would link, JIT-
 //! compiled for the host, reached only through its `plcc_app` descriptor. The
 //! runtime symbols it imports (`plcc_monotonic_ns`, `plcc_print`) are mapped onto
-//! host implementations.
+//! host implementations, and `plcc_fault` onto
+//! [`unwinding_fault_handler`](crate::fault::unwinding_fault_handler), so a
+//! runtime fault reaches [`ScanCycle`](crate::scan::ScanCycle) as an error.
 
 use inkwell::OptimizationLevel;
 use inkwell::context::Context;
@@ -72,11 +74,14 @@ impl JitModule {
     /// process, which is what a simulator wants.
     pub fn compile(sources: &[(&str, &str)], opts: &JitOptions) -> Result<Self, String> {
         let mut decls = Vec::new();
+        let mut files = Vec::new();
         for (name, text) in sources {
             let (unit, errors) = plcc_st::parse(text);
             if let Some(e) = errors.first() {
                 return Err(format!("{name}: {e}"));
             }
+            let pous: Vec<String> = unit.declarations.iter().filter_map(name_of).collect();
+            files.push((*name, *text, pous));
             decls.extend(unit.declarations);
         }
         if opts.stdlib {
@@ -112,7 +117,12 @@ impl JitModule {
                 default_interval_ns: ns,
             });
         }
+        for (name, text, pous) in &files {
+            compiler.add_source_file(name, text, pous);
+        }
         compiler.compile(&unit).map_err(|e| e.to_string())?;
+        // Runtime faults unwind back to `Application::try_run_task`.
+        compiler.use_external_fault_handler();
         let ee = compiler
             .module()
             .create_jit_execution_engine(OptimizationLevel::None)
@@ -125,6 +135,12 @@ impl JitModule {
         }
         if let Some(f) = compiler.module().get_function("plcc_print") {
             ee.add_global_mapping(&f, host_print as *const () as usize);
+        }
+        if let Some(f) = compiler.module().get_function("plcc_fault") {
+            ee.add_global_mapping(
+                &f,
+                crate::fault::unwinding_fault_handler as *const () as usize,
+            );
         }
         Ok(Self {
             _compiler: compiler,

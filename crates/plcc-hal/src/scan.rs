@@ -20,6 +20,8 @@
 use thiserror::Error;
 
 use crate::app::{AppError, Application, TaskInfo};
+use crate::diagnostics::{DiagLevel, DiagnosticSink};
+use crate::fault::Fault;
 use crate::platform::Platform;
 use crate::process_image::ProcessImage;
 use crate::retain::{RetainError, RetainStorage};
@@ -34,6 +36,11 @@ pub enum ScanError {
     Retain(#[from] RetainError),
     #[error(transparent)]
     App(#[from] AppError),
+    /// Compiled code raised a runtime fault (e.g. an integer division by zero).
+    /// Every task is stopped and the outputs are in their safe state (all zero);
+    /// the cycle stays stopped until [`ScanCycle::start`] restarts it.
+    #[error("PLC stopped: {fault} in task {task}")]
+    Fault { task: String, fault: Fault },
 }
 
 /// What one [`ScanCycle::step`] did.
@@ -68,6 +75,8 @@ pub struct ScanCycle {
     app: Application,
     tasks: Vec<TaskState>,
     started: bool,
+    /// The fault that stopped the cycle: (task name, fault).
+    fault: Option<(String, Fault)>,
 }
 
 impl ScanCycle {
@@ -92,6 +101,7 @@ impl ScanCycle {
             app,
             tasks,
             started: false,
+            fault: None,
         })
     }
 
@@ -107,11 +117,31 @@ impl ScanCycle {
         self.tasks.iter().map(|t| &t.info).collect()
     }
 
+    /// The fault that stopped the cycle, and the task it happened in.
+    pub fn fault(&self) -> Option<(&str, &Fault)> {
+        self.fault.as_ref().map(|(t, f)| (t.as_str(), f))
+    }
+
     /// `plcc_init()`, then restore RETAIN variables from the platform's retain
     /// storage when it holds data for this program (a warm start).
+    ///
+    /// After a fault this is the restart (CODESYS: reset, then start): the fault
+    /// is cleared, the tasks are started again and every variable is
+    /// re-initialized. A fault in an initial value stops the cycle again; the
+    /// next [`Self::step`] reports it.
     pub fn start<P: Platform>(&mut self, platform: &mut P) -> StartKind {
-        self.app.init();
+        if self.fault.take().is_some() {
+            for t in &mut self.tasks {
+                let _ = platform.task_scheduler_mut().start_task(t.handle);
+                t.next_due = None;
+                t.prev_single = false;
+            }
+        }
         self.started = true;
+        if let Err(fault) = self.app.try_init() {
+            self.stop_on_fault(platform, "init".into(), fault);
+            return StartKind::Cold;
+        }
         match platform.retain_storage().restore() {
             Ok(data) if self.app.restore_retain(&data).is_ok() => StartKind::Warm,
             _ => StartKind::Cold,
@@ -141,6 +171,12 @@ impl ScanCycle {
     ) -> Result<StepReport, ScanError> {
         if !self.started {
             self.start(platform);
+        }
+        if let Some((task, fault)) = &self.fault {
+            return Err(ScanError::Fault {
+                task: task.clone(),
+                fault: fault.clone(),
+            });
         }
         platform.clock_mut().begin_scan();
 
@@ -189,9 +225,13 @@ impl ScanCycle {
         }
         due.sort_by_key(|&i| (self.tasks[i].info.priority, i));
 
-        // 3. Run them.
+        // 3. Run them. A fault stops the PLC: no further task runs.
         for &i in &due {
-            self.app.run_task(i);
+            if let Err(fault) = self.app.try_run_task(i) {
+                let task = self.tasks[i].info.name.clone();
+                self.stop_on_fault(platform, task.clone(), fault.clone());
+                return Err(ScanError::Fault { task, fault });
+            }
         }
         report.ran = due;
         report.next_due_ns = self.tasks.iter().filter_map(|t| t.next_due).min();
@@ -199,5 +239,26 @@ impl ScanCycle {
         // 4. Flush outputs.
         platform.process_image_mut().write_outputs(self.app.outputs());
         Ok(report)
+    }
+
+    /// What CODESYS does on an exception: stop every task, drive the outputs to
+    /// their safe state (all zero) and report. The program's `%Q` area is cleared
+    /// too, so a later flush cannot resurrect the old outputs.
+    fn stop_on_fault<P: Platform>(&mut self, platform: &mut P, task: String, fault: Fault) {
+        for t in &self.tasks {
+            let _ = platform.task_scheduler_mut().stop_task(t.handle);
+        }
+        let image = self.app.image();
+        if !image.output_ptr.is_null() && image.output_size > 0 {
+            // Safety: the descriptor's %Q area, owned by the loaded module.
+            unsafe { core::ptr::write_bytes(image.output_ptr as *mut u8, 0, image.output_size as usize) };
+        }
+        platform.process_image_mut().write_outputs(self.app.outputs());
+        platform.diagnostic_sink_mut().report(
+            DiagLevel::Fatal,
+            fault.diag_code(),
+            &format!("task {task}: {fault}; PLC stopped, outputs cleared"),
+        );
+        self.fault = Some((task, fault));
     }
 }

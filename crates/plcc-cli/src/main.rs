@@ -354,7 +354,6 @@ fn main() -> Result<()> {
                 eprintln!("not compiled: fix the type errors, or pass --no-typecheck");
                 std::process::exit(1);
             }
-            let merged = parsed.unit;
             let context = inkwell::context::Context::create();
             let mut compiler =
                 plcc_codegen::Compiler::new(&context, &inputs[0].display().to_string());
@@ -362,13 +361,14 @@ fn main() -> Result<()> {
                 let (area, bytes) = parse_image_size(spec)?;
                 compiler.set_image_size(area, bytes);
             }
+            register_sources(&mut compiler, &parsed);
             let interval = plcc_codegen::compiler::contract::parse_duration_ns(&task_interval)
                 .ok_or_else(|| miette::miette!("--task-interval: `{task_interval}` is not a TIME"))?;
             compiler.set_task_options(plcc_codegen::TaskOptions {
                 default_interval_ns: interval,
             });
 
-            if let Err(e) = compiler.compile(&merged) {
+            if let Err(e) = compiler.compile(&parsed.unit) {
                 report_codegen_error(&e, &inputs);
                 std::process::exit(1);
             }
@@ -433,10 +433,10 @@ fn main() -> Result<()> {
                 eprintln!("not run: fix the type errors, or pass --no-typecheck");
                 std::process::exit(1);
             }
-            let merged = parsed.unit;
             let context = inkwell::context::Context::create();
             let mut compiler = plcc_codegen::Compiler::new(&context, "sim");
-            if let Err(e) = compiler.compile(&merged) {
+            register_sources(&mut compiler, &parsed);
+            if let Err(e) = compiler.compile(&parsed.unit) {
                 eprintln!("Codegen error: {e}");
                 std::process::exit(1);
             }
@@ -466,10 +466,15 @@ fn main() -> Result<()> {
             let init_name = scan_name.replace("_scan", "_init");
             let prog_name = scan_name.trim_end_matches("_scan").to_string();
 
+            // A division by zero stops the simulated PLC (see plcc_fault_impl).
+            compiler.use_external_fault_handler();
             let ee = compiler
                 .module()
                 .create_jit_execution_engine(inkwell::OptimizationLevel::None)
                 .map_err(|e| miette::miette!("JIT error: {e}"))?;
+            if let Some(f) = compiler.module().get_function("plcc_fault") {
+                ee.add_global_mapping(&f, plcc_fault_impl as *const () as usize);
+            }
 
             // Provide plcc_print for JIT (PRINT statement calls this)
             ee.add_global_mapping(
@@ -623,6 +628,40 @@ fn report_codegen_error(e: &plcc_codegen::compiler::CodegenError, inputs: &[Path
     match e.span() {
         Some(span) => eprintln!("Codegen error: {e} (source offset {})", span.start),
         None => eprintln!("Codegen error: {e}"),
+    }
+}
+
+/// `plcc_fault` for `plcc sim`: a runtime fault stops the PLC. Report it and exit
+/// with status 3 — the hook must not return.
+extern "C" fn plcc_fault_impl(code: u32, site: *const std::ffi::c_char) {
+    let site = if site.is_null() {
+        String::new()
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(site) }.to_string_lossy().into_owned()
+    };
+    let what = plcc_runtime::fault::FaultCode::from_code(code)
+        .map(|c| c.describe())
+        .unwrap_or("runtime fault");
+    eprintln!("[PLC] FAULT {code} ({what}) at {site}: program stopped");
+    std::process::exit(3);
+}
+
+/// Tell the compiler which file each POU of the merged unit came from, so a
+/// runtime fault can name `file:line:col`.
+fn register_sources(compiler: &mut plcc_codegen::Compiler<'_>, parsed: &Parsed) {
+    let mut files: Vec<(&Origin, Vec<String>)> = Vec::new();
+    for (decl, origin) in parsed.unit.declarations.iter().zip(&parsed.origins) {
+        let Some(name) = declaration_name(decl) else { continue };
+        match files
+            .iter_mut()
+            .find(|(o, _)| std::rc::Rc::ptr_eq(&o.source, &origin.source))
+        {
+            Some((_, pous)) => pous.push(name),
+            None => files.push((origin, vec![name])),
+        }
+    }
+    for (origin, pous) in files {
+        compiler.add_source_file(&origin.name, &origin.source, pous);
     }
 }
 

@@ -11,6 +11,7 @@
 use core::ffi::{CStr, c_char};
 use thiserror::Error;
 
+use crate::fault::{Fault, catch_fault};
 use crate::process_image::ProcessImageLayout;
 
 /// The descriptor layout version this crate understands.
@@ -22,8 +23,10 @@ pub const ABI_VERSION: u32 = 1;
 pub struct RawProgramInstance {
     pub name: *const c_char,
     pub program_type: *const c_char,
-    pub init: extern "C" fn(*mut u8),
-    pub scan: extern "C" fn(*mut u8),
+    // `C-unwind`: the C calling convention, but a fault handler may unwind out
+    // of the compiled code (see `fault.rs`).
+    pub init: extern "C-unwind" fn(*mut u8),
+    pub scan: extern "C-unwind" fn(*mut u8),
     pub state: *mut u8,
     pub state_size: u64,
 }
@@ -60,8 +63,8 @@ pub struct RawApp {
     pub task_count: u32,
     pub tasks: *const RawTask,
     pub image: *const ProcessImageLayout,
-    pub init: extern "C" fn(),
-    pub run_task: extern "C" fn(u32),
+    pub init: extern "C-unwind" fn(),
+    pub run_task: extern "C-unwind" fn(u32),
     pub retain: *const RawRetainRegion,
     pub retain_count: u32,
     pub retain_signature: u32,
@@ -223,6 +226,23 @@ impl Application {
     /// `plcc_run_task(task)`: run every program instance of one task once.
     pub fn run_task(&mut self, task: usize) {
         (self.raw.run_task)(task as u32)
+    }
+
+    /// [`Self::init`], returning a runtime fault (e.g. a division by zero in an
+    /// initial value) instead of unwinding — when the module's `plcc_fault` is
+    /// [`unwinding_fault_handler`](crate::fault::unwinding_fault_handler), as in
+    /// the JIT.
+    pub fn try_init(&mut self) -> Result<(), Fault> {
+        let init = self.raw.init;
+        catch_fault(|| init())
+    }
+
+    /// [`Self::run_task`], returning a runtime fault instead of unwinding (see
+    /// [`Self::try_init`]). After a fault the task stopped part-way through its
+    /// scan; the program's variables are as the fault left them.
+    pub fn try_run_task(&mut self, task: usize) -> Result<(), Fault> {
+        let run = self.raw.run_task;
+        catch_fault(|| run(task as u32))
     }
 
     /// Current value of a task's SINGLE input, if it has one.

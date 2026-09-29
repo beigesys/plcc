@@ -159,7 +159,22 @@ fn main() {
         } else {
             start.elapsed().as_nanos() as u64
         };
-        let report = cycle.step_at(&mut sim, now).expect("scan");
+        let report = match cycle.step_at(&mut sim, now) {
+            Ok(r) => r,
+            // A runtime fault (e.g. division by zero) stops the PLC, as in
+            // CODESYS: the cycle has cleared the outputs and reported it.
+            Err(plcc_hal::scan::ScanError::Fault { task, fault }) => {
+                use plcc_hal::diagnostics::DiagnosticSink;
+                eprintln!("scan {scan:>4}: FAULT in task {task}: {fault}");
+                eprintln!(
+                    "PLC stopped, outputs cleared ({} error(s) in the diagnostic log)",
+                    sim.diagnostic_sink().error_count()
+                );
+                sim.shutdown().ok();
+                std::process::exit(3);
+            }
+            Err(e) => panic!("scan: {e}"),
+        };
         let q: Vec<String> = (0..qsz)
             .map(|i| format!("{:02x}", sim.process_image().read_output(i).unwrap_or(0)))
             .collect();

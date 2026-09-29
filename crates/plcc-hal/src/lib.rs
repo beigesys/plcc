@@ -6,6 +6,7 @@ pub mod app;
 pub mod clock;
 pub mod comms;
 pub mod diagnostics;
+pub mod fault;
 pub mod io_driver;
 pub mod platform;
 pub mod process_image;
