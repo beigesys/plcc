@@ -72,6 +72,7 @@
 <Tag Name="Rounded" TagType="Base" DataType="DINT"/>
 <Tag Name="Loops" TagType="Base" DataType="DINT"/>
 <Tag Name="Word" TagType="Base" DataType="INT"/>
+<Tag Name="NonRet" TagType="Base" DataType="DINT"><Data Format="L5K"><![CDATA[7]]></Data></Tag>
 <Tag Name="Lamp1" TagType="Base" DataType="Lamp_AOI"/>
 <Tag Name="LampOn" TagType="Base" DataType="BOOL"/>
 <Tag Name="Copied" TagType="Base" DataType="DINT" Dimensions="3"/>
@@ -115,6 +116,7 @@
 <Line Number="27"><![CDATA[Lamp_AOI(Lamp1, Go, LampOn);]]></Line>
 <Line Number="28"><![CDATA[COP(Values[1], Copied[0], 5);  // stops at the end of Copied]]></Line>
 <Line Number="29"><![CDATA[GSV(WallClockTime, , LocalDateTime, Stamp[0]);]]></Line>
+<Line Number="30"><![CDATA[IF Loops > 1000 THEN NonRet [:=] 5; END_IF;]]></Line>
 </STContent>
 </Routine>
 <Routine Name="Doubler" Type="RLL">

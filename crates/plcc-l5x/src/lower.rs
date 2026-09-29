@@ -102,10 +102,16 @@ impl<'s> Lower<'s> {
         let mut ids = Vec::new();
         for dt in &p.datatypes {
             if self.env.lookup(&dt.name.text).is_some() {
-                self.err(
-                    format!("data type `{}` is declared twice", dt.name.text),
-                    dt.name.span,
-                );
+                // A predefined type plcc models itself (TIMER, CONTROL, ...)
+                // listed by an export with dependencies: plcc's definition
+                // stands. Others (AXIS_*, ALARM_*, module types) are read
+                // like UDTs, so their members can be used.
+                if !dt.predefined {
+                    self.err(
+                        format!("data type `{}` is declared twice", dt.name.text),
+                        dt.name.span,
+                    );
+                }
                 ids.push(None);
                 continue;
             }
@@ -453,6 +459,11 @@ impl<'s> Lower<'s> {
                     (Some(slot), true) => format!("{}:{slot}:{suffix}", m.parent),
                     _ => format!("{}:{suffix}", m.name.text),
                 };
+                // Several connections of one module can each carry the
+                // same tag (a drive's input data); it is one tag.
+                if self.ctrl.get(&tag).is_some_and(|s| s.ty.is_some()) {
+                    continue;
+                }
                 let Some(ty) = data
                     .and_then(|d| xml::elements(d).next())
                     .and_then(|s| self.struct_from_decorated(s))
@@ -532,6 +543,11 @@ impl<'s> Lower<'s> {
     fn scope_tags(&mut self, tags: &[TagDef], scope: &mut Scope, out: &mut Out, global: bool) {
         for t in tags {
             if t.kind == TagKind::Alias {
+                continue;
+            }
+            // Some exports list module tags (`FAN_030:C`) among the
+            // controller tags too; the module already declared it.
+            if global && t.name.text.contains(':') && scope.get(&t.name.text).is_some() {
                 continue;
             }
             let st = ident(&t.name.text);

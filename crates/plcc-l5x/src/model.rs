@@ -32,6 +32,9 @@ pub(crate) struct DataTypeDef {
     pub name: Name,
     /// `StringFamily` for string types (`LEN` + `DATA`).
     pub string_family: bool,
+    /// `Class="ProductDefined"` (TIMER, PID, AXIS_...) or `"IO"` (module
+    /// types): exports with dependencies list them too.
+    pub predefined: bool,
     pub members: Vec<MemberDef>,
     pub span: Span,
 }
@@ -158,7 +161,7 @@ pub(crate) struct ModuleDef<'a, 'i> {
     pub ports: Vec<(u32, String)>,
     /// `(suffix, data node)` of `InputTag`/`OutputTag`/`ConfigTag`; suffix is
     /// `I`, `O` or `C`.
-    pub io_tags: Vec<(char, Option<XNode<'a, 'i>>, Span)>,
+    pub io_tags: Vec<(&'static str, Option<XNode<'a, 'i>>, Span)>,
     #[allow(dead_code)]
     pub span: Span,
 }
@@ -253,6 +256,7 @@ impl<'s> Reader<'s> {
     fn datatype(&mut self, dt: XNode) -> Option<DataTypeDef> {
         let name = self.name_attr(dt, "Name")?;
         let string_family = xml::attr(dt, "Family") == Some("StringFamily");
+        let predefined = matches!(xml::attr(dt, "Class"), Some("ProductDefined") | Some("IO"));
         let mut members = Vec::new();
         if let Some(ms) = xml::child(dt, "Members") {
             for m in xml::children(ms, "Member") {
@@ -286,6 +290,7 @@ impl<'s> Reader<'s> {
         Some(DataTypeDef {
             name,
             string_family,
+            predefined,
             members,
             span: xml::tag_span(self.src, dt),
         })
@@ -321,15 +326,20 @@ impl<'s> Reader<'s> {
         let mut io_tags = Vec::new();
         if let Some(comm) = xml::child(m, "Communications") {
             if let Some(cfg) = xml::child(comm, "ConfigTag") {
-                io_tags.push(('C', decorated(cfg), xml::tag_span(self.src, cfg)));
+                io_tags.push(("C", decorated(cfg), xml::tag_span(self.src, cfg)));
             }
             if let Some(conns) = xml::child(comm, "Connections") {
                 for c in xml::children(conns, "Connection") {
-                    if let Some(t) = xml::child(c, "InputTag") {
-                        io_tags.push(('I', decorated(t), xml::tag_span(self.src, t)));
-                    }
-                    if let Some(t) = xml::child(c, "OutputTag") {
-                        io_tags.push(('O', decorated(t), xml::tag_span(self.src, t)));
+                    // Standard and (GuardLogix) safety connections.
+                    for (elem, suffix) in [
+                        ("InputTag", "I"),
+                        ("OutputTag", "O"),
+                        ("SafetyInputTag", "SI"),
+                        ("SafetyOutputTag", "SO"),
+                    ] {
+                        if let Some(t) = xml::child(c, elem) {
+                            io_tags.push((suffix, decorated(t), xml::tag_span(self.src, t)));
+                        }
                     }
                 }
             }

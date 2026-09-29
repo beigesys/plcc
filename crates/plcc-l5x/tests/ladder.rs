@@ -119,6 +119,25 @@ fn first_scan_flag_is_true_once() {
 }
 
 #[test]
+fn indirect_bits_are_written() {
+    with_plc("bits_branches.L5X", |plc| {
+        plc.set("Idx", 31);
+        plc.set_bool("A", true);
+        plc.scan();
+        assert_eq!(plc.get("Bits32"), i32::MIN as i64, "OTL(Bits32.[31])");
+        plc.set_bool("A", false);
+        plc.set("Idx", 3);
+        plc.set_bool("A", true);
+        plc.scan();
+        assert_eq!(plc.get("Bits32"), i32::MIN as i64 | 8);
+        plc.set_bool("A", false);
+        plc.set_bool("B", true);
+        plc.scan();
+        assert_eq!(plc.get("Bits32"), i32::MIN as i64, "OTU(Bits32.[3])");
+    });
+}
+
+#[test]
 fn seal_in_rung_latches_and_breaks() {
     with_plc("seal_in.L5X", |plc| {
         plc.scan();

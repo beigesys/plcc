@@ -544,6 +544,31 @@ impl<'a, 'x> R<'a, 'x> {
         Ok(st)
     }
 
+    /// `bit := value;` for OTE/OTL/OTU, including an indirect bit
+    /// `tag.[n]` (1756-RM003 "Bit Addressing"), which rewrites the integer.
+    fn bit_write(&self, ins: &Instr, i: usize, t: &Text, value: &str) -> Res<String> {
+        let e = self.operand(ins, i, t)?;
+        if let LKind::Path(p) = &e.kind
+            && let Some(Seg::IndirectBit(ix)) = p.segs.last()
+        {
+            let base = TagPath {
+                base: p.base.clone(),
+                base_span: p.base_span.clone(),
+                segs: p.segs[..p.segs.len() - 1].to_vec(),
+            };
+            let (st, ty) = self.ctx.path(&base, t)?;
+            let Some(el) = ty.elem().filter(|e| e.is_int()) else {
+                return Err(L5xError::new("indirect bit access needs an integer", t.span(e.span)));
+            };
+            let n = conv(&self.ctx.value(ix, t)?, Dom::Int);
+            let whole = if el == Elem::Lint { st.clone() } else { format!("{}_TO_LINT({st})", el.st()) };
+            let set = format!("lx__setbitl({whole}, {n}, {value})");
+            let set = if el == Elem::Lint { set } else { format!("LINT_TO_{}({set})", el.st()) };
+            return Ok(format!("{st} := {set};"));
+        }
+        Ok(format!("{} := {value};", self.bit_dest(ins, i, t)?))
+    }
+
     /// A structure operand of the given predefined type (TIMER, COUNTER, ...).
     fn structure(
         &self,
@@ -613,19 +638,20 @@ impl<'a, 'x> R<'a, 'x> {
             }
             "OTE" => {
                 self.arity(ins, 1, t)?;
-                let b = self.bit_dest(ins, 0, t)?;
-                self.line(&format!("{b} := lx__rc;"));
-                self.pre_line(&format!("{b} := FALSE;"));
+                let set = self.bit_write(ins, 0, t, "lx__rc")?;
+                self.line(&set);
+                let clear = self.bit_write(ins, 0, t, "FALSE")?;
+                self.pre_line(&clear);
             }
             "OTL" => {
                 self.arity(ins, 1, t)?;
-                let b = self.bit_dest(ins, 0, t)?;
-                self.when_true(&format!("{b} := TRUE;"));
+                let set = self.bit_write(ins, 0, t, "TRUE")?;
+                self.when_true(&set);
             }
             "OTU" => {
                 self.arity(ins, 1, t)?;
-                let b = self.bit_dest(ins, 0, t)?;
-                self.when_true(&format!("{b} := FALSE;"));
+                let set = self.bit_write(ins, 0, t, "FALSE")?;
+                self.when_true(&set);
             }
             "ONS" => {
                 // True: rung-out true only when the storage bit was clear;

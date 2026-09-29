@@ -183,6 +183,10 @@ struct W<'a, 'x> {
     in_aoi: bool,
     errors: Vec<L5xError>,
     temps: std::collections::BTreeSet<String>,
+    /// Prescan statements (non-retentive assignments).
+    prescan: Vec<String>,
+    /// The tag path emitted last (the target of a following `[:=]`).
+    last_path: Option<(String, Ty)>,
 }
 
 pub(crate) fn routine(
@@ -229,11 +233,18 @@ pub(crate) fn routine_with(
         in_aoi,
         errors: Vec::new(),
         temps: Default::default(),
+        prescan: Vec::new(),
+        last_path: None,
     };
     let n = w.toks.len();
     out.body.push_ctx(r.span);
     let body = w.translate(0..n);
     out.temps = std::mem::take(&mut w.temps);
+    out.prescan.push_ctx(r.span);
+    for line in std::mem::take(&mut w.prescan) {
+        out.prescan.s(&line).s("\n");
+    }
+    out.prescan.pop_ctx();
     out.body.append(body);
     out.body.s("\n");
     out.body.pop_ctx();
@@ -486,6 +497,20 @@ impl W<'_, '_> {
                 }
                 K::Punct => {
                     if self.s(&t.r) == "[:=]" {
+                        // Non-retentive assignment: "the tag ... is reset to
+                        // zero each time the controller enters the Run mode"
+                        // (1756-RM003 "Specify a non-retentive assignment").
+                        if let Some((st, ty)) = self.last_path.take() {
+                            let zero = match ty.elem() {
+                                Some(crate::types::Elem::Bool) => Some("FALSE"),
+                                Some(e) if e.is_real() => Some("0.0"),
+                                Some(e) if e.is_int() => Some("0"),
+                                _ => None,
+                            };
+                            if let Some(z) = zero {
+                                self.prescan.push(format!("{st} := {z};"));
+                            }
+                        }
                         out.m(":=", self.text.span(t.r.clone()));
                     } else {
                         self.copy(&mut out, t.r.clone());
@@ -527,7 +552,8 @@ impl W<'_, '_> {
             && let LKind::Path(p) = &e.kind
         {
             match self.ctx.path(p, self.text) {
-                Ok((st, _)) => {
+                Ok((st, ty)) => {
+                    self.last_path = Some((st.clone(), ty));
                     if st == self.s(&r) && self.text.is_verbatim(r.clone()) {
                         self.copy(out, r);
                     } else {

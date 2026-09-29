@@ -606,10 +606,8 @@ impl Ctx<'_> {
                 if p.segs.iter().any(|s| matches!(s, Seg::IndirectBit(_))) {
                     return self.indirect_bit_dest(p, sp);
                 }
-                if status_flag(&p.base).is_some() && !p.base.eq_ignore_ascii_case("S:FS") {
-                    // S:V etc. may be written with OTE/OTL (1756-RM003 "Math
-                    // status flags": "set S:V with an OTE or OTL instruction").
-                }
+                // Status flags (S:V, ...) are writable too: "set S:V with an
+                // OTE or OTL instruction" (1756-RM003 "Math status flags").
                 self.path(p, sp)
             }
             _ => Err(L5xError::new(

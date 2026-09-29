@@ -124,6 +124,22 @@ VAR m : LWORD; END_VAR
         OR SHL(LINT_TO_LWORD(b) AND LWORD#16#FF, LINT_TO_INT(k * 8)));
 END_FUNCTION
 
+(* Bit n of v set or cleared (indirect bit writes `tag.[n]`). *)
+FUNCTION lx__setbitl : LINT
+VAR_INPUT v : LINT; n : LINT; b : BOOL; END_VAR
+VAR m : LWORD; END_VAR
+    IF n < 0 OR n > 63 THEN
+        lx__setbitl := v;
+        RETURN;
+    END_IF;
+    m := SHL(LWORD#1, LINT_TO_INT(n));
+    IF b THEN
+        lx__setbitl := LWORD_TO_LINT(LINT_TO_LWORD(v) OR m);
+    ELSE
+        lx__setbitl := LWORD_TO_LINT(LINT_TO_LWORD(v) AND NOT m);
+    END_IF;
+END_FUNCTION
+
 (* One bit of a DINT set or cleared (bit-array instructions BSL/BSR). *)
 FUNCTION lx__setbit_dint : DINT
 VAR_INPUT v : DINT; n : LINT; b : BOOL; END_VAR

@@ -41,6 +41,7 @@
 <Tag Name="IdxBit" TagType="Base" DataType="BOOL"/>
 <Tag Name="FirstScan" TagType="Base" DataType="BOOL"/>
 <Tag Name="FsCount" TagType="Base" DataType="DINT"/>
+<Tag Name="Bits32" TagType="Base" DataType="DINT"/>
 </Tags>
 <Programs>
 <Program Name="MainProgram" MainRoutineName="MainRoutine">
@@ -63,6 +64,8 @@
 <Rung Number="13" Type="N"><Text><![CDATA[CMP((Level * 2 + 1) >= 31 && Level <> 0)OTE(CmpOk);]]></Text></Rung>
 <Rung Number="14" Type="N"><Text><![CDATA[XIC(Flags[Idx])OTE(IdxBit);]]></Text></Rung>
 <Rung Number="15" Type="N"><Text><![CDATA[XIC(S:FS)OTE(FirstScan)ADD(FsCount,1,FsCount);]]></Text></Rung>
+<Rung Number="16" Type="N"><Text><![CDATA[XIC(A)OTL(Bits32.[Idx]);]]></Text></Rung>
+<Rung Number="17" Type="N"><Text><![CDATA[XIC(B)OTU(Bits32.[Idx]);]]></Text></Rung>
 </RLLContent>
 </Routine>
 </Routines>
