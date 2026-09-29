@@ -25,7 +25,7 @@ use plcc_st::span::Span;
 
 /// Per FB (uppercase): the FB_init inputs, in order, with their declared
 /// initial values.
-pub(super) type Defaults = HashMap<String, Vec<(String, Option<Expression>)>>;
+pub(super) type Defaults = HashMap<String, Vec<(String, Option<Expression>, bool)>>;
 
 pub(super) fn defaults(unit: &CompilationUnit) -> Defaults {
     let mut out = Defaults::new();
@@ -44,7 +44,10 @@ pub(super) fn defaults(unit: &CompilationUnit) -> Defaults {
                 .iter()
                 .filter(|b| b.kind == VarBlockKind::VarInput)
                 .flat_map(|b| b.declarations.iter())
-                .map(|v| (v.name.name.clone(), v.initializer.clone()))
+                .map(|v| {
+                    let is_ref = matches!(v.type_spec.kind, TypeSpecKind::Reference(_));
+                    (v.name.name.clone(), v.initializer.clone(), is_ref)
+                })
                 .collect();
             out.insert(name.to_uppercase(), inputs);
         }
@@ -154,8 +157,8 @@ impl<'ctx> Compiler<'ctx> {
             }
             let init = declared
                 .iter()
-                .find(|(n, _)| n.eq_ignore_ascii_case(&p.name))
-                .and_then(|(_, e)| e.clone())
+                .find(|(n, _, _)| n.eq_ignore_ascii_case(&p.name))
+                .and_then(|(_, e, _)| e.clone())
                 .or_else(|| zero_of(&p.ty, span));
             if let Some(value) = init {
                 args.push(CallArg {
@@ -165,6 +168,48 @@ impl<'ctx> Compiler<'ctx> {
                     negated: false,
                     span,
                 });
+            }
+        }
+
+        // A REFERENCE TO input is passed by address (`__REF_OF`, as `REF=` does).
+        let ref_params: Vec<String> = declared
+            .iter()
+            .filter(|(_, _, is_ref)| *is_ref)
+            .map(|(n, _, _)| n.to_uppercase())
+            .collect();
+        if !ref_params.is_empty() {
+            for (i, a) in args.iter_mut().enumerate() {
+                let param = match &a.name {
+                    Some(n) => n.name.to_uppercase(),
+                    None => method
+                        .params
+                        .get(i)
+                        .map(|p| p.name.to_uppercase())
+                        .unwrap_or_default(),
+                };
+                if ref_params.contains(&param) {
+                    let value = a.value.clone();
+                    let vspan = value.span;
+                    a.value = Expression {
+                        kind: ExpressionKind::FunctionCall {
+                            callee: Box::new(Expression {
+                                kind: ExpressionKind::Identifier(Ident::new(
+                                    "__REF_OF".to_string(),
+                                    vspan,
+                                )),
+                                span: vspan,
+                            }),
+                            args: vec![CallArg {
+                                name: None,
+                                value,
+                                is_output: false,
+                                negated: false,
+                                span: vspan,
+                            }],
+                        },
+                        span: vspan,
+                    };
+                }
             }
         }
 

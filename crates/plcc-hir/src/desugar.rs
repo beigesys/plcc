@@ -623,10 +623,30 @@ impl Rewriter<'_> {
                     member: m.clone(),
                 }
             }
-            ExpressionKind::FunctionCall { callee, args } => ExpressionKind::FunctionCall {
-                callee: Box::new(self.callee(callee)),
-                args: self.args(args),
-            },
+            ExpressionKind::FunctionCall { callee, args } => {
+                let mut callee = self.callee(callee);
+                let args = self.args(args);
+                // The overloaded `TO_STRING(x)` / `TO_WSTRING(x)` (IEC 61131-3
+                // 3rd ed.) is `<type of x>_TO_STRING(x)` when x's declared type
+                // is elementary.
+                if let ExpressionKind::Identifier(id) = &callee.kind
+                    && matches!(up(&id.name).as_str(), "TO_STRING" | "TO_WSTRING")
+                    && let [arg] = args.as_slice()
+                    && arg.name.is_none()
+                    && let Some(t) = self.type_of(&arg.value)
+                    && let TypeSpecKind::Named(tn) = &self.env.resolve(&t).kind
+                    && crate::types::resolve_type_name(&tn.name)
+                        .is_some_and(|ty| ty.is_any_elementary() && !ty.is_any_string())
+                {
+                    let name = format!("{}_{}", up(&tn.name), up(&id.name));
+                    callee = ident_expr(&name, callee.span);
+                    self.changed = true;
+                }
+                ExpressionKind::FunctionCall {
+                    callee: Box::new(callee),
+                    args,
+                }
+            }
             ExpressionKind::BinaryOp { op, left, right } => ExpressionKind::BinaryOp {
                 op: *op,
                 left: Box::new(self.expr(left)),
@@ -1384,7 +1404,11 @@ fn strip_decl_types(decl: &mut Declaration, st: &mut Strip) {
             f.var_blocks.iter_mut().collect()
         }
         Declaration::FunctionBlock(fb) => {
-            if let Some(e) = &mut fb.extends {
+            // `FUNCTION_BLOCK TcoContext EXTENDS TcoCore.TcoContext`: a library
+            // base of the same name keeps its namespace (it is not itself).
+            if let Some(e) = &mut fb.extends
+                && !unqualified(&e.name).eq_ignore_ascii_case(&fb.name.name)
+            {
                 strip_ident(e, st);
             }
             let before = fb.implements.len();

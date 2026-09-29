@@ -209,6 +209,20 @@ END_PROGRAM
 }
 
 #[test]
+fn overloaded_to_string_uses_the_argument_type() {
+    let src = r#"
+PROGRAM p
+VAR i : INT := -42; b : BOOL := TRUE; s1, s2 : STRING; END_VAR
+s1 := TO_STRING(i);
+s2 := TO_STRING(b);
+END_PROGRAM
+"#;
+    let s = run(src);
+    assert_eq!(s.str("s1"), "-42");
+    assert_eq!(s.str("s2"), "TRUE");
+}
+
+#[test]
 fn reading_a_set_only_property_is_an_error() {
     let err = compile_error(
         r#"

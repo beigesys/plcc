@@ -83,3 +83,22 @@ END_PROGRAM
     assert_eq!(errs.len(), 2, "{errs:?}");
     assert!(errs[0].contains("`__NEW` (dynamic memory) is not supported"));
 }
+
+#[test]
+fn unknown_bases_are_reported() {
+    let errs = errors(
+        r#"
+FUNCTION_BLOCK A EXTENDS NoSuchBase IMPLEMENTS I_Missing
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK TcoContext EXTENDS TcoCore.TcoContext
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK B EXTENDS A
+END_FUNCTION_BLOCK
+"#,
+    );
+    assert_eq!(errs.len(), 3, "{errs:?}");
+    assert!(errs[0].contains("'NoSuchBase'"), "{errs:?}");
+    assert!(errs[1].contains("'I_Missing'"), "{errs:?}");
+    // Not taken as extending itself.
+    assert!(errs[2].contains("'TcoCore.TcoContext'"), "{errs:?}");
+}

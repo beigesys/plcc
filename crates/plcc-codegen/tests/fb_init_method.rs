@@ -97,3 +97,40 @@ PROGRAM p VAR f : F(1); END_VAR END_PROGRAM
     );
     assert!(err.contains("has no FB_init method"), "{err}");
 }
+
+#[test]
+fn reference_inputs_bind_to_the_argument() {
+    let src = r#"
+FUNCTION_BLOCK Counter
+VAR_OUTPUT n : INT; END_VAR
+    n := n + 1;
+END_FUNCTION_BLOCK
+
+FUNCTION_BLOCK UsesCounter
+VAR _c : REFERENCE TO Counter; END_VAR
+METHOD FB_init : BOOL
+VAR_INPUT
+    bInitRetains : BOOL;
+    bInCopyCode : BOOL;
+    c : REFERENCE TO Counter;
+END_VAR
+    _c REF= c;
+END_METHOD
+    _c();
+END_FUNCTION_BLOCK
+
+PROGRAM p
+VAR
+    shared : Counter;
+    a : UsesCounter(shared);
+    b : UsesCounter(c := shared);
+    n : INT;
+END_VAR
+a();
+b();
+n := shared.n;
+END_PROGRAM
+"#;
+    let s = run_with(src, 1, 10, false);
+    assert_eq!(s.i64("n"), 2, "both users drive the one shared instance");
+}

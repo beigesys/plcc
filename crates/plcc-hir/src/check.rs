@@ -254,9 +254,22 @@ impl TypeChecker {
             self.register_declaration(decl);
         }
 
+        // Every FUNCTION_BLOCK, CLASS and INTERFACE, for EXTENDS / IMPLEMENTS.
+        let classes: std::collections::HashSet<String> = unit
+            .declarations
+            .iter()
+            .filter_map(|d| match d {
+                Declaration::FunctionBlock(fb) => Some(fb.name.name.to_uppercase()),
+                Declaration::Class(c) => Some(c.name.name.to_uppercase()),
+                Declaration::Interface(i) => Some(i.name.name.to_uppercase()),
+                _ => None,
+            })
+            .collect();
+
         // Second pass: type-check bodies
         for (i, decl) in unit.declarations.iter().enumerate() {
             self.check_library_types(decl);
+            self.check_bases(decl, &classes);
             self.check_declaration(decl);
             located.extend(self.errors.drain(..).map(|e| (i, e)));
         }
@@ -498,6 +511,34 @@ impl TypeChecker {
             for d in &b.declarations {
                 self.check_library_type(&d.type_spec);
             }
+        }
+    }
+
+    /// EXTENDS / IMPLEMENTS must name a FUNCTION_BLOCK, CLASS or INTERFACE of
+    /// the program (or of a library plcc names as missing).
+    fn check_bases(&mut self, decl: &Declaration, classes: &std::collections::HashSet<String>) {
+        let bases: Vec<&Ident> = match decl {
+            Declaration::FunctionBlock(fb) => fb.extends.iter().chain(&fb.implements).collect(),
+            Declaration::Class(c) => c.extends.iter().chain(&c.implements).collect(),
+            Declaration::Interface(i) => i.extends.iter().collect(),
+            _ => Vec::new(),
+        };
+        for b in bases {
+            if classes.contains(&b.name.to_uppercase()) {
+                continue;
+            }
+            let err = match crate::libraries::library_of(&b.name) {
+                Some(library) => CheckError::MissingLibrary {
+                    name: b.name.clone(),
+                    library,
+                    span: b.span.into(),
+                },
+                None => CheckError::UndefinedPou {
+                    name: b.name.clone(),
+                    span: b.span.into(),
+                },
+            };
+            self.errors.push(err);
         }
     }
 
