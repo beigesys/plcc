@@ -146,6 +146,7 @@ impl<'s> Lower<'s> {
         let initializer = xml::child(dt, "initialValue").and_then(|iv| self.initial_value(iv));
         Some(TypeDeclaration {
             extends: None,
+            attributes: Vec::new(),
             name,
             type_spec,
             initializer,

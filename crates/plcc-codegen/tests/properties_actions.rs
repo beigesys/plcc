@@ -253,6 +253,25 @@ END_PROGRAM
 }
 
 #[test]
+fn to_string_of_an_enumeration() {
+    let src = r#"
+{attribute 'qualified_only'}
+{attribute 'to_string'}
+TYPE E_State : (Idle, Running := 10, Done) INT; END_TYPE
+TYPE E_Plain : (A := 3, B); END_TYPE
+
+PROGRAM p
+VAR st : E_State := E_State.Running; pl : E_Plain := E_Plain.B; s1, s2 : STRING; END_VAR
+s1 := TO_STRING(st);
+s2 := TO_STRING(pl);
+END_PROGRAM
+"#;
+    let s = run(src);
+    assert_eq!(s.str("s1"), "Running", "with the to_string attribute: the name");
+    assert_eq!(s.str("s2"), "4", "without it: the value");
+}
+
+#[test]
 fn reading_a_set_only_property_is_an_error() {
     let err = compile_error(
         r#"

@@ -37,12 +37,16 @@ struct TokenStream {
     tokens: Vec<(Token, Span)>,
     pos: usize,
     source_len: usize,
+    /// `{attribute 'name'}` pragmas: (span, name), in source order. Pragmas are
+    /// not tokens; a few declarations read the attributes written before them.
+    attributes: Vec<(Span, String)>,
 }
 
 impl TokenStream {
     fn new(source: &str) -> (Self, Vec<ParseError>) {
         let mut tokens = Vec::new();
         let mut errors = Vec::new();
+        let mut attributes = Vec::new();
         let lexer = Token::lexer(source);
         for (result, range) in lexer.spanned() {
             let span = Span::from(range.clone());
@@ -50,7 +54,11 @@ impl TokenStream {
                 // `{attribute 'x'}`, `{warning '...'}`, `{IF defined(...)}`: pragmas
                 // carry no semantics plcc implements, so they are dropped here and
                 // may appear anywhere (before a POU, in a VAR block, in a body).
-                Ok(Token::Pragma) => {}
+                Ok(Token::Pragma) => {
+                    if let Some(name) = attribute_name(&source[range.start..range.end]) {
+                        attributes.push((span, name));
+                    }
+                }
                 Ok(tok) => tokens.push((tok, span)),
                 Err(()) => {
                     errors.push(ParseError::General {
@@ -68,6 +76,7 @@ impl TokenStream {
                 tokens,
                 pos: 0,
                 source_len: source.len(),
+                attributes,
             },
             errors,
         )
@@ -903,13 +912,33 @@ impl<'s> Parser<'s> {
 
     // ── TYPE declarations ──
 
+    /// Names of the `{attribute '...'}` pragmas between the previous token and
+    /// the current one (lowercase).
+    fn attributes_here(&self) -> Vec<String> {
+        let from = match self.ts.pos {
+            0 => 0,
+            p => self.ts.tokens[p - 1].1.end,
+        };
+        let to = self.ts.peek_span().start;
+        self.ts
+            .attributes
+            .iter()
+            .filter(|(s, _)| s.start >= from && s.end <= to)
+            .map(|(_, n)| n.clone())
+            .collect()
+    }
+
     fn parse_type_decl_block(&mut self) -> Option<Declaration> {
+        // `{attribute 'to_string'}` and friends written before TYPE apply to
+        // its (first) declaration.
+        let mut attributes = self.attributes_here();
         let _start = self.ts.advance().unwrap().1; // consume TYPE
 
         // Parse all type declarations in this TYPE..END_TYPE block
         let mut first_decl = None;
         while !self.ts.at(&Token::EndType) && self.ts.peek().is_some() {
             let pos_before = self.ts.pos;
+            attributes.extend(self.attributes_here());
             // `TYPE INTERNAL X : ...`, `TYPE ABSTRACT X : STRUCT ...`.
             self.skip_pou_modifiers();
             let name = self.expect_ident();
@@ -941,6 +970,7 @@ impl<'s> Parser<'s> {
                 extends,
                 type_spec,
                 initializer,
+                attributes: std::mem::take(&mut attributes),
                 span,
             };
 
@@ -3103,6 +3133,16 @@ impl<'s> Parser<'s> {
         }
         ident
     }
+}
+
+/// `{attribute 'name'}` / `{attribute 'name' := 'value'}` → `name`, lowercase.
+fn attribute_name(pragma: &str) -> Option<String> {
+    let inner = pragma.strip_prefix('{')?.strip_suffix('}')?.trim();
+    let rest = inner.strip_prefix("attribute")?.trim_start();
+    let rest = rest.strip_prefix(':').unwrap_or(rest).trim_start();
+    let rest = rest.strip_prefix('\'')?;
+    let end = rest.find('\'')?;
+    Some(rest[..end].to_lowercase())
 }
 
 /// Convenience function: parse source text into a compilation unit.

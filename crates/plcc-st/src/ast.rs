@@ -283,6 +283,10 @@ pub struct TypeDeclaration {
     /// fields come first.
     #[serde(default)]
     pub extends: Option<Ident>,
+    /// `{attribute '...'}` pragmas written before the declaration, by name
+    /// (lowercase): `to_string`, `qualified_only`, `strict`, ...
+    #[serde(default)]
+    pub attributes: Vec<String>,
     pub type_spec: TypeSpec,
     pub initializer: Option<Expression>,
     pub span: Span,

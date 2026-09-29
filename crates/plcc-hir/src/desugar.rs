@@ -406,6 +406,8 @@ struct Rewriter<'e> {
     ctx: Ctx,
     errors: Vec<(Span, String)>,
     changed: bool,
+    /// Enumerations `TO_STRING` was called on (uppercase).
+    enum_strings: HashSet<String>,
 }
 
 impl Rewriter<'_> {
@@ -649,6 +651,19 @@ impl Rewriter<'_> {
                 {
                     let name = format!("{}_{}", up(&tn.name), up(&id.name));
                     callee = ident_expr(&name, callee.span);
+                    self.changed = true;
+                } else if let ExpressionKind::Identifier(id) = &callee.kind
+                    && up(&id.name) == "TO_STRING"
+                    && let [arg] = args.as_slice()
+                    && arg.name.is_none()
+                    && let Some(t) = self.type_of(&arg.value)
+                    && let TypeSpecKind::Named(tn) = &self.env.resolve(&t).kind
+                    && self.env.enums.contains(&up(unqualified(&tn.name)))
+                {
+                    // An enumeration: its helper (see `enum_to_string`).
+                    let e = up(unqualified(&tn.name));
+                    callee = ident_expr(&enum_to_string_name(&e), callee.span);
+                    self.enum_strings.insert(e);
                     self.changed = true;
                 }
                 ExpressionKind::FunctionCall {
@@ -1174,6 +1189,7 @@ pub fn desugar(unit: &CompilationUnit) -> (Option<CompilationUnit>, Vec<DesugarE
     }
 
     // Bodies.
+    let mut enum_strings: HashSet<String> = HashSet::new();
     for (i, decl) in out.declarations.iter_mut().enumerate() {
         let own_stat = stat_maps.get(&(i, None)).cloned().unwrap_or_default();
         let mut rw = Rewriter {
@@ -1181,6 +1197,7 @@ pub fn desugar(unit: &CompilationUnit) -> (Option<CompilationUnit>, Vec<DesugarE
             ctx: Ctx::default(),
             errors: Vec::new(),
             changed: false,
+            enum_strings: HashSet::new(),
         };
         match decl {
             Declaration::Program(p) => {
@@ -1263,7 +1280,23 @@ pub fn desugar(unit: &CompilationUnit) -> (Option<CompilationUnit>, Vec<DesugarE
             Declaration::TypeDecl(_) | Declaration::Configuration(_) => {}
         }
         changed |= rw.changed;
+        enum_strings.extend(rw.enum_strings);
         errors.extend(rw.errors.into_iter().map(|(s, m)| (i, s, m)));
+    }
+
+    let mut helpers: Vec<String> = enum_strings.into_iter().collect();
+    helpers.sort();
+    for e in helpers {
+        let found = out.declarations.iter().enumerate().find_map(|(i, d)| match d {
+            Declaration::TypeDecl(t) if up(&t.name.name) == e => Some((i, t.clone())),
+            _ => None,
+        });
+        if let Some((i, t)) = found {
+            match enum_to_string(&t) {
+                Ok(f) => out.declarations.push(Declaration::Function(f)),
+                Err(msg) => errors.push((i, t.name.span, msg)),
+            }
+        }
     }
 
     if !stat_globals.is_empty() {
@@ -1306,6 +1339,107 @@ fn lower_actions(
             body,
             span: a.span,
         });
+    }
+}
+
+fn enum_to_string_name(e: &str) -> String {
+    format!("__TO_STRING_{e}")
+}
+
+/// `TO_STRING(e)` of an enumeration `E`: with `{attribute 'to_string'}` the
+/// enumerator's name, otherwise its value as a number (CODESYS/TwinCAT). A
+/// generated FUNCTION `__TO_STRING_E`, one CASE branch per enumerator.
+fn enum_to_string(t: &TypeDeclaration) -> Result<FunctionDecl, String> {
+    let TypeSpecKind::Enum(spec) = &t.type_spec.kind else {
+        return Err(format!("`{}` is not an enumeration", t.name.name));
+    };
+    let names = t.attributes.iter().any(|a| a == "to_string");
+    let span = t.name.span;
+    let fname = enum_to_string_name(&up(&t.name.name));
+    let mut next: i128 = 0;
+    let mut branches = Vec::new();
+    for v in &spec.values {
+        let value = match &v.value {
+            None => next,
+            Some(e) => const_int(e).ok_or_else(|| {
+                format!(
+                    "TO_STRING of `{}`: the value of `{}` is not an integer literal",
+                    t.name.name, v.name.name
+                )
+            })?,
+        };
+        next = value + 1;
+        let text = if names {
+            v.name.name.clone()
+        } else {
+            value.to_string()
+        };
+        let label = member(ident_expr(&t.name.name, v.span), &v.name.name, v.span);
+        branches.push(CaseBranch {
+            labels: vec![CaseLabel::Value(label)],
+            body: vec![Statement {
+                kind: StatementKind::Assignment {
+                    target: ident_expr(&fname, v.span),
+                    value: Expression {
+                        kind: ExpressionKind::StringLiteral(text),
+                        span: v.span,
+                    },
+                },
+                span: v.span,
+            }],
+            span: v.span,
+        });
+    }
+    let input = VarBlock {
+        list_name: None,
+        kind: VarBlockKind::VarInput,
+        is_constant: false,
+        is_retain: false,
+        is_non_retain: false,
+        declarations: vec![VarDecl {
+            name: Ident::new("v", span),
+            type_spec: named(&t.name.name, span),
+            at_address: None,
+            edge: None,
+            initializer: None,
+            init_args: Vec::new(),
+            span,
+        }],
+        span,
+    };
+    Ok(FunctionDecl {
+        name: Ident::new(fname, span),
+        return_type: Some(TypeSpec {
+            kind: TypeSpecKind::StringType {
+                wide: false,
+                length: None,
+            },
+            span,
+        }),
+        var_blocks: vec![input],
+        body: vec![Statement {
+            kind: StatementKind::Case {
+                selector: ident_expr("v", span),
+                branches,
+                else_body: None,
+            },
+            span,
+        }],
+        span,
+    })
+}
+
+fn const_int(e: &Expression) -> Option<i128> {
+    match &e.kind {
+        ExpressionKind::IntegerLiteral(v) => Some(*v),
+        ExpressionKind::TypedLiteral { value, .. } | ExpressionKind::Parenthesized(value) => {
+            const_int(value)
+        }
+        ExpressionKind::UnaryOp {
+            op: UnaryOp::Neg,
+            operand,
+        } => const_int(operand).map(|v| -v),
+        _ => None,
     }
 }
 
