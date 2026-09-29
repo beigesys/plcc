@@ -209,6 +209,36 @@ END_PROGRAM
 }
 
 #[test]
+fn reference_properties_read_and_write_through() {
+    let src = r#"
+FUNCTION_BLOCK Dialog
+VAR bHide : BOOL; nCount : INT := 5; END_VAR
+PROPERTY Hide : REFERENCE TO BOOL
+GET
+    Hide REF= bHide;
+END_GET
+END_PROPERTY
+PROPERTY Count : REFERENCE TO INT
+GET
+    Count REF= nCount;
+END_GET
+END_PROPERTY
+END_FUNCTION_BLOCK
+
+PROGRAM p
+VAR d : Dialog; h : BOOL; c : INT; END_VAR
+d.Hide := TRUE;
+d.Count := d.Count + 10;
+h := d.bHide;
+c := d.nCount;
+END_PROGRAM
+"#;
+    let s = run(src);
+    assert!(s.bool("h"));
+    assert_eq!(s.i64("c"), 15);
+}
+
+#[test]
 fn overloaded_to_string_uses_the_argument_type() {
     let src = r#"
 PROGRAM p

@@ -584,11 +584,20 @@ impl Rewriter<'_> {
             ));
         }
         self.changed = true;
-        call(
+        let value = call(
             member(object, &getter_name(&p.name), span),
             Vec::new(),
             span,
-        )
+        );
+        // A `REFERENCE TO T` property: GET returns the address; the property
+        // means the referenced T.
+        if matches!(p.ty.kind, TypeSpecKind::Reference(_)) {
+            return Expression {
+                kind: ExpressionKind::Dereference(Box::new(value)),
+                span,
+            };
+        }
+        value
     }
 
     /// Rewrite a value (read) expression.
@@ -826,6 +835,15 @@ impl Rewriter<'_> {
             }
             _ => return None,
         };
+        // No SET, but GET returns a REFERENCE: the assignment writes through it
+        // (`obj.Flag := TRUE` with `PROPERTY Flag : REFERENCE TO BOOL`).
+        if !prop.set && prop.get && matches!(prop.ty.kind, TypeSpecKind::Reference(_)) {
+            let target = self.get_call(object, &prop, target.span);
+            return Some(Statement {
+                kind: StatementKind::Assignment { target, value },
+                span,
+            });
+        }
         if !prop.set {
             self.errors.push((
                 target.span,
@@ -1326,6 +1344,18 @@ fn lower_members(
     }
     for p in properties {
         rw.changed = true;
+        // Names are case-insensitive: `PROPERTY Level` and `level : REAL` in
+        // one POU are the same name (CODESYS: duplicate definition).
+        if rw.env.find_var(pou, &p.name.name).is_some() {
+            rw.errors.push((
+                p.name.span,
+                format!(
+                    "property `{}` has the name of a variable of `{pou}` (names are not \
+                     case-sensitive)",
+                    p.name.name
+                ),
+            ));
+        }
         let prop_ty = p.type_spec.clone();
         if let Some(get) = p.get {
             let name = getter_name(&p.name.name);
