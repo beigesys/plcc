@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <POU Name="FB_Ladder" Id="{5f1c2d9e-0a6b-4c11-9d3e-7a1b2c3d4e70}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Ladder
+VAR_INPUT
+    bStart : BOOL;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <NWL>
+        <XmlArchive>
+          <Data />
+        </XmlArchive>
+      </NWL>
+    </Implementation>
+    <Transition Name="T_Done" Id="{5f1c2d9e-0a6b-4c11-9d3e-7a1b2c3d4e71}">
+      <Implementation>
+        <ST><![CDATA[bStart]]></ST>
+      </Implementation>
+    </Transition>
+  </POU>
+</TcPlcObject>

@@ -37,9 +37,17 @@ fn right_operand_runs_only_when_needed() {
         assert!(s.bool("a2"));
         assert!(s.bool("o1"));
         assert!(s.bool("o2"));
-        assert_eq!(s.i64("calls_and"), 1, "AND_THEN skipped the call after FALSE");
+        assert_eq!(
+            s.i64("calls_and"),
+            1,
+            "AND_THEN skipped the call after FALSE"
+        );
         assert_eq!(s.i64("calls_or"), 1, "OR_ELSE skipped the call after TRUE");
-        assert_eq!(s.i64("calls_plain"), 1, "plain AND still evaluates both sides");
+        assert_eq!(
+            s.i64("calls_plain"),
+            1,
+            "plain AND still evaluates both sides"
+        );
         assert!(s.bool("safe"));
     }
 }

@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <POU Name="MAIN" Id="{5f1c2d9e-0a6b-4c11-9d3e-7a1b2c3d4e40}" SpecialFunc="None">
+    <Declaration><![CDATA[PROGRAM MAIN
+VAR
+    fbCounter : FB_Counter;
+    itfCounter : I_Counter;
+    fbTimer : Tc2_Standard.TON;
+    fbEdge : R_TRIG;
+    stSample : ST_Sample;
+    eMode : E_Mode := E_Mode.Idle;
+    nStepSeen : DINT;
+    bAtLimit : BOOL;
+    bLimitReached : BOOL;
+    bTimerQ : BOOL;
+    nItfStep : DINT;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[// Scan counter in a qualified-only GVL.
+GVL_Main.nScans := GVL_Main.nScans + 1;
+
+// Property write and read, method call, action call.
+IF GVL_Main.nScans = 1 THEN
+    fbCounter.Step := GVL_Main.MAX_STEP;
+    itfCounter := fbCounter;
+END_IF
+nStepSeen := fbCounter.Step;
+fbCounter(bEnable := TRUE);
+bAtLimit := fbCounter.AtLimit;
+bLimitReached S= bAtLimit AND_THEN fbCounter.nCount >= 100;
+IF fbCounter.nCount >= 100 THEN
+    fbCounter.Reset();
+END_IF
+
+// Interface property access.
+nItfStep := itfCounter.Step;
+
+// A Tc2_Standard timer and edge detection.
+fbTimer(IN := TRUE, PT := T#50MS);
+fbEdge(CLK := fbTimer.Q);
+bTimerQ := fbTimer.Q;
+IF fbEdge.Q THEN
+    GVL_Main.bTimerDone := TRUE;
+END_IF
+
+// DUT struct and enum.
+stSample.nValue := stSample.nValue + 1;
+CASE eMode OF
+    E_Mode.Idle: eMode := E_Mode.Running;
+    E_Mode.Running: IF stSample.nValue >= 3 THEN eMode := E_Mode.Done; END_IF
+END_CASE]]></ST>
+    </Implementation>
+    <LineIds Name="MAIN">
+      <LineId Id="2" Count="0" />
+    </LineIds>
+  </POU>
+</TcPlcObject>

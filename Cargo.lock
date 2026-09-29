@@ -405,6 +405,7 @@ dependencies = [
  "plcc-runtime",
  "plcc-st",
  "plcc-stdlib",
+ "plcc-twincat",
  "serde_json",
 ]
 
@@ -484,6 +485,18 @@ dependencies = [
 [[package]]
 name = "plcc-stdlib"
 version = "0.1.0"
+
+[[package]]
+name = "plcc-twincat"
+version = "0.1.0"
+dependencies = [
+ "miette",
+ "plcc-st",
+ "roxmltree",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "proc-macro2"

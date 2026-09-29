@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <POU Name="FB_Syntax" Id="{5f1c2d9e-0a6b-4c11-9d3e-7a1b2c3d4e80}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Syntax
+VAR
+    n : INT;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[n := n + 1;]]></ST>
+    </Implementation>
+    <Method Name="Broken" Id="{5f1c2d9e-0a6b-4c11-9d3e-7a1b2c3d4e81}">
+      <Declaration><![CDATA[METHOD Broken : INT
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[Broken := n +;
+n := 0;]]></ST>
+      </Implementation>
+    </Method>
+  </POU>
+</TcPlcObject>

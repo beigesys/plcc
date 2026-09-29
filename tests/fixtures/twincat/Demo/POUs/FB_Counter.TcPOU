@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <POU Name="FB_Counter" Id="{5f1c2d9e-0a6b-4c11-9d3e-7a1b2c3d4e01}" SpecialFunc="None">
+    <Declaration><![CDATA[{attribute 'reflection'}
+FUNCTION_BLOCK FB_Counter IMPLEMENTS I_Counter
+VAR_INPUT
+    bEnable : BOOL;
+END_VAR
+VAR_OUTPUT
+    nCount : DINT;
+END_VAR
+VAR
+    nStep : DINT := 1;
+    nLimit : DINT := 100;
+    nResets : INT;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[IF bEnable THEN
+    Increment();
+END_IF]]></ST>
+    </Implementation>
+    <Method Name="Increment" Id="{5f1c2d9e-0a6b-4c11-9d3e-7a1b2c3d4e02}">
+      <Declaration><![CDATA[METHOD PUBLIC Increment : BOOL
+VAR
+    nNext : DINT;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[nNext := nCount + nStep;
+IF nNext > nLimit THEN
+    nNext := nLimit;
+END_IF
+nCount := nNext;
+Increment := nCount = nLimit;]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="Step" Id="{5f1c2d9e-0a6b-4c11-9d3e-7a1b2c3d4e03}">
+      <Declaration><![CDATA[PROPERTY PUBLIC Step : DINT]]></Declaration>
+      <Get Name="Get" Id="{5f1c2d9e-0a6b-4c11-9d3e-7a1b2c3d4e04}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[Step := nStep;]]></ST>
+        </Implementation>
+      </Get>
+      <Set Name="Set" Id="{5f1c2d9e-0a6b-4c11-9d3e-7a1b2c3d4e05}">
+        <Declaration><![CDATA[VAR
+END_VAR
+]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[IF Step > 0 THEN
+    nStep := Step;
+END_IF]]></ST>
+        </Implementation>
+      </Set>
+    </Property>
+    <Property Name="AtLimit" Id="{5f1c2d9e-0a6b-4c11-9d3e-7a1b2c3d4e06}">
+      <Declaration><![CDATA[PROPERTY AtLimit : BOOL]]></Declaration>
+      <Get Name="Get" Id="{5f1c2d9e-0a6b-4c11-9d3e-7a1b2c3d4e07}">
+        <Declaration><![CDATA[]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[AtLimit := nCount >= nLimit;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Action Name="Reset" Id="{5f1c2d9e-0a6b-4c11-9d3e-7a1b2c3d4e08}">
+      <Implementation>
+        <ST><![CDATA[nCount := 0;
+nResets := nResets + 1;]]></ST>
+      </Implementation>
+    </Action>
+    <LineIds Name="FB_Counter">
+      <LineId Id="3" Count="2" />
+    </LineIds>
+  </POU>
+</TcPlcObject>

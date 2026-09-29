@@ -19,7 +19,7 @@ enum Commands {
     /// Parse a Structured Text or PLCopen XML file and optionally dump the AST
     /// (for XML: the AST its LD/FBD/ST bodies lower to)
     Parse {
-        /// Input .st file, or PLCopen .xml
+        /// Input .st file, PLCopen .xml, TwinCAT object (.TcPOU, ...), .plcproj or directory
         input: PathBuf,
         /// Dump AST as JSON
         #[arg(long)]
@@ -28,7 +28,7 @@ enum Commands {
     /// Parse and type-check Structured Text / PLCopen XML files — exactly the
     /// check `compile` runs before code generation
     Check {
-        /// Input .st and/or PLCopen .xml file(s)
+        /// Input .st, PLCopen .xml, TwinCAT objects (.TcPOU/.TcDUT/.TcGVL/.TcIO/.TcTTO), .plcproj files or directories
         inputs: Vec<PathBuf>,
         /// Standard function block library to check against (as `compile` does)
         #[arg(long, value_enum, default_value_t = StdlibOpt::BundledSt)]
@@ -36,7 +36,7 @@ enum Commands {
     },
     /// Compile one or more Structured Text / PLCopen XML files
     Compile {
-        /// Input .st and/or PLCopen .xml file(s)
+        /// Input .st, PLCopen .xml, TwinCAT objects (.TcPOU/.TcDUT/.TcGVL/.TcIO/.TcTTO), .plcproj files or directories
         inputs: Vec<PathBuf>,
         /// Output file
         #[arg(short, long)]
@@ -74,7 +74,7 @@ enum Commands {
     },
     /// Compile and JIT-run ST programs, optionally with Modbus TCP for SCADA
     Sim {
-        /// Input .st and/or PLCopen .xml file(s)
+        /// Input .st, PLCopen .xml, TwinCAT objects (.TcPOU/.TcDUT/.TcGVL/.TcIO/.TcTTO), .plcproj files or directories
         inputs: Vec<PathBuf>,
         /// Number of scan cycles (0 = run forever)
         #[arg(long, default_value = "20")]
@@ -114,13 +114,19 @@ fn read_source(path: &std::path::Path) -> Result<String> {
     }
 }
 
-/// Parse one input: PLCopen XML (a `.xml` file, or any file whose root element
+/// Parse one input: a TwinCAT object (`.TcPOU`, `.TcDUT`, `.TcGVL`, `.TcIO`,
+/// or any file whose root element is `<TcPlcObject>`) goes through
+/// `plcc-twincat`; PLCopen XML (a `.xml` file, or any file whose root element
 /// is `<project>`) is lowered to the ST AST by `plcc-plcopen`; anything else is
 /// Structured Text. Diagnostics carry spans into `source` and no source code.
 fn parse_file(
     path: &std::path::Path,
     source: &str,
 ) -> (plcc_st::ast::CompilationUnit, Vec<miette::Report>) {
+    if plcc_twincat::is_object_file(path) || plcc_twincat::is_twincat_object(source) {
+        let (unit, errors) = plcc_twincat::parse(source);
+        return (unit, errors.into_iter().map(miette::Report::new).collect());
+    }
     let is_xml = path
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("xml"))
@@ -166,23 +172,137 @@ struct Parsed {
     origins: Vec<Origin>,
 }
 
+/// The source files the command-line inputs stand for, and the TwinCAT tasks
+/// among them. A `.plcproj` is the object files it compiles; a directory is the
+/// one `.plcproj` below it, or else every TwinCAT object file below it; a
+/// `.TcTTO` contributes its task (see [`twincat_configuration`]).
+struct Inputs {
+    files: Vec<PathBuf>,
+    tasks: Vec<(PathBuf, plcc_twincat::Task)>,
+}
+
+fn expand_inputs(inputs: &[PathBuf]) -> Result<Inputs> {
+    let mut out = Inputs {
+        files: Vec::new(),
+        tasks: Vec::new(),
+    };
+    for input in inputs {
+        let project = if input.is_dir() {
+            match plcc_twincat::directory_input(input) {
+                Ok(plcc_twincat::DirectoryInput::Project(p)) => p,
+                Ok(plcc_twincat::DirectoryInput::Files(files)) => {
+                    if files.is_empty() {
+                        miette::bail!("{}: no TwinCAT project or object files", input.display());
+                    }
+                    add_input_files(&mut out, files)?;
+                    continue;
+                }
+                Err(e) => miette::bail!("{e}"),
+            }
+        } else if plcc_twincat::is_project_file(input) {
+            input.clone()
+        } else {
+            add_input_files(&mut out, vec![input.clone()])?;
+            continue;
+        };
+        let source = read_source(&project)?;
+        match plcc_twincat::project_files(&project, &source) {
+            Ok(files) => add_input_files(&mut out, files)?,
+            Err(e) => {
+                let report = miette::Report::new(e).with_source_code(NamedSource::new(
+                    project.display().to_string(),
+                    source,
+                ));
+                eprintln!("{report:?}");
+                std::process::exit(1);
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn add_input_files(out: &mut Inputs, files: Vec<PathBuf>) -> Result<()> {
+    for file in files {
+        if !plcc_twincat::is_task_file(&file) {
+            out.files.push(file);
+            continue;
+        }
+        let source = read_source(&file)?;
+        match plcc_twincat::parse_task(&source) {
+            Ok(Some(task)) => out.tasks.push((file, task)),
+            Ok(None) => {}
+            Err(e) => {
+                let report = miette::Report::new(e)
+                    .with_source_code(NamedSource::new(file.display().to_string(), source));
+                eprintln!("{report:?}");
+                std::process::exit(1);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Print a file's parse diagnostics; returns whether any is an error (warnings,
+/// such as an ignored SFC transition in a TwinCAT POU, do not stop a build).
+fn print_parse_diagnostics(path: &std::path::Path, source: &str, reports: Vec<miette::Report>) -> bool {
+    let mut failed = false;
+    let file_name = path.display().to_string();
+    for report in reports {
+        failed |= report.severity() != Some(miette::Severity::Warning);
+        let report = report.with_source_code(NamedSource::new(&file_name, source.to_string()));
+        eprintln!("{:?}", report);
+    }
+    failed
+}
+
+/// TwinCAT's task configuration (`.TcTTO` files), as the ST CONFIGURATION it
+/// stands for — added to the build unless the sources declare their own.
+fn twincat_configuration(
+    inputs: &Inputs,
+    declarations: &[plcc_st::ast::Declaration],
+) -> Option<(String, plcc_st::ast::CompilationUnit)> {
+    let has_config = declarations
+        .iter()
+        .any(|d| matches!(d, plcc_st::ast::Declaration::Configuration(_)));
+    if has_config {
+        return None;
+    }
+    let tasks: Vec<plcc_twincat::Task> = inputs.tasks.iter().map(|(_, t)| t.clone()).collect();
+    let text = plcc_twincat::configuration_source(&tasks)?;
+    let (unit, errors) = plcc_st::parse(&text);
+    if !errors.is_empty() {
+        // Task or program names that are not ST identifiers; say so and fall
+        // back to the implicit task.
+        eprintln!("warning: the TwinCAT task configuration could not be used; programs run in the default task");
+        return None;
+    }
+    Some((text, unit))
+}
+
 fn parse_inputs(inputs: &[PathBuf], stdlib: StdlibOpt) -> Result<Parsed> {
+    let inputs = expand_inputs(inputs)?;
     let mut all_declarations = Vec::new();
     let mut origins = Vec::new();
-    for input in inputs {
+    let mut failed = false;
+    for input in &inputs.files {
         let source = read_source(input)?;
         let (unit, errors) = parse_file(input, &source);
-        if !errors.is_empty() {
-            let file_name = input.display().to_string();
-            for report in errors {
-                let report = report.with_source_code(NamedSource::new(&file_name, source.clone()));
-                eprintln!("{:?}", report);
-            }
-            std::process::exit(1);
-        }
+        failed |= print_parse_diagnostics(input, &source, errors);
         let origin = Origin {
             name: input.display().to_string(),
             source: std::rc::Rc::new(source),
+            prelude: false,
+        };
+        origins.extend(std::iter::repeat_n(origin, unit.declarations.len()));
+        all_declarations.extend(unit.declarations);
+    }
+    if failed {
+        std::process::exit(1);
+    }
+    if let Some((text, unit)) = twincat_configuration(&inputs, &all_declarations) {
+        let origin = Origin {
+            name: "<TwinCAT task configuration>".to_string(),
+            source: std::rc::Rc::new(text),
             prelude: false,
         };
         origins.extend(std::iter::repeat_n(origin, unit.declarations.len()));
@@ -292,17 +412,24 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Parse { input, dump_ast } => {
-            let source = read_source(&input)?;
-            let (unit, errors) = parse_file(&input, &source);
-            let error_count = errors.len();
-
-            if !errors.is_empty() {
-                let file_name = input.display().to_string();
-                for report in errors {
-                    let report =
-                        report.with_source_code(NamedSource::new(&file_name, source.clone()));
-                    eprintln!("{:?}", report);
-                }
+            // A TwinCAT project or directory parses every file it stands for.
+            let inputs = expand_inputs(std::slice::from_ref(&input))?;
+            let mut unit = plcc_st::ast::CompilationUnit {
+                declarations: Vec::new(),
+                span: plcc_st::span::Span::empty(),
+            };
+            let mut error_count = 0;
+            for file in &inputs.files {
+                let source = read_source(file)?;
+                let (file_unit, errors) = parse_file(file, &source);
+                error_count += errors
+                    .iter()
+                    .filter(|r| r.severity() != Some(miette::Severity::Warning))
+                    .count();
+                print_parse_diagnostics(file, &source, errors);
+                unit.declarations.extend(file_unit.declarations);
+            }
+            if error_count > 0 {
                 eprintln!("{error_count} error(s)");
             }
 
@@ -614,6 +741,8 @@ fn parse_image_size(spec: &str) -> Result<(plcc_codegen::direct_address::Area, u
 /// span can be attributed to a file (a single input).
 fn report_codegen_error(e: &plcc_codegen::compiler::CodegenError, inputs: &[PathBuf]) {
     if let (Some(span), [input]) = (e.span(), inputs)
+        && input.is_file()
+        && !plcc_twincat::is_project_file(input)
         && let Ok(source) = read_source(input)
         && span.end <= source.len()
     {
