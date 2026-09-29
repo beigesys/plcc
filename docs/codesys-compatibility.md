@@ -10,7 +10,9 @@ device manufacturers (WAGO, Festo, Lenze, Eaton, ifm, Bosch Rexroth, Schneider
 SoMachine, ABB, Delta, …). Beckhoff TwinCAT rides broadly along with it. Supporting one
 dialect reaches most of the ST anyone actually writes.
 
-Siemens SCL and Rockwell ST are explicitly **not** dialects of this — see Non-Goals.
+Siemens SCL is explicitly **not** a dialect of this — see Non-Goals. Rockwell Logix
+5000 is supported, but as its own front end (`plcc-l5x`), not as a dialect flag of
+this grammar — see "Rockwell Logix 5000" below and [l5x.md](l5x.md).
 
 ## The core design decision
 
@@ -281,15 +283,26 @@ with IEC 61131-3 3rd edition. Every row has a regression test.
   fixtures used `:= 0`.
 - One regression test per semantic divergence, asserting the documented choice.
 
+## Rockwell Logix 5000
+
+Rockwell was a non-goal of this plan ("structurally different — Add-On Instructions
+instead of IEC function blocks, no pointers, a proprietary project format"). That
+decision was reversed: Logix projects are now a goal, as the second dialect next to
+CODESYS. The structural differences are exactly why it is a separate front end rather
+than a flag on this grammar: `plcc-l5x` reads `.L5X` exports (ladder rungs, Logix ST,
+UDTs, Add-On Instructions, tasks) and lowers them to the same AST, with Logix
+semantics — rung-condition flow, prescan, TIMER/COUNTER behaviour, Logix integer and
+REAL conversion rules — reproduced in the lowering and a bundled ST prelude. The
+Logix manuals (1756-RM003 / 1756-RM018, 1756-RM084 / 1756-RM014, 1756-PM007) are the
+reference for that dialect, the way CODESYS behaviour is the reference here.
+[l5x.md](l5x.md) records every decision.
+
 ## Non-goals
 
 **Siemens SCL** diverges lexically — `#` sigils on locals, `"` on symbolic globals,
 `REGION` blocks, `S5TIME`, an OOP model that does not line up with 3rd-edition
 `CLASS`/`METHOD`. That is a sibling front-end over the shared HIR (`plcc-scl`), not a
 dialect flag. Conveniently the same architecture ladder needs.
-
-**Rockwell ST** is structurally different — Add-On Instructions instead of IEC function
-blocks, no pointers, a proprietary project format. Absorbing it means modelling AOIs.
 
 **Cap it at two dialects.** Every dialect × extension pair is test matrix. If a third
 vendor needs something it becomes an extension flag, never a new dialect.

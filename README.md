@@ -28,12 +28,18 @@ plcc compile plant.xml utils.st -o plant.o
 
 # A Beckhoff TwinCAT 3 PLC project (.plcproj, or its directory)
 plcc compile MyPlc/MyPlc.plcproj -o plc.o
+
+# A Rockwell Studio 5000 project exported as L5X, I/O bound to %I/%Q
+plcc compile plant.L5X --io-map plant_io.toml -o plant.o --target thumbv7em-none-eabi
 ```
 
 Ladder Diagram and FBD come in as PLCopen XML (IEC 61131-10) and lower to the
 same AST as ST; see [docs/ladder.md](docs/ladder.md). TwinCAT 3 projects
 (`.plcproj`, `.TcPOU`, `.TcDUT`, `.TcGVL`, `.TcIO`, `.TcTTO`) compile with their
 ST bodies, tasks and CODESYS extensions; see [docs/twincat.md](docs/twincat.md).
+Rockwell Logix 5000 projects (`.L5X`: ladder and Logix ST routines, UDTs,
+Add-On Instructions, tasks) compile with Logix semantics; see
+[docs/l5x.md](docs/l5x.md).
 
 ## What It Compiles
 
@@ -92,6 +98,7 @@ plcc/
 │   ├── plcc-st/           Lexer (logos) + recursive-descent parser + AST
 │   ├── plcc-plcopen/      PLCopen XML reader: LD/FBD/ST bodies lowered to the ST AST
 │   ├── plcc-twincat/      TwinCAT 3 reader: .plcproj, .TcPOU/.TcDUT/.TcGVL/.TcIO/.TcTTO
+│   ├── plcc-l5x/          Rockwell L5X reader: ladder + Logix ST lowered to the ST AST, Logix prelude
 │   ├── plcc-hir/          Type checker, name resolution, IEC type hierarchy
 │   ├── plcc-codegen/      LLVM codegen via inkwell
 │   ├── plcc-stdlib/       IEC standard FBs as bundled ST source (TON, CTU, ...)
@@ -128,6 +135,7 @@ Complete IEC 61131-3:2013 (3rd edition) Structured Text:
 | Exponentiation `**` / EXPT | Full — per IEC Table 23/29 the result is ANY_REAL even for integer operands: an integer base converts to REAL (8/16-bit) or LREAL (32/64-bit, and bare literals), so `2 ** -1` is 0.5, `0 ** 0` is 1.0, `0 ** -1` is +inf; the result is converted back (rounded) when it is assigned to an integer variable (exact up to 2**53), and the type checker warns about that REAL-into-integer conversion, as CODESYS does |
 | POINTER TO, dereference (^), ADR, SIZEOF | Full — `pt^` as a value and a target, `pt^[i]`, `pt^.f`; CODESYS byte-addressed pointer arithmetic (`pt := pt + 1`) |
 | Pragmas, block/line comments | Full — `(* *)` nests, `/* */`, `//` |
+| Rockwell Logix 5000 (`.L5X`) | Ladder (RLL) and ST routines, UDTs, AOIs, controller/program/module tags with initial data, aliases, tasks, JSR/SBR/RET; 100+ instruction mnemonics with Logix rung-condition, prescan, status-flag and fault semantics; FBD/SFC routines and motion/PID instructions not yet — see docs/l5x.md |
 | CODESYS extensions | Bit access `x.3` / `x.%X3`, `S=` / `R=`, `REFERENCE TO` / `REF=` / `__ISVALIDREF`, calling a PROGRAM from another POU, the CODESYS parameter names of SR/RS/CTU/CTD/CTUD, `VAR_INST` — see docs/codesys-compatibility.md; not yet: PROPERTY, `ARRAY[*]` (docs/known-issues.md) |
 
 ## Standard Library
