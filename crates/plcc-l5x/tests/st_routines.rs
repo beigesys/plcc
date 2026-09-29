@@ -34,6 +34,9 @@ fn st_routine_runs_with_logix_semantics() {
         // INT := 16#7FFF + 1 is computed in DINT and truncated.
         assert_eq!(plc.get("Word__"), -32768);
         assert_eq!(plc.get("NonRet"), 0, "a [:=] target is reset by the prescan");
+        // Indirect bits as assignment targets: bit 4 set, bit 0 cleared, bit
+        // 15 (the sign of an INT) set.
+        assert_eq!(plc.get("StBits"), 0x10 | -0x8000);
         assert_eq!(plc.get("Copied[0]"), 2, "COP in ST");
         assert_eq!(plc.get("Copied[2]"), 4);
         assert!(!plc.get_bool("LampOn"));

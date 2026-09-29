@@ -551,6 +551,9 @@ impl W<'_, '_> {
         if let Ok(e) = operand::parse_expr(&self.text.text, r.clone())
             && let LKind::Path(p) = &e.kind
         {
+            if let Some(next) = self.indirect_bit_assign(p, r.clone(), pend, end, out) {
+                return next;
+            }
             match self.ctx.path(p, self.text) {
                 Ok((st, ty)) => {
                     self.last_path = Some((st.clone(), ty));
@@ -577,6 +580,62 @@ impl W<'_, '_> {
             out.m(&st, self.text.span(t.r.clone()));
         }
         i + 1
+    }
+
+    /// `tag.[n] := value;`: an indirect bit as an assignment target
+    /// (1756-RM003 "Bit Addressing") rewrites the whole integer. Returns the
+    /// token index after the statement's `;`, or None when `p` is not such a
+    /// target.
+    fn indirect_bit_assign(
+        &mut self,
+        p: &operand::TagPath,
+        r: Range<usize>,
+        pend: usize,
+        end: usize,
+        out: &mut Out,
+    ) -> Option<usize> {
+        let Some(operand::Seg::IndirectBit(ix)) = p.segs.last() else {
+            return None;
+        };
+        let assign = self.sig_next(pend, end)?;
+        if !self.is_p(assign, ":=") {
+            return None;
+        }
+        let mut depth = 0i32;
+        let semi = (assign + 1..end).find(|&j| {
+            if self.is_p(j, "(") || self.is_p(j, "[") {
+                depth += 1;
+            } else if self.is_p(j, ")") || self.is_p(j, "]") {
+                depth -= 1;
+            }
+            depth == 0 && self.is_p(j, ";")
+        })?;
+        let span = self.text.span(r.start..self.toks[semi].r.end);
+        let base = operand::TagPath {
+            base: p.base.clone(),
+            base_span: p.base_span.clone(),
+            segs: p.segs[..p.segs.len() - 1].to_vec(),
+        };
+        let res = (|| -> Result<String, L5xError> {
+            let (st, ty) = self.ctx.path(&base, self.text)?;
+            let Some(el) = ty.elem().filter(|e| e.is_int()) else {
+                return Err(L5xError::new("indirect bit access needs an integer", span));
+            };
+            let n = crate::scope::conv(&self.ctx.value(ix, self.text)?, crate::scope::Dom::Int);
+            let lint = el == crate::types::Elem::Lint;
+            let whole = if lint { st.clone() } else { format!("{}_TO_LINT({st})", el.st()) };
+            Ok(format!("{st} := {}(lx__setbitl({whole}, {n}, TO_BOOL(", if lint { "".to_string() } else { format!("LINT_TO_{}", el.st()) }))
+        })();
+        match res {
+            Ok(head) => {
+                let rhs = self.translate(assign + 1..semi);
+                out.m(&head, span);
+                out.append(rhs);
+                out.m(")));", span);
+            }
+            Err(e) => self.errors.push(e),
+        }
+        Some(semi + 1)
     }
 
     /// Instruction-style calls that need rewriting. Returns the token index to
