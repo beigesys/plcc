@@ -17,6 +17,10 @@ VAR
     nStatsMax : DINT;
     nStatsMean : DINT;
     nLast : DINT;
+    // A POU constant, read through the POU's name.
+    aHistory : ARRAY[1..FB_Counter.HISTORY_LEN] OF DINT;
+    nHistoryLen : INT;
+    nHistoryLast : DINT;
 END_VAR
 ]]></Declaration>
     <Implementation>
@@ -63,7 +67,11 @@ nLast := stSample.aLast[7];
 CASE eMode OF
     E_Mode.Idle: eMode := E_Mode.Running;
     E_Mode.Running: IF stSample.nValue >= 3 THEN eMode := E_Mode.Done; END_IF
-END_CASE]]></ST>
+END_CASE
+
+nHistoryLen := FB_Counter.HISTORY_LEN;
+aHistory[FB_Counter.HISTORY_LEN] := fbCounter.nCount;
+nHistoryLast := aHistory[4];]]></ST>
     </Implementation>
     <LineIds Name="MAIN">
       <LineId Id="2" Count="0" />

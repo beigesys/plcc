@@ -14,6 +14,9 @@ VAR
     nLimit : DINT := 100;
     nResets : INT;
 END_VAR
+VAR CONSTANT
+    HISTORY_LEN : INT := 4;
+END_VAR
 ]]></Declaration>
     <Implementation>
       <ST><![CDATA[IF bEnable THEN

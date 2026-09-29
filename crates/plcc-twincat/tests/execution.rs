@@ -2,7 +2,8 @@
 
 //! TwinCAT projects compiled and run: a function block with a method,
 //! properties and an action, an interface property, a GVL, DUTs, Tc2_Standard
-//! timers, and the task from the .TcTTO.
+//! timers, and the task from the .TcTTO. POUs\Drafts is excluded from the
+//! build and holds an unfinished POU.
 
 mod common;
 use common::{MS, check_errors, with_plc};
@@ -42,6 +43,10 @@ fn demo_project_runs() {
         // An array bound written with a GVL-qualified constant.
         assert_eq!(plc.get("MAIN.nLast"), 300);
         assert_eq!(plc.get("MAIN.eMode"), 11, "E_Mode.Done");
+        // FB_Counter.HISTORY_LEN, a VAR CONSTANT read through the FB's name,
+        // as an array bound and as a value.
+        assert_eq!(plc.get("MAIN.nHistoryLen"), 4);
+        assert_eq!(plc.get("MAIN.nHistoryLast"), 21);
         // PRG_Stats runs only when MAIN calls it (it is in no task): samples 7,
         // 14, 21 through its method; Mean is its property.
         assert_eq!(plc.get("MAIN.nStatsMax"), 21);

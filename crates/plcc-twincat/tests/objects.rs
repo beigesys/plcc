@@ -44,7 +44,7 @@ fn function_block_with_method_property_and_action() {
     // Spans point into the .TcPOU: the method name is where the file has it.
     let m = &fb.methods[0].name.span;
     assert_eq!(&src[m.start..m.end], "Increment");
-    assert_eq!(line_col(&src, m.start), (24, 43));
+    assert_eq!(line_col(&src, m.start), (27, 43));
     let a = &fb.actions[0].body[0].span;
     assert!(src[a.start..a.end].starts_with("nCount := 0;"));
 }
@@ -118,7 +118,8 @@ fn project_lists_its_object_files_in_order() {
         .iter()
         .map(|f| f.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
-    // The visualization is not code and is skipped.
+    // The visualization is not code and is skipped; POUs\Drafts is
+    // excluded from the build.
     assert_eq!(
         names,
         [
