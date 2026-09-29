@@ -22,6 +22,7 @@ mod bits;
 mod convert;
 mod enums;
 mod fault;
+mod fbinit;
 mod image;
 mod interfaces;
 mod ondemand;
@@ -498,6 +499,8 @@ pub struct Compiler<'ctx> {
     program_instances: HashMap<String, GlobalValue<'ctx>>,
     /// Programs some POU calls: they run when called, not on their own.
     called_programs: std::collections::HashSet<String>,
+    /// FB_init parameters' declared initial values, per FB (see `fbinit`).
+    fb_init_defaults: fbinit::Defaults,
     /// INTERFACE method tables and IMPLEMENTS sets (see `interfaces.rs`).
     interfaces: interfaces::InterfaceTable,
     /// (uppercase FB/CLASS, uppercase input) for every `REFERENCE TO` input: a
@@ -539,6 +542,7 @@ impl<'ctx> Compiler<'ctx> {
             hierarchy: oop::Hierarchy::default(),
             program_instances: HashMap::new(),
             called_programs: std::collections::HashSet::new(),
+            fb_init_defaults: Default::default(),
             interfaces: interfaces::InterfaceTable::default(),
             reference_inputs: std::collections::HashSet::new(),
             current_pou: None,
@@ -2773,6 +2777,7 @@ impl<'ctx> Compiler<'ctx> {
         let dereffed = refs::desugar_references(unit);
         let unit = dereffed.as_ref().unwrap_or(unit);
         self.reference_inputs = refs::reference_inputs(unit);
+        self.fb_init_defaults = fbinit::defaults(unit);
         // REAL/LREAL <-> STRING, written in ST, only when the unit uses them.
         let with_helpers = ondemand::add_on_demand_helpers(unit)?;
         let unit = with_helpers.as_ref().map(|(u, _)| u).unwrap_or(unit);
@@ -3559,6 +3564,15 @@ impl<'ctx> Compiler<'ctx> {
                         .build_call(init_fn, &[ptr.into()], "")
                         .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                 }
+                // FB_init, with the declaration's arguments (other globals are
+                // visible to them by name).
+                if let Some(d) = decls.get(i) {
+                    self.variables.clear();
+                    self.add_globals_to_variables()?;
+                    let saved_state = self.current_state_ptr.take();
+                    self.emit_fb_init_call("", name, fb_name, &d.init_args, d.name.span, func)?;
+                    self.current_state_ptr = saved_state;
+                }
             } else if let Some(spec) = specs.get(i).cloned() {
                 self.emit_field_inits(ptr, &spec, func)?;
                 if let Some(Some(init)) = runtime_inits.get(i).cloned() {
@@ -4211,6 +4225,16 @@ impl<'ctx> Compiler<'ctx> {
                             .build_call(inner_init, &[ptr.into()], "")
                             .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
                     }
+                    // Then its FB_init, with the declaration's arguments.
+                    let inner = inner.clone();
+                    self.emit_fb_init_call(
+                        pou_name,
+                        &decl.name.name,
+                        &inner,
+                        &decl.init_args,
+                        decl.name.span,
+                        init_fn,
+                    )?;
                 } else {
                     // Declared STRUCT field defaults come first, so an explicit
                     // initializer on the variable still wins.
