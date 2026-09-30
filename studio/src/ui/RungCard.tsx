@@ -224,8 +224,13 @@ function RungCardImpl(p: RungCardProps) {
   )
 }
 
+/** Returns keyboard focus to the rung list, unless an input (an open editor) has it. */
 export function focusList() {
-  requestAnimationFrame(() => document.getElementById('rung-list')?.focus())
+  requestAnimationFrame(() => {
+    const a = document.activeElement as HTMLElement | null
+    if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.closest('[role=dialog]'))) return
+    document.getElementById('rung-list')?.focus({ preventScroll: true })
+  })
 }
 
 export const RungCard = memo(RungCardImpl)

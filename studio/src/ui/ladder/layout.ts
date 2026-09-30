@@ -68,7 +68,7 @@ export function measure(e: Element): Size {
       return { w: G.contactW, h: G.contactH, wo: G.contactWire }
     case 'box':
       return {
-        w: G.boxW,
+        w: G.boxW + (BOX_SPECS[e.instr].outputs ? 26 : 0),
         h: G.boxTop + G.boxHeader + boxRows(e) * G.boxRow + 10 + G.padY,
         wo: G.boxTop + G.boxHeader / 2,
       }

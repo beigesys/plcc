@@ -103,4 +103,44 @@
   .rounded-control {
     border-radius: var(--radius-control);
   }
+
+  /* Ladder SVG text */
+  .ld text {
+    font-family: var(--app-font-sans);
+  }
+  .ld .ld-tag {
+    font-size: 12.5px;
+    font-weight: 500;
+  }
+  .ld .ld-addr,
+  .ld .ld-op,
+  .ld .ld-pin,
+  .ld .ld-mark,
+  .ld .ld-instr {
+    font-family: var(--app-font-mono);
+  }
+  .ld .ld-addr {
+    font-size: 11px;
+  }
+  .ld .ld-instr {
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .ld .ld-title,
+  .ld .ld-oplabel {
+    font-size: 11px;
+  }
+  .ld .ld-op {
+    font-size: 12px;
+  }
+  .ld .ld-pin {
+    font-size: 10px;
+  }
+  .ld .ld-mark {
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .ld .ld-node {
+    cursor: pointer;
+  }
 }

@@ -15,6 +15,8 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 function fmtMs(ms: number | undefined): string {
   if (ms === undefined) return '—'
+  // Worker clocks are coarsened to 0.1 ms without cross-origin isolation.
+  if (ms < 0.1) return '< 0.1 ms'
   if (ms < 1) return `${(ms * 1000).toFixed(0)} µs`
   return `${ms.toFixed(2)} ms`
 }
@@ -78,7 +80,7 @@ export function StatusBar() {
   }
 
   return (
-    <footer className="flex items-center gap-5 border-t border-line bg-nav px-3 text-dense" aria-label="Status">
+    <footer className="flex items-center gap-5 overflow-hidden border-t border-line bg-nav px-3 text-dense whitespace-nowrap" aria-label="Status">
       {comms}
       {mode === 'simulate' && (
         <>
@@ -90,11 +92,12 @@ export function StatusBar() {
           )}
         </>
       )}
-      <span className="ml-auto flex items-center gap-5">
+      <span className="ml-auto flex min-w-0 items-center gap-5">
         {notice && (
           <span
             role="status"
-            className={notice.tone === 'fault' ? 'text-fault' : notice.tone === 'alarm' ? 'text-alarm' : 'text-text-muted'}
+            title={notice.text}
+            className={`min-w-0 truncate ${notice.tone === 'fault' ? 'text-fault' : notice.tone === 'alarm' ? 'text-alarm' : 'text-text-muted'}`}
           >
             {notice.text}
           </span>

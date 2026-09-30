@@ -152,7 +152,8 @@ function isNotFound(e: unknown): boolean {
 export async function openDefaultStore(): Promise<{ store: FileStore; persistent: boolean; reason?: string }> {
   try {
     const store = await OpfsFileStore.open()
-    const probe = '.probe'
+    // Unique name: two tabs (or a double-mounted effect) may probe at once.
+    const probe = `.probe-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
     await store.writeText(probe, 'ok')
     const back = await store.readText(probe)
     await store.remove(probe)

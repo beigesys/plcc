@@ -28,7 +28,15 @@ function lastOpened(): string | null {
   }
 }
 
-export async function initPersistence() {
+let initOnce: Promise<void> | null = null
+
+/** Opens storage and the last project. Safe to call more than once. */
+export function initPersistence(): Promise<void> {
+  initOnce ??= init()
+  return initOnce
+}
+
+async function init() {
   const { store, persistent: p, reason } = await openDefaultStore()
   persistent = p
   repo = new ProjectRepo(store)
@@ -49,11 +57,11 @@ export async function initPersistence() {
   let prevId = useEditor.getState().projectId
   useEditor.subscribe((s) => {
     // Opening another project is not an edit; only changes to the open one are saved.
-    if (s.project !== prev && s.projectId && s.projectId === prevId) {
-      autosaver?.schedule(s.projectId, s.project)
-    }
+    const changed = s.project !== prev && s.projectId && s.projectId === prevId
+    // Update first: scheduling reports status through the same store and re-enters here.
     prev = s.project
     prevId = s.projectId
+    if (changed && s.projectId) autosaver?.schedule(s.projectId, s.project)
   })
   window.addEventListener('beforeunload', () => void autosaver?.flush())
 }

@@ -31,6 +31,7 @@ export interface LadderProps {
   onDropInstruction?(afterId: string | null, mnemonic: string): void
 }
 
+const PIN_ROOM = 26
 const POWER = 'var(--power)'
 const IDLE = 'var(--line-idle)'
 const FAULT = 'var(--fault)'
@@ -134,7 +135,8 @@ function clip(s: string, n: number) {
 function BoxGlyph({ n, el, t, ctx }: { n: PlacedNode; el: Box; t?: ElementTrace; ctx: Ctx }) {
   const spec = BOX_SPECS[el.instr]
   const bx = n.x + 10
-  const bw = n.w - 20
+  // Status pins (EN, DN) sit to the right of the box, inside the node.
+  const bw = n.w - 20 - (spec.outputs ? PIN_ROOM : 0)
   const by = n.y + G.boxTop
   const bh = G.boxHeader + spec.operands.length * G.boxRow + 10
   const y = n.wy
@@ -180,8 +182,14 @@ function BoxGlyph({ n, el, t, ctx }: { n: PlacedNode; el: Box; t?: ElementTrace;
               {o.label}
             </text>
             <text x={bx + bw - 8} y={ry} textAnchor="end" className="ld-op" fill={el.operands[o.key] ? 'var(--text)' : ALARM}>
-              {clip(text, live === undefined ? 14 : 9)}
-              {live !== undefined && <tspan fill="var(--text-muted)">{` ${fmt(live)}`}</tspan>}
+              {o.key === 'accum' && live !== undefined ? (
+                fmt(live)
+              ) : (
+                <>
+                  {clip(text, live === undefined ? 14 : 9)}
+                  {live !== undefined && <tspan fill="var(--text-muted)">{` ${fmt(live)}`}</tspan>}
+                </>
+              )}
             </text>
           </g>
         )

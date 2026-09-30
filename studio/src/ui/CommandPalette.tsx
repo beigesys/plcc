@@ -45,12 +45,20 @@ export function CommandPalette() {
       title="Command palette"
       description="Insert instructions, add rungs, navigate, switch modes"
     >
-      <Command loop shouldFilter={true}>
+      <Command
+        loop
+        filter={(value, search, keywords) => {
+          if (value.startsWith('__quick')) return 1
+          const hay = `${value} ${keywords?.join(' ') ?? ''}`.toLowerCase()
+          const words = search.toLowerCase().split(/\s+/).filter(Boolean)
+          return words.every((w) => hay.includes(w)) ? 1 : 0
+        }}
+      >
         <CommandInput placeholder="Instruction, command, or XIC Start XIO Stop OTE Motor" value={query} onValueChange={setQuery} />
         <CommandList className="max-h-[420px]">
-          <CommandEmpty>No match. Instructions separated by spaces add a rung.</CommandEmpty>
+          {!quick && <CommandEmpty>No match. Instructions separated by spaces add a rung.</CommandEmpty>}
           {quick && inRoutine && (
-            <CommandGroup heading="Quick entry">
+            <CommandGroup heading="Quick entry" forceMount>
               <CommandItem value={`__quick ${query}`} onSelect={() => run(() => addRungFromQuickEntry(query))} forceMount>
                 Add rung <span className="text-mono text-text-muted">{quick}</span>
               </CommandItem>
