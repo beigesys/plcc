@@ -85,8 +85,12 @@ pub fn run(args: Args) -> Result<()> {
         }
         Format::Plcopen => {
             let model = translate(load_model(&args)?, Dialect::Iec);
-            plcc_plcopen::ladder::write(&model)
-                .map_err(|errs| miette::miette!("cannot write PLCopen XML:\n{}", joined(&errs)))?
+            let (text, warnings) = plcc_plcopen::ladder::write(&model)
+                .map_err(|errs| miette::miette!("cannot write PLCopen XML:\n{}", joined(&errs)))?;
+            for w in warnings {
+                eprintln!("warning: {w}");
+            }
+            text
         }
         Format::L5x => {
             let model = translate(load_model(&args)?, Dialect::Logix);

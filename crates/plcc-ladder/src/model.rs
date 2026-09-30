@@ -52,6 +52,11 @@ pub struct Project {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub globals: Vec<Variable>,
     pub pous: Vec<Pou>,
+    /// Declarations the ladder model does not hold (TYPEs, CLASSes,
+    /// INTERFACEs, CONFIGURATIONs), each as Structured Text, carried along so
+    /// converting ST to ladder and back loses nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declarations: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,6 +81,10 @@ pub struct Pou {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variables: Vec<Variable>,
     pub routines: Vec<Routine>,
+    /// The POU's METHODs, PROPERTYs and ACTIONs, as Structured Text (not
+    /// ladder; carried along).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub members: String,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

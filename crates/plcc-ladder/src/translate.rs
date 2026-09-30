@@ -407,6 +407,7 @@ impl<'o> Tr<'o> {
             name: p.name.clone(),
             globals: Vec::new(),
             pous: Vec::new(),
+            declarations: p.declarations.clone(),
         };
         // Instances: declared, and the ones blocks name.
         for v in p
@@ -471,6 +472,7 @@ impl<'o> Tr<'o> {
                 return_type: None,
                 variables,
                 routines,
+                members: q.members.clone(),
             });
         }
         out
@@ -1218,6 +1220,7 @@ impl<'o> Tr<'o> {
             name: p.name.clone(),
             globals: Vec::new(),
             pous: Vec::new(),
+            declarations: p.declarations.clone(),
         };
         // TIMER / COUNTER tags: which instruction uses them.
         for q in &p.pous {
@@ -1326,6 +1329,7 @@ impl<'o> Tr<'o> {
                 return_type: None,
                 variables,
                 routines,
+                members: q.members.clone(),
             });
         }
         for v in &mut out.globals {

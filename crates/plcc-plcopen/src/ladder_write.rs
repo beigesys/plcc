@@ -49,8 +49,10 @@ const CONTACT_W: i64 = 21;
 const CONTACT_H: i64 = 20;
 const BLOCK_W: i64 = 110;
 
-/// Write a PLCopen project. The model must be in the IEC dialect.
-pub fn write(project: &Project) -> Result<String, Vec<WriteError>> {
+/// Write a PLCopen project. The model must be in the IEC dialect. The
+/// warnings name what PLCopen XML cannot hold (declarations and POU members
+/// carried as ST).
+pub fn write(project: &Project) -> Result<(String, Vec<String>), Vec<WriteError>> {
     if project.dialect != Dialect::Iec {
         return Err(vec![WriteError {
             element: 0,
@@ -65,8 +67,21 @@ pub fn write(project: &Project) -> Result<String, Vec<WriteError>> {
         rail: (0, Vec::new()),
     };
     w.project(project);
+    let mut warnings = Vec::new();
+    for d in &project.declarations {
+        let first = d.lines().next().unwrap_or("");
+        warnings.push(format!(
+            "not written to PLCopen XML (declarations are not in the ladder model): {first}"
+        ));
+    }
+    for p in project.pous.iter().filter(|p| !p.members.is_empty()) {
+        warnings.push(format!(
+            "{}: methods / properties / actions are not written to PLCopen XML",
+            p.name
+        ));
+    }
     if w.errors.is_empty() {
-        Ok(w.out)
+        Ok((w.out, warnings))
     } else {
         Err(w.errors)
     }

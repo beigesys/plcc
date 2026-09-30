@@ -301,6 +301,8 @@ pub struct Diff {
     pub ignore: Vec<String>,
     /// When set, only these names (last segment) are compared.
     pub only: Option<Vec<String>>,
+    /// Integer inputs (last segment), set to small random values each scan.
+    pub ints: Vec<String>,
 }
 
 fn last(path: &str) -> String {
@@ -378,6 +380,15 @@ pub fn differential_with(
             if is_input(va) && is_bool(va) {
                 // Inputs stay FALSE through the skipped first scans.
                 let x = (rng.bool() && scan >= opts.skip_first) as i64;
+                a.set_var(va, x);
+                b.set_var(vb, x);
+            } else if !is_bool(va)
+                && opts
+                    .ints
+                    .iter()
+                    .any(|n| n.eq_ignore_ascii_case(&last(&va.path)))
+            {
+                let x = rng.below(21) as i64 - 10;
                 a.set_var(va, x);
                 b.set_var(vb, x);
             }

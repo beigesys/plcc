@@ -74,6 +74,7 @@ pub fn read(source: &str) -> (Option<Project>, Vec<L5xError>) {
             .map(|t| variable(t, VarSection::Global))
             .collect(),
         pous: Vec::new(),
+        declarations: Vec::new(),
     };
     for pr in &lp.programs {
         let mut pou = Pou {
@@ -87,6 +88,7 @@ pub fn read(source: &str) -> (Option<Project>, Vec<L5xError>) {
                 .map(|t| variable(t, VarSection::Local))
                 .collect(),
             routines: Vec::new(),
+            members: String::new(),
         };
         let main = pr
             .main_routine
@@ -437,6 +439,16 @@ pub fn write(project: &Project) -> Result<(String, Vec<String>), Vec<WriteError>
     out.push_str("<DataTypes/>\n<Modules>\n<Module Name=\"Local\" CatalogNumber=\"1756-L83E\" Vendor=\"1\" ProductType=\"14\" ProductCode=\"166\" Major=\"33\" Minor=\"11\" ParentModule=\"Local\" ParentModPortId=\"1\" Inhibited=\"false\" MajorFault=\"true\">\n<EKey State=\"Disabled\"/>\n<Ports>\n<Port Id=\"1\" Address=\"0\" Type=\"ICP\" Upstream=\"false\">\n<Bus Size=\"10\"/>\n</Port>\n</Ports>\n</Module>\n</Modules>\n<AddOnInstructionDefinitions/>\n");
     // Tags: declared ones, then the ones the rungs need.
     let derived = derive_tags(project, &mut warnings);
+    for d in &project.declarations {
+        let first = d.lines().next().unwrap_or("");
+        warnings.push(format!("not written to L5X (not ladder): {first}"));
+    }
+    for p in project.pous.iter().filter(|p| !p.members.is_empty()) {
+        warnings.push(format!(
+            "{}: methods / properties / actions are not written to L5X",
+            p.name
+        ));
+    }
     out.push_str("<Tags>\n");
     for v in &project.globals {
         tag(&mut out, v);

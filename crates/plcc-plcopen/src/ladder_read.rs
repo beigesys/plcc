@@ -85,6 +85,7 @@ pub fn read(source: &str) -> (Option<m::Project>, Vec<PlcOpenError>) {
             .to_string(),
         globals: Vec::new(),
         pous: Vec::new(),
+        declarations: Vec::new(),
     };
     if let Some(types) = xml::child(root, "types")
         && let Some(pous) = xml::child(types, "pous")
@@ -201,6 +202,7 @@ fn read_pou(lower: &mut Lower, pou: XNode, ids: &mut Ids) -> Option<m::Pou> {
         return_type: ret.as_ref().map(plcc_st::printer::print_type_spec),
         variables: Vec::new(),
         routines: Vec::new(),
+        members: String::new(),
     };
     // ST boxes written as actions `LD_ST_<id>` (ladder_write).
     let mut st_actions: HashMap<String, (String, Vec<String>)> = HashMap::new();

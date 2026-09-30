@@ -100,6 +100,11 @@ pub fn to_unit(project: &Project, annotate: bool) -> (CompilationUnit, Vec<lower
         errors.extend(errs);
         decls.extend(d);
     }
+    for text in &project.declarations {
+        let (u, errs) = plcc_st::parse(text);
+        push_parse_errors(&mut errors, 0, "declaration", &errs);
+        decls.extend(u.declarations);
+    }
     (
         CompilationUnit {
             declarations: decls,
@@ -173,25 +178,49 @@ pub fn pou_decl(pou: &Pou, annotate: bool) -> (Option<Declaration>, Vec<lower::L
         declarations: hidden,
         span: plcc_st::Span::empty(),
     });
+    // Members carried as ST.
+    let (mut methods, mut properties, mut member_actions) = (Vec::new(), Vec::new(), Vec::new());
+    if !pou.members.is_empty() {
+        let (u, errs) = plcc_st::parse(&format!(
+            "FUNCTION_BLOCK _\n{}\nEND_FUNCTION_BLOCK\n",
+            pou.members
+        ));
+        push_parse_errors(
+            &mut errors,
+            pou.id,
+            &format!("POU {} members", pou.name),
+            &errs,
+        );
+        if let Some(Declaration::FunctionBlock(f)) = u.declarations.into_iter().next() {
+            methods = f.methods;
+            properties = f.properties;
+            member_actions = f.actions;
+        }
+    }
     let mut bodies = bodies.into_iter();
     let main = bodies.next().map(|(_, b)| b).unwrap_or_default();
-    let actions: Vec<ActionDecl> = bodies
+    let mut actions: Vec<ActionDecl> = bodies
         .map(|(name, body)| ActionDecl {
             name: Ident::new(name, plcc_st::Span::empty()),
             body,
             span: plcc_st::Span::empty(),
         })
         .collect();
+    actions.extend(member_actions);
     match &mut decl {
         Declaration::Program(p) => {
             p.body = main;
             p.var_blocks.extend(hidden_block);
             p.actions = actions;
+            p.methods = methods;
+            p.properties = properties;
         }
         Declaration::FunctionBlock(f) => {
             f.body = main;
             f.var_blocks.extend(hidden_block);
             f.actions = actions;
+            f.methods = methods;
+            f.properties = properties;
         }
         Declaration::Function(f) => {
             f.body = main;

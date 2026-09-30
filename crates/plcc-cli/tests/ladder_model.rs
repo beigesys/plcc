@@ -132,7 +132,7 @@ fn plcopen_round_trip_is_identity() {
         let (m1, errs) = plcc_plcopen::ladder::read(&src);
         assert!(errs.is_empty(), "{f}: {errs:?}");
         let m1 = m1.unwrap();
-        let xml = plcc_plcopen::ladder::write(&m1).unwrap_or_else(|e| panic!("{f}: {e:?}"));
+        let (xml, _) = plcc_plcopen::ladder::write(&m1).unwrap_or_else(|e| panic!("{f}: {e:?}"));
         let (m2, errs) = plcc_plcopen::ladder::read(&xml);
         assert!(errs.is_empty(), "{f}: written XML: {errs:?}\n{xml}");
         let m2 = m2.unwrap();

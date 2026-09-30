@@ -264,6 +264,45 @@ stay FALSE during the first, so prescan effects do not set the runs apart).
 The `math` fixture, which exists to exercise Logix-only arithmetic, is checked
 for its warnings instead.
 
+## Structured Text → ladder
+
+```bash
+plcc convert motor.st --to plcopen -o motor.xml     # the drawable subset as LD rungs
+plcc convert motor.st --to ladder-json              # the model
+```
+
+`plcc_ladder::from_st` draws what ladder can express **exactly** and puts
+everything else in ST boxes, one rung per statement, in statement order:
+
+| Statement | Rung |
+|---|---|
+| `x := <boolean expression>` (x and every operand BOOL) | contacts — AND in series, OR as parallel legs, NOT as a normally closed contact, NOT of AND/OR by De Morgan — and a coil on `x` |
+| `IF c THEN x := TRUE; y := FALSE; END_IF` (only TRUE/FALSE into BOOLs; no ELSIF/ELSE) | contacts for `c`, set / reset coils (parallel legs when several) |
+| `RETURN;`, `IF c THEN RETURN; END_IF` | contacts for `c`, a return |
+| a comparison in a condition, `a > b` | a GT/GE/EQ/LE/LT/NE box run by the rung (EN/ENO), writing its result into a hidden BOOL `ld_cmp<n>` (declared on the POU), and a contact on it. Operands with a call, a division or a computed index stay in ST (the box runs only when the rung reaches it; the ST always evaluated them) |
+| `inst(IN := c, PT := T#5s, Q => y)` of a standard FB (TON TOF TP RTO CTU CTD CTUD R_TRIG F_TRIG SR RS) with named arguments | contacts for the power input (IN, CU, CD, CLK, S1, S) when it is a drawable condition, the FB box with its other inputs as pin values; `v := inst.OUT` statements right after the call become output pins, and `x := inst.Q` (the FB's power output) a coil after the box |
+| a call of an FB declared in the file, named arguments | the box (no power input: it is called every scan) |
+| `x := a + b` (`-` `*` `/` `MOD`) | an ADD / SUB / MUL / DIV / MOD box |
+| any other assignment | a MOVE box with the expression on its input |
+| loops, CASE, other IFs, calls with positional arguments or of functions, EXIT, … | an ST box holding the statement |
+
+Types come from the declarations (and those of standard FB members); an
+assignment whose target or operands are not known to be BOOL is not drawn with
+contacts. Declarations that are not POUs (TYPEs, CLASSes, INTERFACEs,
+CONFIGURATIONs) and a POU's METHODs / PROPERTYs / ACTIONs are carried along
+in the model as ST (`Project::declarations`, `Pou::members`), so ST → ladder →
+ST loses nothing; PLCopen and L5X output name them in a warning, as those
+formats do not hold them here.
+
+**Guarantee: the ladder computes what the ST did.** Tested
+(`crates/plcc-cli/tests/ladder_from_st.rs`) by running the input and the
+model lowered back to ST side by side (JIT) over randomized inputs, comparing
+every variable after every scan: all 18 ST fixtures that compile on their own
+(46 of their 95 rungs are drawn, 49 are ST boxes: loops, CASE, IF with other statements, calls of functions) and a generated corpus of
+60 programs built from the drawable statements with random conditions, FB
+calls, arithmetic and loops (409 rungs, 330 drawn as ladder), 150–200 scans
+each.
+
 ## Round trips (tested)
 
 | Round trip | Guarantee | Test |
