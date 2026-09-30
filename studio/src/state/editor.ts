@@ -1,0 +1,228 @@
+// SPDX-License-Identifier: MPL-2.0
+//
+// Editor state: the open project, undo/redo history, navigation, selection.
+// Edits go through `commit`, which snapshots the previous project.
+
+import { create } from 'zustand'
+import {
+  createMissingTags, demoProject, findElement, flatten, type Instruction, type Program, type Project,
+  type Routine, type Rung, type Series,
+} from '@/model'
+import { applyTheme, initialTheme, type ThemeId } from './theme'
+
+export type View =
+  | { kind: 'routine'; program: string; routine: string }
+  | { kind: 'tags' }
+  | { kind: 'io'; device: string }
+  | { kind: 'tasks' }
+
+export type Mode = 'offline' | 'simulate' | 'online'
+
+export interface Selection {
+  rungId: string | null
+  elementId: string | null
+}
+
+export type SaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error' | 'memory'
+
+const HISTORY_LIMIT = 200
+
+export interface EditorState {
+  projectId: string | null
+  project: Project
+  past: Project[]
+  future: Project[]
+  view: View
+  selection: Selection
+  /** Element whose operand editor is open. */
+  editing: { rungId: string; elementId: string } | null
+  mode: Mode
+  theme: ThemeId
+  saveStatus: SaveStatus
+  saveError?: string
+  paletteOpen: boolean
+  projectsOpen: boolean
+  /** Short message for the status bar (last action, errors). */
+  notice: { text: string; tone: 'info' | 'alarm' | 'fault' } | null
+
+  openProject(id: string | null, project: Project): void
+  commit(fn: (p: Project) => Project): void
+  undo(): void
+  redo(): void
+  setView(v: View): void
+  select(s: Selection): void
+  setEditing(e: EditorState['editing']): void
+  setMode(m: Mode): void
+  setTheme(t: ThemeId): void
+  setSaveStatus(s: SaveStatus, error?: string): void
+  setPaletteOpen(o: boolean): void
+  setProjectsOpen(o: boolean): void
+  notify(text: string, tone?: 'info' | 'alarm' | 'fault'): void
+}
+
+export function firstRoutineView(p: Project): View {
+  const prog = p.programs[0]
+  const r = prog?.routines[0]
+  return prog && r ? { kind: 'routine', program: prog.name, routine: r.name } : { kind: 'tags' }
+}
+
+export const useEditor = create<EditorState>((set, get) => ({
+  projectId: null,
+  project: demoProject(),
+  past: [],
+  future: [],
+  view: { kind: 'routine', program: 'MainProgram', routine: 'MainRoutine' },
+  selection: { rungId: null, elementId: null },
+  editing: null,
+  mode: 'offline',
+  theme: initialTheme(),
+  saveStatus: 'idle',
+  paletteOpen: false,
+  projectsOpen: false,
+  notice: null,
+
+  openProject(id, project) {
+    set({
+      projectId: id,
+      project,
+      past: [],
+      future: [],
+      view: firstRoutineView(project),
+      selection: { rungId: null, elementId: null },
+      editing: null,
+    })
+  },
+  commit(fn) {
+    const prev = get().project
+    const next = fn(prev)
+    if (next === prev) return
+    set({ project: next, past: [...get().past, prev].slice(-HISTORY_LIMIT), future: [] })
+  },
+  undo() {
+    const { past, project, future } = get()
+    const prev = past[past.length - 1]
+    if (!prev) return
+    set({ project: prev, past: past.slice(0, -1), future: [project, ...future], editing: null })
+    fixView()
+  },
+  redo() {
+    const { past, project, future } = get()
+    const next = future[0]
+    if (!next) return
+    set({ project: next, past: [...past, project], future: future.slice(1), editing: null })
+    fixView()
+  },
+  setView(v) {
+    set({ view: v, selection: { rungId: null, elementId: null }, editing: null })
+  },
+  select(s) {
+    set({ selection: s })
+  },
+  setEditing(e) {
+    set({ editing: e })
+  },
+  setMode(m) {
+    set({ mode: m, editing: null })
+  },
+  setTheme(t) {
+    applyTheme(t, true)
+    set({ theme: t })
+  },
+  setSaveStatus(s, error) {
+    set({ saveStatus: s, saveError: error })
+  },
+  setPaletteOpen(o) {
+    set({ paletteOpen: o })
+  },
+  setProjectsOpen(o) {
+    set({ projectsOpen: o })
+  },
+  notify(text, tone = 'info') {
+    set({ notice: { text, tone } })
+  },
+}))
+
+/** After undo/redo the viewed routine may be gone. */
+function fixView() {
+  const { view, project } = useEditor.getState()
+  if (view.kind === 'routine' && !findRoutine(project, view.program, view.routine)) {
+    useEditor.setState({ view: firstRoutineView(project) })
+  }
+}
+
+// ---------------------------------------------------------------- selectors
+
+export function findProgram(p: Project, name: string): Program | undefined {
+  return p.programs.find((x) => x.name === name)
+}
+
+export function findRoutine(p: Project, program: string, routine: string): Routine | undefined {
+  return findProgram(p, program)?.routines.find((r) => r.name === routine)
+}
+
+export function currentRoutine(s: Pick<EditorState, 'project' | 'view'>): Routine | undefined {
+  return s.view.kind === 'routine' ? findRoutine(s.project, s.view.program, s.view.routine) : undefined
+}
+
+export function selectedElement(s: EditorState): Instruction | undefined {
+  const r = currentRoutine(s)
+  const rung = r?.rungs.find((x) => x.id === s.selection.rungId)
+  return rung && s.selection.elementId ? findElement(rung.body, s.selection.elementId) : undefined
+}
+
+// ---------------------------------------------------------------- edit helpers
+
+export function mapRoutine(p: Project, program: string, routine: string, fn: (r: Routine) => Routine): Project {
+  return {
+    ...p,
+    programs: p.programs.map((pr) =>
+      pr.name !== program ? pr : { ...pr, routines: pr.routines.map((r) => (r.name === routine ? fn(r) : r)) },
+    ),
+  }
+}
+
+/** Applies `fn` to the routine in view and creates any tags new rungs use. */
+export function editCurrentRoutine(fn: (r: Routine) => Routine) {
+  const { view } = useEditor.getState()
+  if (view.kind !== 'routine') return
+  useEditor.getState().commit((p) => {
+    let next = mapRoutine(p, view.program, view.routine, fn)
+    const r = findRoutine(next, view.program, view.routine)
+    if (!r) return next
+    let tags = next.tags
+    const created: string[] = []
+    for (const rung of r.rungs) {
+      const res = createMissingTags(tags, rung.body)
+      tags = res.tags
+      created.push(...res.created.map((t) => `${t.name} (${t.type})`))
+    }
+    if (created.length) {
+      next = { ...next, tags }
+      useEditor.getState().notify(`Created tag${created.length > 1 ? 's' : ''} ${created.join(', ')}`)
+    }
+    return next
+  })
+}
+
+export function editRung(rungId: string, fn: (body: Series) => Series) {
+  editCurrentRoutine((r) => ({
+    ...r,
+    rungs: r.rungs.map((g) => (g.id === rungId ? { ...g, body: fn(g.body) } : g)),
+  }))
+}
+
+export function updateRungs(fn: (rungs: Rung[]) => Rung[]) {
+  editCurrentRoutine((r) => ({ ...r, rungs: fn(r.rungs) }))
+}
+
+/** Position of the selection for the status bar: rung n of m, element i of k. */
+export function cursorText(s: EditorState): string {
+  const r = currentRoutine(s)
+  if (!r) return ''
+  const idx = r.rungs.findIndex((g) => g.id === s.selection.rungId)
+  if (idx < 0) return `${r.rungs.length} rung${r.rungs.length === 1 ? '' : 's'}`
+  const rung = r.rungs[idx]
+  const els = flatten(rung.body)
+  const ei = els.findIndex((e) => e.id === s.selection.elementId)
+  return `Rung ${idx}${ei >= 0 ? `, element ${ei + 1}/${els.length}` : ''}`
+}

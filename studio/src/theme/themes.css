@@ -1,0 +1,98 @@
+/* SPDX-License-Identifier: MPL-2.0 */
+/*
+ * Every color in plcc studio is one of these tokens. ISA-101 rule for all
+ * themes: color means state. --power is energized, --alarm is abnormal,
+ * --fault is error. Everything else stays neutral.
+ */
+
+:root,
+:root[data-theme="graphite"] {
+  --bg: #0a0a0b;
+  --surface: #131316;
+  --surface-2: #18181b;
+  --nav-bg: #0e0e10;
+  --border: #27272a;
+  --text: #f4f4f5;
+  --text-muted: #b0b0b9;
+  --line-idle: #71717a;
+  --power: #4fe08a;
+  --power-text: #4fe08a;
+  --primary-bg: #f4f4f5;
+  --primary-fg: #09090b;
+  --rungtext-bg: #0e0e10;
+  --alarm: #f2b94b;
+  --alarm-bg: #3a2e14;
+  --alarm-border: #6b5420;
+  --fault: #f87171;
+  --focus-ring: #a1a1aa;
+  --select-bg: #232327;
+  --radius: 8px;
+  --radius-control: 6px;
+  --app-font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --app-font-mono: "Geist Mono Variable", ui-monospace, monospace;
+  --fs-body: 14px;
+  --fs-dense: 13px;
+  --fs-mono: 12.5px;
+  color-scheme: dark;
+}
+
+:root[data-theme="control-room"] {
+  --bg: #1a1e23;
+  --surface: #22272e;
+  --surface-2: #2a3038;
+  --nav-bg: #1e2328;
+  --border: #38414c;
+  --text: #e8ebef;
+  --text-muted: #9aa4b0;
+  --line-idle: #6b7683;
+  --power: #7dd3fc;
+  --power-text: #7dd3fc;
+  --primary-bg: #d7dde4;
+  --primary-fg: #1a1e23;
+  --rungtext-bg: #1e2328;
+  --alarm: #f2b94b;
+  --alarm-bg: #3a2e14;
+  --alarm-border: #6b5420;
+  --fault: #f87171;
+  --focus-ring: #9aa4b0;
+  --select-bg: #333a44;
+  --radius: 4px;
+  --radius-control: 3px;
+  --app-font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --app-font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  color-scheme: dark;
+}
+
+:root[data-theme="blueprint"] {
+  --bg: #f5f4ef;
+  --surface: #ffffff;
+  --surface-2: #faf9f6;
+  --nav-bg: #f5f4ef;
+  --border: #e3e0d6;
+  --text: #1b1a17;
+  --text-muted: #66625a;
+  --line-idle: #8f8a7e;
+  --power: #16a34a;
+  --power-text: #15803d;
+  --primary-bg: #1d4ed8;
+  --primary-fg: #ffffff;
+  --rungtext-bg: #f5f4ef;
+  --alarm: #b45309;
+  --alarm-bg: #fef3c7;
+  --alarm-border: #f59e0b;
+  --fault: #dc2626;
+  --focus-ring: #1d4ed8;
+  --select-bg: #eef1f8;
+  --radius: 10px;
+  --radius-control: 999px;
+  --app-font-sans: "Manrope Variable", ui-sans-serif, system-ui, sans-serif;
+  --app-font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+  color-scheme: light;
+}
+
+/* Blueprint: pill-shaped buttons and segmented controls. */
+:root[data-theme="blueprint"] [data-slot="button"],
+:root[data-theme="blueprint"] [data-slot="toggle-group"],
+:root[data-theme="blueprint"] [data-slot="toggle-group-item"] {
+  border-radius: 999px;
+}

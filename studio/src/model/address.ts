@@ -85,6 +85,15 @@ export class ProcessImage {
     this.M = new Uint8Array(sizes.M)
   }
 
+  /** An image over existing byte arrays (no copy). */
+  static over(bytes: { I: Uint8Array; Q: Uint8Array; M: Uint8Array }): ProcessImage {
+    const img = new ProcessImage({ I: 0, Q: 0, M: 0 })
+    ;(img as { I: Uint8Array }).I = bytes.I
+    ;(img as { Q: Uint8Array }).Q = bytes.Q
+    ;(img as { M: Uint8Array }).M = bytes.M
+    return img
+  }
+
   area(a: Area): Uint8Array {
     return a === 'I' ? this.I : a === 'Q' ? this.Q : this.M
   }

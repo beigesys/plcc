@@ -274,6 +274,56 @@ export function defaultInitial(type: string): string {
   }
 }
 
+/** Renames a tag and every reference to it (`Old`, `Old.DN`) in every ladder routine. */
+export function renameTag(project: Project, from: string, to: string): Project {
+  const f = from.toLowerCase()
+  const fix = (text: string) => {
+    const base = baseTag(text)
+    if (!base || base.toLowerCase() !== f) return text
+    return to + text.trim().slice(base.length)
+  }
+  const fixSeries = (s: Series): Series => ({
+    type: 'series',
+    items: s.items.map((e): Element => {
+      switch (e.type) {
+        case 'series':
+          return fixSeries(e)
+        case 'parallel':
+          return { ...e, branches: e.branches.map(fixSeries) }
+        case 'contact':
+        case 'coil':
+          return { ...e, tag: fix(e.tag) }
+        case 'box':
+          return { ...e, operands: Object.fromEntries(Object.entries(e.operands).map(([k, v]) => [k, fix(v)])) }
+        case 'st':
+          return e
+      }
+    }),
+  })
+  return {
+    ...project,
+    tags: project.tags.map((t) => (t.name.toLowerCase() === f ? { ...t, name: to } : t)),
+    programs: project.programs.map((p) => ({
+      ...p,
+      routines: p.routines.map((r) => ({ ...r, rungs: r.rungs.map((g) => ({ ...g, body: fixSeries(g.body) })) })),
+    })),
+  }
+}
+
+/** How many instructions reference a tag. */
+export function tagReferenceCount(project: Project, name: string): number {
+  const n = name.toLowerCase()
+  let count = 0
+  for (const p of project.programs)
+    for (const r of p.routines)
+      for (const g of r.rungs)
+        for (const e of flatten(g.body)) {
+          const ops = e.type === 'contact' || e.type === 'coil' ? [e.tag] : e.type === 'box' ? Object.values(e.operands) : []
+          if (ops.some((o) => baseTag(o)?.toLowerCase() === n)) count++
+        }
+  return count
+}
+
 export function findTag(project: Project, name: string): Tag | undefined {
   const n = name.toLowerCase()
   return project.tags.find((t) => t.name.toLowerCase() === n)

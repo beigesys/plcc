@@ -7,4 +7,7 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: { alias: { '@': path.resolve(import.meta.dirname, './src') } },
+  // One app bundle (React, Radix, the editor) is ~560 kB before gzip; fine for a local tool.
+  build: { chunkSizeWarningLimit: 800 },
+  worker: { format: 'es' },
 })
