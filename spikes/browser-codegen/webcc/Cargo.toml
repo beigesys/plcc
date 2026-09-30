@@ -1,0 +1,21 @@
+[package]
+name = "webcc"
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+publish = false
+
+# A spike, kept out of the plcc workspace (see docs/studio-wasm.md).
+[workspace]
+
+[dependencies]
+plcc-codegen = { path = "../../../crates/plcc-codegen" }
+plcc-driver = { path = "../../../crates/plcc-driver" }
+inkwell = { version = "0.8.0", default-features = false, features = ["llvm21-1", "llvm21-1-force-static", "target-arm", "target-webassembly"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
