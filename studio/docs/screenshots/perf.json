@@ -1,0 +1,28 @@
+{
+  "simulate10ms": {
+    "fps": 60.3,
+    "p50FrameMs": 16.7,
+    "p99FrameMs": 16.8,
+    "worstFrameMs": 16.8,
+    "longTasks": 0,
+    "longestTaskMs": 0,
+    "statusBar": "Preview simulator (browser, not plcc output) Scan 200 µs Period 10 ms Jitter 2.78 ms 3 rungs Saved"
+  },
+  "simulate1ms": {
+    "fps": 60.3,
+    "p50FrameMs": 16.7,
+    "p99FrameMs": 16.8,
+    "worstFrameMs": 16.8,
+    "longTasks": 0,
+    "longestTaskMs": 0,
+    "statusBar": "Preview simulator (browser, not plcc output) Scan < 0.1 ms Period 1 ms Jitter 2.21 ms 3 rungs Saved"
+  },
+  "offline": {
+    "fps": 60.7,
+    "p50FrameMs": 16.7,
+    "p99FrameMs": 16.8,
+    "worstFrameMs": 16.8,
+    "longTasks": 0,
+    "longestTaskMs": 0
+  }
+}
