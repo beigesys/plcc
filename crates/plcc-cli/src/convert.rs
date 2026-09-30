@@ -115,7 +115,7 @@ fn translate(model: Project, to: Dialect) -> Project {
     if model.dialect == to {
         return model;
     }
-    let (out, warnings) = plcc_ladder::translate::translate(&model, to);
+    let (out, warnings) = plcc_l5x::ladder::translate(&model, to);
     for w in &warnings {
         eprintln!("warning: {w}");
     }

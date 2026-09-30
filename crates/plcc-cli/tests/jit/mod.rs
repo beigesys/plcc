@@ -286,6 +286,122 @@ pub fn observable(v: &VariableInfo) -> bool {
         && (v.bit.is_some() || matches!(v.size, 1 | 2 | 4 | 8))
 }
 
+/// Options of [`differential_with`].
+#[derive(Clone, Debug, Default)]
+pub struct Diff {
+    /// Pair variables by their last path segment (when it is unique in both
+    /// programs) instead of by full path: for programs whose instances are
+    /// named differently (an L5X program vs a PLCopen POU).
+    pub by_name: bool,
+    /// Scans run before comparing starts (first-scan / prescan differences).
+    pub skip_first: usize,
+    /// Only compare variables of this byte size or bits (0: any size).
+    pub bool_only: bool,
+    /// Names (last segment) not compared.
+    pub ignore: Vec<String>,
+    /// When set, only these names (last segment) are compared.
+    pub only: Option<Vec<String>>,
+}
+
+fn last(path: &str) -> String {
+    path.rsplit('.').next().unwrap_or("").to_ascii_lowercase()
+}
+
+/// [`differential`] with options.
+pub fn differential_with(
+    a: &Plc,
+    b: &Plc,
+    inputs: &[String],
+    scans: usize,
+    seed: u64,
+    max_step_ms: u64,
+    opts: &Diff,
+) -> Result<usize, String> {
+    let pairs: Vec<(VariableInfo, VariableInfo)> = if opts.by_name {
+        let count = |p: &Plc, n: &str| {
+            p.contract
+                .variables
+                .iter()
+                .filter(|v| observable(v) && last(&v.path) == n)
+                .count()
+        };
+        a.contract
+            .variables
+            .iter()
+            .filter(|v| observable(v))
+            .filter(|v| count(a, &last(&v.path)) == 1 && count(b, &last(&v.path)) == 1)
+            .filter_map(|v| {
+                let n = last(&v.path);
+                b.contract
+                    .variables
+                    .iter()
+                    .find(|w| observable(w) && last(&w.path) == n)
+                    .map(|w| (v.clone(), w.clone()))
+            })
+            .collect()
+    } else {
+        a.contract
+            .variables
+            .iter()
+            .filter(|v| observable(v))
+            .filter_map(|v| b.variable(&v.path).map(|w| (v.clone(), w.clone())))
+            .collect()
+    };
+    let is_bool = |v: &VariableInfo| v.bit.is_some() || v.iec_type.eq_ignore_ascii_case("BOOL");
+    let pairs: Vec<_> = pairs
+        .into_iter()
+        .filter(|(x, y)| (is_bool(x) == is_bool(y)) && (is_bool(x) || x.size == y.size))
+        .filter(|(x, _)| !opts.bool_only || is_bool(x))
+        .filter(|(x, _)| {
+            !opts
+                .ignore
+                .iter()
+                .any(|i| i.eq_ignore_ascii_case(&last(&x.path)))
+        })
+        .filter(|(x, _)| {
+            opts.only
+                .as_ref()
+                .is_none_or(|o| o.iter().any(|i| i.eq_ignore_ascii_case(&last(&x.path))))
+        })
+        .collect();
+    if pairs.is_empty() {
+        return Err("no variables in common".into());
+    }
+    let is_input = |v: &VariableInfo| {
+        let l = last(&v.path);
+        inputs.iter().any(|n| n.eq_ignore_ascii_case(&l))
+    };
+    let mut rng = Rng::new(seed);
+    let mut compared = 0;
+    for scan in 0..scans {
+        for (va, vb) in &pairs {
+            if is_input(va) && is_bool(va) {
+                // Inputs stay FALSE through the skipped first scans.
+                let x = (rng.bool() && scan >= opts.skip_first) as i64;
+                a.set_var(va, x);
+                b.set_var(vb, x);
+            }
+        }
+        advance(rng.below(max_step_ms + 1) as i64 * MS);
+        a.scan();
+        b.scan();
+        if scan < opts.skip_first {
+            continue;
+        }
+        for (va, vb) in &pairs {
+            let (x, y) = (a.get_var(va), b.get_var(vb));
+            if x != y {
+                return Err(format!(
+                    "scan {scan}: {} is {x:?} in the first program, {} is {y:?} in the second",
+                    va.path, vb.path
+                ));
+            }
+            compared += 1;
+        }
+    }
+    Ok(compared)
+}
+
 /// Run `a` and `b` over `scans` scans, randomizing the `inputs` (variable
 /// names, matched against the last path segment) before each, advancing the
 /// clock by 0..`max_step_ms` ms, and compare every observable variable the two

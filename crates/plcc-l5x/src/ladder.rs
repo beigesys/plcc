@@ -217,6 +217,164 @@ fn routine(r: &l5::RoutineDef, ids: &mut Ids) -> Result<Routine, L5xError> {
     Ok(out)
 }
 
+// ── Operands for translation ──
+
+/// Logix operands to IEC ST, through plcc's Logix expression parser (the one
+/// the L5X lowering uses): CPT/CMP precedence (AND/OR/XOR bind tighter than
+/// comparisons) becomes explicit parentheses, `&&`/`||`/`!` become AND/OR/NOT,
+/// SQR/ASN/ACS/ATN/TRN become SQRT/ASIN/ACOS/ATAN/TRUNC, an indirect bit
+/// `x.[i]` is read as `(SHR(x, i) AND 1) = 1`, and `S:FS` becomes `S_FS`.
+pub struct LogixOperands;
+
+impl plcc_ladder::translate::Operands for LogixOperands {
+    fn logix_to_iec(&self, text: &str, write: bool) -> Result<String, String> {
+        let e = crate::operand::parse_expr(text, 0..text.len()).map_err(|e| e.message)?;
+        let x = to_iec(&e, write)?;
+        Ok(plcc_st::print_expression(&x))
+    }
+}
+
+/// [`plcc_ladder::translate::translate_with`] with [`LogixOperands`].
+pub fn translate(project: &Project, to: Dialect) -> (Project, Vec<String>) {
+    plcc_ladder::translate::translate_with(project, to, &LogixOperands)
+}
+
+fn to_iec(e: &crate::operand::LExpr, write: bool) -> Result<plcc_st::Expression, String> {
+    use crate::operand::{BinOp as B, LKind, Seg, UnOp as U};
+    use plcc_st::{BinaryOp, Expression, ExpressionKind as K, Ident, UnaryOp};
+    let sp = Span::empty();
+    let ex = |kind| Expression { kind, span: sp };
+    let id = |n: &str| ex(K::Identifier(Ident::new(n, sp)));
+    let bin = |op, l, r| {
+        ex(K::BinaryOp {
+            op,
+            left: Box::new(l),
+            right: Box::new(r),
+        })
+    };
+    let call = |f: &str, args: Vec<Expression>| {
+        ex(K::FunctionCall {
+            callee: Box::new(id(f)),
+            args: args
+                .into_iter()
+                .map(|value| plcc_st::CallArg {
+                    name: None,
+                    value,
+                    is_output: false,
+                    negated: false,
+                    span: sp,
+                })
+                .collect(),
+        })
+    };
+    Ok(match &e.kind {
+        LKind::Int(v) => ex(K::IntegerLiteral(*v)),
+        LKind::Real(v) if v.is_finite() => ex(K::RealLiteral(*v)),
+        LKind::Real(_) => return Err("infinity (`1.$`) has no IEC literal".into()),
+        LKind::Str(s) => ex(K::StringLiteral(s.clone())),
+        LKind::Unset => return Err("an unset operand `?`".into()),
+        LKind::Path(p) => {
+            let mut x = if p.base.eq_ignore_ascii_case("S:FS") {
+                if write {
+                    return Err("S:FS cannot be written".into());
+                }
+                id("S_FS")
+            } else if p.base.contains(':') {
+                return Err(format!("{} is a Logix module or system tag", p.base));
+            } else {
+                id(&p.base)
+            };
+            for (k, seg) in p.segs.iter().enumerate() {
+                x = match seg {
+                    Seg::Member(m, _) => ex(K::MemberAccess {
+                        object: Box::new(x),
+                        member: Ident::new(m.clone(), sp),
+                    }),
+                    Seg::Bit(b, _) => ex(K::MemberAccess {
+                        object: Box::new(x),
+                        member: Ident::new(b.to_string(), sp),
+                    }),
+                    Seg::Index(ix, _) => ex(K::ArrayIndex {
+                        array: Box::new(x),
+                        indices: ix
+                            .iter()
+                            .map(|i| to_iec(i, false))
+                            .collect::<Result<_, _>>()?,
+                    }),
+                    Seg::IndirectBit(i) => {
+                        if write || k + 1 != p.segs.len() {
+                            return Err("an indirect bit `.[i]` can only be read".into());
+                        }
+                        let shifted = call("SHR", vec![x, to_iec(i, false)?]);
+                        bin(
+                            BinaryOp::Equal,
+                            ex(K::Parenthesized(Box::new(bin(
+                                BinaryOp::And,
+                                shifted,
+                                ex(K::IntegerLiteral(1)),
+                            )))),
+                            ex(K::IntegerLiteral(1)),
+                        )
+                    }
+                };
+            }
+            x
+        }
+        LKind::Unary(op, x) => ex(K::UnaryOp {
+            op: match op {
+                U::Neg => UnaryOp::Neg,
+                U::Not | U::LNot => UnaryOp::Not,
+            },
+            operand: Box::new(to_iec(x, false)?),
+        }),
+        LKind::Binary(op, l, r) => {
+            let op = match op {
+                B::Pow => BinaryOp::Power,
+                B::Mul => BinaryOp::Mul,
+                B::Div => BinaryOp::Div,
+                B::Mod => BinaryOp::Mod,
+                B::Add => BinaryOp::Add,
+                B::Sub => BinaryOp::Sub,
+                B::And | B::LAnd => BinaryOp::And,
+                B::Xor | B::LXor => BinaryOp::Xor,
+                B::Or | B::LOr => BinaryOp::Or,
+                B::Eq => BinaryOp::Equal,
+                B::Ne => BinaryOp::NotEqual,
+                B::Lt => BinaryOp::Less,
+                B::Le => BinaryOp::LessEqual,
+                B::Gt => BinaryOp::Greater,
+                B::Ge => BinaryOp::GreaterEqual,
+            };
+            bin(op, to_iec(l, false)?, to_iec(r, false)?)
+        }
+        LKind::Call(f, args) => {
+            let args: Vec<Expression> = args
+                .iter()
+                .map(|a| to_iec(a, false))
+                .collect::<Result<_, _>>()?;
+            let name = match f.as_str() {
+                "SQR" | "SQRT" => "SQRT",
+                "ASN" | "ASIN" => "ASIN",
+                "ACS" | "ACOS" => "ACOS",
+                "ATN" | "ATAN" => "ATAN",
+                "TRN" | "TRUNC" => "TRUNC",
+                "ABS" | "SIN" | "COS" | "TAN" | "LN" | "LOG" => f.as_str(),
+                "DEG" | "RAD" => {
+                    let k = if f == "DEG" {
+                        180.0 / std::f64::consts::PI
+                    } else {
+                        std::f64::consts::PI / 180.0
+                    };
+                    let a = args.into_iter().next().ok_or("DEG/RAD need an argument")?;
+                    return Ok(bin(BinaryOp::Mul, a, ex(K::RealLiteral(k))));
+                }
+                other => return Err(format!("the function {other} has no IEC counterpart")),
+            };
+            call(name, args)
+        }
+    })
+}
+
 // ── Writing ──
 
 /// Why a model cannot be written as L5X.

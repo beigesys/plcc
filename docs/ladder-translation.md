@@ -181,6 +181,89 @@ reader compiles actions (as ACTIONs of the PROGRAM / FUNCTION_BLOCK). The TC6
 XSD is not freely downloadable from plcopen.org, so the output is checked
 against the element order of the schema by the tests and by reading it back.
 
+## IEC ↔ Logix translation
+
+```bash
+plcc convert plant.xml --to l5x -o plant.L5X          # IEC LD → Logix RLL
+plcc convert plant.L5X --to plcopen -o plant.xml      # Logix RLL → IEC LD
+plcc convert plant.L5X --to ladder-json --dialect iec # the translated model
+```
+
+`plcc_ladder::translate::translate_with` (the CLI uses
+`plcc_l5x::ladder::translate`, which parses Logix operands with the L5X
+compiler's expression parser) translates element by element and keeps the
+rung structure. Every element whose behaviour differs gets a **warning** —
+printed by `plcc convert` and kept in the element's `notes` — naming the
+element (POU / routine / rung, kind, operand, id) and the difference. What has
+no counterpart is **NOT TRANSLATED**: an ST box holding a comment with the
+original instruction takes its place, and the warning says why; nothing is
+dropped silently. Structure one dialect cannot draw in place becomes **helper
+rungs** just before or after the rung (their ids are fresh).
+
+Sources: IEC 61131-3:2013 §8.2 (LD elements), §6.6.3.5 (standard function
+blocks: bistables, edge detection, counters, timers) and §6.6.2.5 (standard
+functions); Rockwell 1756-RM003 *Logix 5000 Controllers General Instructions*,
+chapters *Bit Instructions*, *Timer and Counter Instructions*, *Compare
+Instructions*, *Compute/Math Instructions*, *Move/Logical Instructions* and
+*Program Control Instructions* (each instruction's operand table and
+*Execution* table, including the false-rung and prescan rows).
+
+| IEC (model, IEC dialect) | Logix | Exact? | Difference, and what the translation does |
+|---|---|---|---|
+| contact `--\| \|--` / `--\|/\|--` | XIC / XIO | yes | |
+| coil `--( )--` | OTE | yes, but prescan | Logix clears OTE bits at prescan (the transition to Run); IEC variables start from their initial value — equal at a cold start. One project-level warning. |
+| set / reset coil `(S)` `(R)` | OTL / OTU | yes | |
+| negated coil `(/)` | OTE of a helper bit + rung `XIO(neg<id>)OTE(var)` after | no | Logix has no negated output; the variable is written after the rung, not at the coil's position (matters only if the same rung reads it later). |
+| rising / falling contact `\|P\|` `\|N\|` | helper rung `XIC(v)OSR(edge<id>_sb,edge<id>)` (OSF) before the rung, and XIC(edge<id>) | first scan | Logix has no edge contact. OSR's prescan keeps a variable already TRUE from firing on the first scan; IEC R_TRIG fires. |
+| rising / falling coil `(P)` `(N)` | OSR / OSF(var_sb<id>, var) | first scan | as above; the edge memory is a storage bit tag |
+| branch, jump, label, return | `[ , ]`, JMP, LBL, RET() | yes | a label moves to the first helper rung inserted before its rung |
+| TON / TOF instance `T` (IN = power, PT, Q, ET) | TON / TOF(T, PT in ms, 0); `XIC(T.DN)` continues the rung | ms resolution | The FB instance becomes a TIMER tag: Q ↔ .DN, ET ↔ .ACC, PT ↔ .PRE, IN ↔ .EN — **TIME ↔ DINT milliseconds**. .ACC can pass .PRE by one scan where ET stops at PT. A non-constant PT becomes a `MOV(pt,T.PRE)` rung before; ET / Q copied to variables become `MOV(T.ACC,v)` / `XIC(T.DN)OTE(v)` rungs after. Power on EN (IN from a pin): the timer runs on a leg `EN AND IN`, so EN FALSE resets it (IEC: not called, it freezes) — warned. |
+| RTO (plcc FB: IN, R, PT → Q, ET) | RTO(T, PT, 0) + reset | yes (R priority kept) | **RTO is not an IEC standard FB**: plcc's stdlib has one (`crates/plcc-stdlib/st/timers.st`) with the Logix RTO behaviour: ET accumulates while IN, holds while not, R clears it. R becomes `RES(T)`; in the rung itself the rung is split after the timer so the reset follows it, as R wins inside the IEC call. |
+| CTU instance `C` (CU = power, R, PV, Q, CV) | CTU(C, PV, 0); `XIC(C.DN)` | no (range) | Q ↔ .DN, CV ↔ .ACC, PV ↔ .PRE. R clears .ACC/.DN/.OV/.UN (not RES, which also clears .CU and would count again while CU stays TRUE); the rung is split after the counter so the reset follows a count of the same scan (R wins in IEC). **IEC CV is an INT that stops at 32,767; Logix .ACC is a DINT that wraps past 2,147,483,647 and sets .OV.** |
+| CTD instance (CD, LD, PV, Q, CV) | CTD(C, PV, 0); LD as `MOV(C.PRE,C.ACC)`; Q as `LEQ(C.ACC,0)` | no | Logix .DN is .ACC ≥ .PRE; IEC Q is CV ≤ 0. |
+| R_TRIG instance on the power | ONS(inst_sb) | first scan | the storage bit holds the rung state |
+| GT GE EQ LE LT NE (result = rung) | GRT GEQ EQU LEQ LES NEQ | yes when power does not enter on EN | Logix compares are input instructions: the rung continues with (rung AND result). |
+| ADD SUB MUL DIV MOD EXPT AND OR XOR (EN = power, OUT → v) | ADD SUB MUL DIV MOD XPY AND OR XOR (a, b, v); CPT for 3+ inputs | no (arithmetic) | Logix computes in the widest type of the sources **and the destination**, stores integers with truncation and REAL → integer half-to-even, sets S:V, and DIV by zero gives Source A with a minor fault where IEC faults; logical instructions zero-fill SINT/INT. |
+| MOVE, NOT, ABS SQRT SIN COS TAN ASIN ACOS ATAN LN LOG TRUNC | MOV, NOT, ABS SQR SIN COS TAN ASN ACS ATN LN LOG TRN | numeric conversion | as above for the math functions |
+| call box of another routine (an action) | JSR(routine, 0) | yes | |
+| ST box | an ST routine `<Routine>_ST<id>` called by JSR in its place | syntax | IEC ST and Logix ST differ (FB calls, TIME literals, standard functions): check the code. |
+| TP, SR, RS, CTUD, LIMIT, user FBs and functions | — | NOT TRANSLATED | no Logix instruction (Add-On Instructions are not generated) |
+| VAR_INPUT / VAR_OUTPUT, FUNCTION_BLOCK / FUNCTION POUs | program tags / Logix programs | — | warned: Logix programs have no directions, and nothing calls a translated FB |
+| types: BOOL SINT…LREAL; BYTE WORD DWORD LWORD; TIME; TON TOF RTO; CTU CTD; STRING; `ARRAY[0..n]` | same; SINT INT DINT LINT; DINT ms; TIMER; COUNTER; STRING; `T[n+1]` | | arrays must start at 0; AT addresses are dropped (Logix I/O is module tags; see `--io-map`) |
+
+| Logix | IEC (model) | Exact? | Difference, and what the translation does |
+|---|---|---|---|
+| XIC / XIO, OTE / OTL / OTU, `[ , ]`, JMP / LBL, RET() | contacts, coils, branch, jump / label, return | yes (OTE prescan as above) | |
+| TON / TOF / RTO(T, pre, acc) | TON / TOF / RTO instance T, IN = power, PT = `T#<pre>ms`; the rung continues with the power (Logix timers are output instructions) | ms / ET clamp | T.DN → T.Q, T.ACC → `TIME_TO_DINT(T.ET)`, T.PRE → `TIME_TO_DINT(T.PT)`, T.EN → T.IN, T.TT → `(T.IN AND NOT T.Q)` wherever T's members are read. A `?` preset comes from the tag's initial data. A non-zero initial Accum is not carried. |
+| CTU / CTD(C, pre, acc) | CTU (CU = power) / CTD (CD = power); both on one tag: one CTUD instance, each call naming only its own count input | no (range) | C.DN → C.Q (CTUD: QU), C.ACC → C.CV, C.PRE → C.PV; .OV / .UN are not translated (INT vs DINT) |
+| RES(T / C) | ST box calling the instance with its reset input: `T(IN := FALSE)` (TON), `C(R := TRUE); C(R := FALSE)` (CTU, CTUD, RTO) | TOF, CTD: no | inputs not named keep their value, so no count or timing starts; an IEC TOF has no reset (IN := FALSE starts the off-delay) and an IEC CTD loads PV — both warned |
+| ONS(sb) | coil `os<id>_rung` (latches the rung), then contact `sb` normally closed; rung after: `sb := os<id>_rung` | yes | the storage bit stays a tag and **starts TRUE, as after the Logix prescan**; it is updated after the rung rather than at this point |
+| OSR(sb, q) / OSF(sb, q) | the rung latched as for ONS; OSR: `q := rung AND NOT sb` on a leg of its own; OSF: `q := sb AND NOT rung` in a rung after | yes (OSF: q written after the rung) | |
+| EQU NEQ LES LEQ GRT GEQ (and EQ NE LT LE GT GE) | GT… box with no power input, result = rung (lowered as rung AND result) | yes | |
+| LIM(lo, t, hi) | contact on `((lo <= hi) AND lo <= t AND t <= hi) OR (lo > hi AND (t >= lo OR t <= hi))` | yes | the circular range of RM003 |
+| MEQ(s, m, c) | contact on `(s AND m) = (c AND m)` | zero fill | |
+| CMP(expr) / CPT(dest, expr) | contact on the expression / ST box `dest := expr;` | precedence made explicit | Logix binds AND/OR/XOR tighter than comparisons; the expression is parsed with Logix precedence and printed with IEC parentheses; `&&` `\|\|` `!` → AND OR NOT; SQR ASN ACS ATN TRN → SQRT ASIN ACOS ATAN TRUNC; a read of `x.[i]` → `(SHR(x, i) AND 1) = 1` |
+| ADD SUB MUL DIV MOD XPY AND OR XOR NOT MOV CLR ABS SQR SIN … TRN | ADD … EXPT, AND OR XOR NOT, MOVE, MOVE(0), ABS SQRT SIN … TRUNC boxes (EN = power, OUT → destination) | no (arithmetic) | as in the other direction |
+| NEG | ST box `d := -s;` | yes | |
+| AFI / NOP / TND | contact on FALSE / left out / RETURN | TND: no | TND ends the task's scan; RETURN ends only this POU |
+| JSR(routine, 0) | call box of the routine (an action of the POU) | yes | JSR with parameters is NOT TRANSLATED |
+| S:FS | the program variable S_FS, TRUE until a last rung `S_FS := FALSE` | yes | |
+| S:V S:Z S:N, module tags `Local:1:I`, writes to `x.[i]` | — | NOT TRANSLATED | |
+| MCR, UID/UIE, GSV/SSV, MSG, EVENT, FOR/BRK, SBR/RET with parameters, COP/CPS/FLL, BSL/BSR, FIFO/LIFO, BTD, MVM, SWPB, string instructions, SIZE, TOD/FRD, AOIs | — | NOT TRANSLATED | no IEC ladder counterpart |
+| TIMER / COUNTER tags; `DINT[10]`; STRING; alias tags; UDTs | TON/TOF/RTO, CTU/CTD/CTUD instances (by use); `ARRAY[0..9] OF DINT`; STRING[82]; — ; the type name | | |
+
+**Tested** (`crates/plcc-cli/tests/ladder_translate.rs`): an IEC model with
+every mapped element (seal-in, set/reset, edge contact and coils, negated coil,
+TON, TOF, RTO and CTU with resets, ADD, MOVE, GT) and the PLCopen fixtures
+`ld_seal_in` and `ld_coils_edges` are translated to Logix, written as L5X,
+compiled with Logix semantics and run against the IEC originals over 300–400
+randomized scans; the L5X fixtures `seal_in`, `bits_branches` and
+`timers_counters` are translated to IEC and run against the Logix originals.
+Variables are compared by name after every scan from the second on (inputs
+stay FALSE during the first, so prescan effects do not set the runs apart).
+The `math` fixture, which exists to exercise Logix-only arithmetic, is checked
+for its warnings instead.
+
 ## Round trips (tested)
 
 | Round trip | Guarantee | Test |
