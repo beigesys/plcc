@@ -1,0 +1,27 @@
+{
+  "name": "@plcc/plc-wasm",
+  "version": "0.1.0",
+  "description": "Run plcc's WebAssembly output: imports, scan scheduler, process image and tags",
+  "license": "MPL-2.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./worker": "./src/worker.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "fixtures": "sh test/fixtures/build.sh"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.2"
+  }
+}

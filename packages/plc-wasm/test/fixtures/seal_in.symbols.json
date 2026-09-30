@@ -1,0 +1,276 @@
+{
+  "abi_version": 1,
+  "at_bindings": [
+    {
+      "address": "%IX0.0",
+      "area": "I",
+      "bit": 0,
+      "byte_offset": 0,
+      "iec_type": "BOOL",
+      "name": "start",
+      "scope": "SealIn",
+      "size": 1,
+      "size_prefix": "X"
+    },
+    {
+      "address": "%IX0.1",
+      "area": "I",
+      "bit": 1,
+      "byte_offset": 0,
+      "iec_type": "BOOL",
+      "name": "stop",
+      "scope": "SealIn",
+      "size": 1,
+      "size_prefix": "X"
+    },
+    {
+      "address": "%QX0.0",
+      "area": "Q",
+      "bit": 0,
+      "byte_offset": 0,
+      "iec_type": "BOOL",
+      "name": "motor",
+      "scope": "SealIn",
+      "size": 1,
+      "size_prefix": "X"
+    },
+    {
+      "address": "%MW0",
+      "area": "M",
+      "bit": null,
+      "byte_offset": 0,
+      "iec_type": "UINT",
+      "name": "starts",
+      "scope": "SealIn",
+      "size": 2,
+      "size_prefix": "W"
+    }
+  ],
+  "byte_order": "little",
+  "fault": {
+    "codes": [
+      {
+        "code": 1,
+        "description": "integer division by zero",
+        "name": "DIV_BY_ZERO"
+      },
+      {
+        "code": 2,
+        "description": "array subscript out of range",
+        "name": "ARRAY_BOUNDS"
+      },
+      {
+        "code": 3,
+        "description": "call through an unbound reference",
+        "name": "NULL_REFERENCE"
+      }
+    ],
+    "symbol": "plcc_fault",
+    "user_base": 65536
+  },
+  "globals": null,
+  "image": {
+    "I": {
+      "size": 1,
+      "symbol": "plcc_image_i"
+    },
+    "M": {
+      "size": 2,
+      "symbol": "plcc_image_m"
+    },
+    "Q": {
+      "size": 1,
+      "symbol": "plcc_image_q"
+    }
+  },
+  "instances": [
+    {
+      "name": "SealIn",
+      "program": "SealIn",
+      "symbol": "plcc_inst_sealin",
+      "task": "MainTask"
+    }
+  ],
+  "pointer_size": 4,
+  "retain": {
+    "regions": [],
+    "signature": 2166136261
+  },
+  "target": "wasm32-unknown-unknown",
+  "tasks": [
+    {
+      "instances": [
+        "SealIn"
+      ],
+      "interval_ns": 20000000,
+      "name": "MainTask",
+      "priority": 1,
+      "single": false
+    }
+  ],
+  "types": [
+    {
+      "align": 4,
+      "c_name": "plcc_prog_sealin_t",
+      "fields": [
+        {
+          "at": "%IX0.0",
+          "iec_type": "BOOL",
+          "name": "start",
+          "offset": 0,
+          "retain": false,
+          "size": 1
+        },
+        {
+          "at": "%IX0.1",
+          "iec_type": "BOOL",
+          "name": "stop",
+          "offset": 1,
+          "retain": false,
+          "size": 1
+        },
+        {
+          "at": "%QX0.0",
+          "iec_type": "BOOL",
+          "name": "motor",
+          "offset": 2,
+          "retain": false,
+          "size": 1
+        },
+        {
+          "at": "%MW0",
+          "iec_type": "UINT",
+          "name": "starts",
+          "offset": 4,
+          "retain": false,
+          "size": 2
+        },
+        {
+          "at": null,
+          "iec_type": "DINT",
+          "name": "runs",
+          "offset": 8,
+          "retain": false,
+          "size": 4
+        },
+        {
+          "at": null,
+          "iec_type": "REAL",
+          "name": "level",
+          "offset": 12,
+          "retain": false,
+          "size": 4
+        },
+        {
+          "at": null,
+          "iec_type": "REAL",
+          "name": "wave",
+          "offset": 16,
+          "retain": false,
+          "size": 4
+        },
+        {
+          "at": null,
+          "iec_type": "BOOL",
+          "name": "last",
+          "offset": 20,
+          "retain": false,
+          "size": 1
+        },
+        {
+          "at": null,
+          "iec_type": "STRING[16]",
+          "name": "name",
+          "offset": 21,
+          "retain": false,
+          "size": 17
+        }
+      ],
+      "iec_name": "SealIn",
+      "size": 40
+    }
+  ],
+  "variables": [
+    {
+      "bit": null,
+      "iec_type": "DINT",
+      "offset": 8,
+      "path": "SealIn.runs",
+      "retain": false,
+      "size": 4,
+      "symbol": "plcc_inst_sealin"
+    },
+    {
+      "bit": null,
+      "iec_type": "REAL",
+      "offset": 12,
+      "path": "SealIn.level",
+      "retain": false,
+      "size": 4,
+      "symbol": "plcc_inst_sealin"
+    },
+    {
+      "bit": null,
+      "iec_type": "REAL",
+      "offset": 16,
+      "path": "SealIn.wave",
+      "retain": false,
+      "size": 4,
+      "symbol": "plcc_inst_sealin"
+    },
+    {
+      "bit": null,
+      "iec_type": "BOOL",
+      "offset": 20,
+      "path": "SealIn.last",
+      "retain": false,
+      "size": 1,
+      "symbol": "plcc_inst_sealin"
+    },
+    {
+      "bit": null,
+      "iec_type": "STRING[16]",
+      "offset": 21,
+      "path": "SealIn.name",
+      "retain": false,
+      "size": 17,
+      "symbol": "plcc_inst_sealin"
+    },
+    {
+      "bit": 0,
+      "iec_type": "BOOL",
+      "offset": 0,
+      "path": "SealIn.start",
+      "retain": false,
+      "size": 1,
+      "symbol": "plcc_image_i"
+    },
+    {
+      "bit": 1,
+      "iec_type": "BOOL",
+      "offset": 0,
+      "path": "SealIn.stop",
+      "retain": false,
+      "size": 1,
+      "symbol": "plcc_image_i"
+    },
+    {
+      "bit": 0,
+      "iec_type": "BOOL",
+      "offset": 0,
+      "path": "SealIn.motor",
+      "retain": false,
+      "size": 1,
+      "symbol": "plcc_image_q"
+    },
+    {
+      "bit": null,
+      "iec_type": "UINT",
+      "offset": 0,
+      "path": "SealIn.starts",
+      "retain": false,
+      "size": 2,
+      "symbol": "plcc_image_m"
+    }
+  ]
+}

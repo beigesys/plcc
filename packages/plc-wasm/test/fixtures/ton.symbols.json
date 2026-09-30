@@ -1,0 +1,366 @@
+{
+  "abi_version": 1,
+  "at_bindings": [
+    {
+      "address": "%IX0.0",
+      "area": "I",
+      "bit": 0,
+      "byte_offset": 0,
+      "iec_type": "BOOL",
+      "name": "go",
+      "scope": "Delay",
+      "size": 1,
+      "size_prefix": "X"
+    },
+    {
+      "address": "%QX0.0",
+      "area": "Q",
+      "bit": 0,
+      "byte_offset": 0,
+      "iec_type": "BOOL",
+      "name": "done",
+      "scope": "Delay",
+      "size": 1,
+      "size_prefix": "X"
+    },
+    {
+      "address": "%MD0",
+      "area": "M",
+      "bit": null,
+      "byte_offset": 0,
+      "iec_type": "UDINT",
+      "name": "et_ms",
+      "scope": "Delay",
+      "size": 4,
+      "size_prefix": "D"
+    },
+    {
+      "address": "%MW4",
+      "area": "M",
+      "bit": null,
+      "byte_offset": 8,
+      "iec_type": "UINT",
+      "name": "n",
+      "scope": "Counter",
+      "size": 2,
+      "size_prefix": "W"
+    }
+  ],
+  "byte_order": "little",
+  "fault": {
+    "codes": [
+      {
+        "code": 1,
+        "description": "integer division by zero",
+        "name": "DIV_BY_ZERO"
+      },
+      {
+        "code": 2,
+        "description": "array subscript out of range",
+        "name": "ARRAY_BOUNDS"
+      },
+      {
+        "code": 3,
+        "description": "call through an unbound reference",
+        "name": "NULL_REFERENCE"
+      }
+    ],
+    "symbol": "plcc_fault",
+    "user_base": 65536
+  },
+  "globals": null,
+  "image": {
+    "I": {
+      "size": 1,
+      "symbol": "plcc_image_i"
+    },
+    "M": {
+      "size": 10,
+      "symbol": "plcc_image_m"
+    },
+    "Q": {
+      "size": 1,
+      "symbol": "plcc_image_q"
+    }
+  },
+  "instances": [
+    {
+      "name": "Cpu.Main",
+      "program": "Delay",
+      "symbol": "plcc_inst_cpu_main",
+      "task": "Fast"
+    },
+    {
+      "name": "Cpu.Count",
+      "program": "Counter",
+      "symbol": "plcc_inst_cpu_count",
+      "task": "Slow"
+    }
+  ],
+  "pointer_size": 4,
+  "retain": {
+    "regions": [],
+    "signature": 2166136261
+  },
+  "target": "wasm32-unknown-unknown",
+  "tasks": [
+    {
+      "instances": [
+        "Cpu.Main"
+      ],
+      "interval_ns": 10000000,
+      "name": "Fast",
+      "priority": 1,
+      "single": false
+    },
+    {
+      "instances": [
+        "Cpu.Count"
+      ],
+      "interval_ns": 100000000,
+      "name": "Slow",
+      "priority": 2,
+      "single": false
+    }
+  ],
+  "types": [
+    {
+      "align": 8,
+      "c_name": "plcc_fb_ton_t",
+      "fields": [
+        {
+          "at": null,
+          "iec_type": "BOOL",
+          "name": "IN",
+          "offset": 0,
+          "retain": false,
+          "size": 1
+        },
+        {
+          "at": null,
+          "iec_type": "TIME",
+          "name": "PT",
+          "offset": 8,
+          "retain": false,
+          "size": 8
+        },
+        {
+          "at": null,
+          "iec_type": "BOOL",
+          "name": "Q",
+          "offset": 16,
+          "retain": false,
+          "size": 1
+        },
+        {
+          "at": null,
+          "iec_type": "TIME",
+          "name": "ET",
+          "offset": 24,
+          "retain": false,
+          "size": 8
+        },
+        {
+          "at": null,
+          "iec_type": "BOOL",
+          "name": "RUNNING",
+          "offset": 32,
+          "retain": false,
+          "size": 1
+        },
+        {
+          "at": null,
+          "iec_type": "TIME",
+          "name": "START_NS",
+          "offset": 40,
+          "retain": false,
+          "size": 8
+        },
+        {
+          "at": null,
+          "iec_type": "TIME",
+          "name": "NOW_NS",
+          "offset": 48,
+          "retain": false,
+          "size": 8
+        },
+        {
+          "at": null,
+          "iec_type": "TIME",
+          "name": "ELAPSED",
+          "offset": 56,
+          "retain": false,
+          "size": 8
+        }
+      ],
+      "iec_name": "TON",
+      "size": 64
+    },
+    {
+      "align": 8,
+      "c_name": "plcc_prog_delay_t",
+      "fields": [
+        {
+          "at": "%IX0.0",
+          "iec_type": "BOOL",
+          "name": "go",
+          "offset": 0,
+          "retain": false,
+          "size": 1
+        },
+        {
+          "at": "%QX0.0",
+          "iec_type": "BOOL",
+          "name": "done",
+          "offset": 1,
+          "retain": false,
+          "size": 1
+        },
+        {
+          "at": "%MD0",
+          "iec_type": "UDINT",
+          "name": "et_ms",
+          "offset": 4,
+          "retain": false,
+          "size": 4
+        },
+        {
+          "at": null,
+          "iec_type": "TON",
+          "name": "t",
+          "offset": 8,
+          "retain": false,
+          "size": 64
+        }
+      ],
+      "iec_name": "Delay",
+      "size": 72
+    },
+    {
+      "align": 2,
+      "c_name": "plcc_prog_counter_t",
+      "fields": [
+        {
+          "at": "%MW4",
+          "iec_type": "UINT",
+          "name": "n",
+          "offset": 0,
+          "retain": false,
+          "size": 2
+        }
+      ],
+      "iec_name": "Counter",
+      "size": 2
+    }
+  ],
+  "variables": [
+    {
+      "bit": null,
+      "iec_type": "BOOL",
+      "offset": 8,
+      "path": "Cpu.Main.t.IN",
+      "retain": false,
+      "size": 1,
+      "symbol": "plcc_inst_cpu_main"
+    },
+    {
+      "bit": null,
+      "iec_type": "TIME",
+      "offset": 16,
+      "path": "Cpu.Main.t.PT",
+      "retain": false,
+      "size": 8,
+      "symbol": "plcc_inst_cpu_main"
+    },
+    {
+      "bit": null,
+      "iec_type": "BOOL",
+      "offset": 24,
+      "path": "Cpu.Main.t.Q",
+      "retain": false,
+      "size": 1,
+      "symbol": "plcc_inst_cpu_main"
+    },
+    {
+      "bit": null,
+      "iec_type": "TIME",
+      "offset": 32,
+      "path": "Cpu.Main.t.ET",
+      "retain": false,
+      "size": 8,
+      "symbol": "plcc_inst_cpu_main"
+    },
+    {
+      "bit": null,
+      "iec_type": "BOOL",
+      "offset": 40,
+      "path": "Cpu.Main.t.RUNNING",
+      "retain": false,
+      "size": 1,
+      "symbol": "plcc_inst_cpu_main"
+    },
+    {
+      "bit": null,
+      "iec_type": "TIME",
+      "offset": 48,
+      "path": "Cpu.Main.t.START_NS",
+      "retain": false,
+      "size": 8,
+      "symbol": "plcc_inst_cpu_main"
+    },
+    {
+      "bit": null,
+      "iec_type": "TIME",
+      "offset": 56,
+      "path": "Cpu.Main.t.NOW_NS",
+      "retain": false,
+      "size": 8,
+      "symbol": "plcc_inst_cpu_main"
+    },
+    {
+      "bit": null,
+      "iec_type": "TIME",
+      "offset": 64,
+      "path": "Cpu.Main.t.ELAPSED",
+      "retain": false,
+      "size": 8,
+      "symbol": "plcc_inst_cpu_main"
+    },
+    {
+      "bit": 0,
+      "iec_type": "BOOL",
+      "offset": 0,
+      "path": "Delay.go",
+      "retain": false,
+      "size": 1,
+      "symbol": "plcc_image_i"
+    },
+    {
+      "bit": 0,
+      "iec_type": "BOOL",
+      "offset": 0,
+      "path": "Delay.done",
+      "retain": false,
+      "size": 1,
+      "symbol": "plcc_image_q"
+    },
+    {
+      "bit": null,
+      "iec_type": "UDINT",
+      "offset": 0,
+      "path": "Delay.et_ms",
+      "retain": false,
+      "size": 4,
+      "symbol": "plcc_image_m"
+    },
+    {
+      "bit": null,
+      "iec_type": "UINT",
+      "offset": 8,
+      "path": "Counter.n",
+      "retain": false,
+      "size": 2,
+      "symbol": "plcc_image_m"
+    }
+  ]
+}

@@ -1,0 +1,180 @@
+{
+  "abi_version": 1,
+  "at_bindings": [
+    {
+      "address": "%MW0",
+      "area": "M",
+      "bit": null,
+      "byte_offset": 0,
+      "iec_type": "INT",
+      "name": "divisor",
+      "scope": "Ratio",
+      "size": 2,
+      "size_prefix": "W"
+    },
+    {
+      "address": "%QX0.0",
+      "area": "Q",
+      "bit": 0,
+      "byte_offset": 0,
+      "iec_type": "BOOL",
+      "name": "lamp",
+      "scope": "Ratio",
+      "size": 1,
+      "size_prefix": "X"
+    },
+    {
+      "address": "%MW1",
+      "area": "M",
+      "bit": null,
+      "byte_offset": 2,
+      "iec_type": "INT",
+      "name": "q",
+      "scope": "Ratio",
+      "size": 2,
+      "size_prefix": "W"
+    }
+  ],
+  "byte_order": "little",
+  "fault": {
+    "codes": [
+      {
+        "code": 1,
+        "description": "integer division by zero",
+        "name": "DIV_BY_ZERO"
+      },
+      {
+        "code": 2,
+        "description": "array subscript out of range",
+        "name": "ARRAY_BOUNDS"
+      },
+      {
+        "code": 3,
+        "description": "call through an unbound reference",
+        "name": "NULL_REFERENCE"
+      }
+    ],
+    "symbol": "plcc_fault",
+    "user_base": 65536
+  },
+  "globals": null,
+  "image": {
+    "I": {
+      "size": 0,
+      "symbol": "plcc_image_i"
+    },
+    "M": {
+      "size": 4,
+      "symbol": "plcc_image_m"
+    },
+    "Q": {
+      "size": 1,
+      "symbol": "plcc_image_q"
+    }
+  },
+  "instances": [
+    {
+      "name": "Ratio",
+      "program": "Ratio",
+      "symbol": "plcc_inst_ratio",
+      "task": "MainTask"
+    }
+  ],
+  "pointer_size": 4,
+  "retain": {
+    "regions": [],
+    "signature": 2166136261
+  },
+  "target": "wasm32-unknown-unknown",
+  "tasks": [
+    {
+      "instances": [
+        "Ratio"
+      ],
+      "interval_ns": 20000000,
+      "name": "MainTask",
+      "priority": 1,
+      "single": false
+    }
+  ],
+  "types": [
+    {
+      "align": 2,
+      "c_name": "plcc_prog_ratio_t",
+      "fields": [
+        {
+          "at": "%MW0",
+          "iec_type": "INT",
+          "name": "divisor",
+          "offset": 0,
+          "retain": false,
+          "size": 2
+        },
+        {
+          "at": "%QX0.0",
+          "iec_type": "BOOL",
+          "name": "lamp",
+          "offset": 2,
+          "retain": false,
+          "size": 1
+        },
+        {
+          "at": "%MW1",
+          "iec_type": "INT",
+          "name": "q",
+          "offset": 4,
+          "retain": false,
+          "size": 2
+        },
+        {
+          "at": null,
+          "iec_type": "INT",
+          "name": "after",
+          "offset": 6,
+          "retain": false,
+          "size": 2
+        }
+      ],
+      "iec_name": "Ratio",
+      "size": 8
+    }
+  ],
+  "variables": [
+    {
+      "bit": null,
+      "iec_type": "INT",
+      "offset": 6,
+      "path": "Ratio.after",
+      "retain": false,
+      "size": 2,
+      "symbol": "plcc_inst_ratio"
+    },
+    {
+      "bit": null,
+      "iec_type": "INT",
+      "offset": 0,
+      "path": "Ratio.divisor",
+      "retain": false,
+      "size": 2,
+      "symbol": "plcc_image_m"
+    },
+    {
+      "bit": 0,
+      "iec_type": "BOOL",
+      "offset": 0,
+      "path": "Ratio.lamp",
+      "retain": false,
+      "size": 1,
+      "symbol": "plcc_image_q"
+    },
+    {
+      "bit": null,
+      "iec_type": "INT",
+      "offset": 2,
+      "path": "Ratio.q",
+      "retain": false,
+      "size": 2,
+      "symbol": "plcc_image_m"
+    }
+  ]
+}
