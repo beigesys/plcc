@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
-/** What may be flashed to one kind of board, and where. */
+/**
+ * What may be flashed to one kind of board, and where. A profile can only
+ * narrow the built-in limits for its bootloader's USB id (floors.ts); build
+ * one from a device manifest with profileFromManifest.
+ */
 export interface DeviceProfile {
   name: string;
   /** WebUSB filters matching the board in its DFU bootloader. */

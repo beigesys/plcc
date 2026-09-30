@@ -10,12 +10,15 @@
 // what dfu-util's `--dfuse-address=<addr>:leave` does.
 //
 // Safety: every erase and write is checked against the alternate setting's
-// memory layout and the device profile before anything is sent. A sector the
-// layout marks read-only or not erasable/writable, any address below the
-// profile's `minAddress`, and anything past the layout or `maxSize` is
-// refused. There is no mass erase.
+// memory layout, the built-in limits for the bootloader's USB id (floors.ts)
+// and the device profile before anything is sent. A sector the layout marks
+// read-only or not erasable/writable, any address below the floor's or the
+// profile's minimum, and anything past the layout, the floor or `maxSize` is
+// refused, whatever the profile says. A USB id without a floor is refused.
+// There is no mass erase.
 
 import { DfuError, DfuInterface, type FunctionalDescriptor, type Sleep, State, getString, readConfigDescriptors, realSleep } from "./dfu";
+import { type Floor, floorFor } from "./floors";
 import { type MemoryLayout, type Sector, hex, parseLayout, sectorAt } from "./layout";
 import type { DeviceProfile } from "./profiles";
 import type { UsbDeviceLike } from "./usb";
@@ -73,6 +76,8 @@ export class DfuseDevice {
     readonly layoutText: string,
     readonly transferSize: number,
     readonly functional: FunctionalDescriptor | null,
+    /** The built-in limits for this bootloader, which no profile can widen. */
+    readonly floor: Floor,
   ) {}
 
   /**
@@ -87,6 +92,16 @@ export class DfuseDevice {
         `USB ${hex4(device.vendorId)}:${hex4(device.productId)} is not ${profile.name} in DFU mode ` +
           `(expected ${profile.dfuFilters.map((f) => `${hex4(f.vendorId)}:${hex4(f.productId)}`).join(" or ")})`,
       );
+    }
+    const floor = floorFor(device.vendorId, device.productId);
+    if (!floor) {
+      throw new SafetyError(
+        `webdfu has no built-in flash limits for USB ${hex4(device.vendorId)}:${hex4(device.productId)}; ` +
+          "it will not flash a bootloader until they are added in code (src/floors.ts)",
+      );
+    }
+    if (!floor.alts.includes(profile.alt)) {
+      throw new SafetyError(`alternate setting ${profile.alt} is not one webdfu writes on ${floor.name} (${floor.alts.join(", ")})`);
     }
     if (!device.opened) await device.open();
     if (!device.configuration) await device.selectConfiguration(device.configurations[0]?.configurationValue ?? 1);
@@ -106,14 +121,16 @@ export class DfuseDevice {
     }
     if (!name) throw new SafetyError("the DFU alternate setting has no name, so its memory layout is unknown: refusing to write");
     const layout = parseLayout(name);
-    if (!layout.name.startsWith(profile.layoutName)) {
-      throw new SafetyError(`alternate ${profile.alt} is "${layout.name}", not "${profile.layoutName}": refusing to write`);
+    for (const want of [profile.layoutName, floor.layoutName]) {
+      if (!layout.name.startsWith(want)) {
+        throw new SafetyError(`alternate ${profile.alt} is "${layout.name}", not "${want}": refusing to write`);
+      }
     }
     const functional = descriptors?.functional ?? null;
     const transferSize = opts.transferSize ?? functional?.transferSize ?? 2048;
     if (transferSize <= 0 || transferSize > 65535) throw new DfuError(`bad transfer size ${transferSize}`);
     const dfu = new DfuInterface(device, intf.interfaceNumber, opts.sleep ?? realSleep);
-    return new DfuseDevice(device, dfu, profile, layout, name, transferSize, functional);
+    return new DfuseDevice(device, dfu, profile, layout, name, transferSize, functional, floor);
   }
 
   /**
@@ -127,6 +144,11 @@ export class DfuseDevice {
     }
     const end = address + length;
     if (end > 0x1_0000_0000) throw new SafetyError(`the write ends past the 32-bit address space (${hex(address)} + ${length})`);
+    const f = this.floor;
+    if (address < f.minAddress) {
+      throw new SafetyError(`refusing to write at ${hex(address)}: webdfu never writes below ${hex(f.minAddress)} on ${f.name} (the bootloader)`);
+    }
+    if (end > f.end) throw new SafetyError(`the write ends at ${hex(end)}, past ${hex(f.end)}, the end of ${f.name}'s application flash`);
     if (address < p.minAddress) {
       throw new SafetyError(
         `refusing to write at ${hex(address)}: ${p.name} protects everything below ${hex(p.minAddress)} (the bootloader)`,
@@ -154,8 +176,12 @@ export class DfuseDevice {
           `${s.writable ? "" : "not writable"}${!s.writable && !s.erasable ? " and " : ""}${s.erasable ? "" : "not erasable"}`,
       );
     }
-    if (s.start < this.profile.minAddress) {
-      throw new SafetyError(`refusing to touch the sector at ${hex(s.start)}: below ${hex(this.profile.minAddress)}`);
+    const min = Math.max(this.profile.minAddress, this.floor.minAddress);
+    if (s.start < min) {
+      throw new SafetyError(`refusing to touch the sector at ${hex(s.start)}: below ${hex(min)}`);
+    }
+    if (s.start + s.size > this.floor.end) {
+      throw new SafetyError(`refusing to touch the sector at ${hex(s.start)}: past ${hex(this.floor.end)}`);
     }
   }
 
@@ -244,7 +270,9 @@ export class DfuseDevice {
    * may fail; that is expected.
    */
   async leave(address = this.profile.address): Promise<void> {
-    if (address < this.profile.minAddress) throw new SafetyError(`refusing to start the application at ${hex(address)}`);
+    if (address < this.profile.minAddress || address < this.floor.minAddress) {
+      throw new SafetyError(`refusing to start the application at ${hex(address)}`);
+    }
     await this.setAddress(address);
     await this.dfu.download(2, new Uint8Array(0));
     try {

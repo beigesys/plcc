@@ -41,7 +41,11 @@ any other file from the internet: it may be wrong or malicious. In particular:
   a sector the device's own DfuSe layout marks read-only, no mass erase). A
   manifest whose address, size or alternate setting falls outside those limits
   is rejected with an error; a USB id with no built-in entry cannot be flashed
-  at all until one is added to webdfu's code.
+  at all until one is added to webdfu's code. The limits are
+  `packages/webdfu/src/floors.ts`; `profileFromManifest(device.flash)` turns a
+  manifest into a flashing profile (narrowed to the manifest's application
+  area) or throws `ManifestError`, and `DfuseDevice` re-checks every erase and
+  write against the floor whatever profile it was given.
 - **Compiling.** A manifest selects the LLVM triple, CPU, features and image
   sizes. It never supplies code, paths or shell commands.
 - **Provenance.** `device.source` (where the file came from) and

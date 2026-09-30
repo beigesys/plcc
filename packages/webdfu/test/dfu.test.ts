@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 import { describe, expect, it } from "vitest";
 import { DfuError, DfuseDevice, type DeviceProfile, LayoutError, OPTA, type Progress, SafetyError, parseLayout, touch1200, waitForDfuDevice } from "../src/index";
+import { FLOORS } from "../src/floors";
 import { FakeDfuDevice } from "./fake-device";
 
 const noSleep = async () => {};
@@ -98,12 +99,17 @@ describe("bootloader protection", () => {
       bootloaderIntact(fake);
     }
     const { dev } = await open();
-    expect(() => dev.plan(0x0803fff0, 0x100)).toThrow(/protects everything below 0x08040000/);
+    expect(() => dev.plan(0x0803fff0, 0x100)).toThrow(/below 0x08040000/);
   });
 
   it("refuses a read-only ('a') sector even without a minimum address", async () => {
-    const lenient: DeviceProfile = { ...OPTA, name: "generic", minAddress: 0, address: 0x08000000, maxSize: 2 << 20 };
-    const { fake, dev } = await open(new FakeDfuDevice(), lenient);
+    // A test-only bootloader id whose built-in floor allows the whole flash, so
+    // only the DfuSe layout's read-only marking stands between it and sector 0.
+    FLOORS["0483:df11"] = { name: "test", minAddress: 0x08000000, end: 0x08200000, alts: [0], layoutName: "Internal Flash", runtime: [] };
+    const lenient: DeviceProfile = {
+      ...OPTA, name: "generic", dfuFilters: [{ vendorId: 0x0483, productId: 0xdf11 }], minAddress: 0, address: 0x08000000, maxSize: 2 << 20,
+    };
+    const { fake, dev } = await open(new FakeDfuDevice({ vendorId: 0x0483, productId: 0xdf11 }), lenient).finally(() => delete FLOORS["0483:df11"]);
     expect(() => dev.plan(0x08000000, 4)).toThrow(/type 'a'/);
     expect(() => dev.plan(0x0801fff0, 0x20)).toThrow(/type 'a'/);
     await expect(dev.flash(image(4), { address: 0x0801fffc })).rejects.toThrow(SafetyError);
@@ -112,10 +118,27 @@ describe("bootloader protection", () => {
     expect(dev.plan(0x08020000, 4).sectors.map((s) => s.start)).toEqual([0x08020000]);
   });
 
+  it("keeps the Opta floor whatever a hand-made profile says", async () => {
+    const wide: DeviceProfile = { ...OPTA, minAddress: 0, address: 0x08000000, maxSize: 2 << 20 };
+    const { fake, dev } = await open(new FakeDfuDevice(), wide);
+    expect(() => dev.plan(0x08020000, 4)).toThrow(/never writes below 0x08040000 on Arduino Opta/);
+    await expect(dev.flash(image(16), { address: 0x08000000 })).rejects.toThrow(SafetyError);
+    await expect(dev.leave(0x08020000)).rejects.toThrow(SafetyError);
+    bootloaderIntact(fake);
+  });
+
+  it("refuses a bootloader it has no built-in limits for", async () => {
+    const other: DeviceProfile = { ...OPTA, dfuFilters: [{ vendorId: 0x0483, productId: 0xdf11 }] };
+    await expect(DfuseDevice.open(new FakeDfuDevice({ vendorId: 0x0483, productId: 0xdf11 }), { profile: other })).rejects.toThrow(
+      /no built-in flash limits for USB 0x0483:0xdf11/,
+    );
+    await expect(DfuseDevice.open(new FakeDfuDevice(), { profile: { ...OPTA, alt: 1 } })).rejects.toThrow(/alternate setting 1 is not one/);
+  });
+
   it("refuses writes past the flash or the profile's size", async () => {
     const { dev } = await open();
     expect(() => dev.plan(0x081ffff0, 0x20)).toThrow(SafetyError);
-    expect(() => dev.plan(0x08040000, OPTA.maxSize + 1)).toThrow(/at most/);
+    expect(() => dev.plan(0x08040000, OPTA.maxSize + 1)).toThrow(/at most|past 0x08200000/);
     expect(() => dev.plan(0x90000000, 4)).toThrow(SafetyError);
     expect(() => dev.plan(0x08040000, 0)).toThrow(SafetyError);
     // The 14 sectors above the bootloader: 0x08040000-0x081FFFFF.

@@ -220,6 +220,17 @@ bootloader's alt 0 name is `@Internal Flash  2MB   /0x08000000/01*128Ka,15*128Kg
   `minAddress`.
 - `DfuseDevice.open` refuses a device whose VID:PID, alternate setting or layout
   name the profile does not describe.
+- Under every profile sit **built-in floors per bootloader USB id**
+  (`src/floors.ts`; for 2341:0364 and 35D1:0364: nothing below 0x08040000,
+  nothing past 0x08200000, alt 0, "Internal Flash"). `DfuseDevice` checks every
+  erase, write and `leave()` against the floor as well as the profile, so a
+  hand-made profile cannot widen it, and it refuses a bootloader with no floor.
+- Device manifests (docs/device-manifest.md) are untrusted data:
+  `profileFromManifest(device.flash)` builds a profile only when the manifest
+  narrows its bootloader's floor (a higher address, a smaller area, known
+  runtime ids) and throws `ManifestError` naming the problem otherwise — e.g.
+  an application address of 0x08000000, a `max_size` past the end of flash,
+  another alternate setting, or an unknown VID:PID.
 
 The 1200-baud touch is implemented by the Arduino core the runtime is built with
 (`cores/arduino/USB/USBSerial.cpp`: a 1200-baud line coding followed by DTR low
