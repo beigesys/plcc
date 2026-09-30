@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { cursorText, useEditor } from '@/state/editor'
 import { useLive } from '@/state/live'
 import { StateDot } from './StateDot'
@@ -15,10 +15,55 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 function fmtMs(ms: number | undefined): string {
   if (ms === undefined) return '—'
-  // Worker clocks are coarsened to 0.1 ms without cross-origin isolation.
-  if (ms < 0.1) return '< 0.1 ms'
+  // Worker clocks tick in 0.1 ms steps without cross-origin isolation; an
+  // average over many scans still resolves below that.
   if (ms < 1) return `${(ms * 1000).toFixed(0)} µs`
   return `${ms.toFixed(2)} ms`
+}
+
+interface Shown {
+  scanAvg: number
+  scanMax: number
+  jitterAvg: number
+  jitterMax: number
+}
+
+/**
+ * Stats arrive ~30 times a second and a single scan time flips between the
+ * worker clock's 0.1 ms steps, so the raw numbers are unreadable. Collect
+ * every sample and show the average and worst case once a second.
+ */
+function useSmoothedStats(stats: { lastScanMs: number; jitterMs: number } | null | undefined, active: boolean) {
+  const samples = useRef<{ scan: number[]; jitter: number[] }>({ scan: [], jitter: [] })
+  const [shown, setShown] = useState<Shown | null>(null)
+
+  useEffect(() => {
+    if (!active || !stats) return
+    samples.current.scan.push(stats.lastScanMs)
+    samples.current.jitter.push(stats.jitterMs)
+  }, [stats, active])
+
+  useEffect(() => {
+    if (!active) {
+      setShown(null)
+      return
+    }
+    const t = setInterval(() => {
+      const { scan, jitter } = samples.current
+      if (scan.length === 0) return
+      const avg = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length
+      setShown({
+        scanAvg: avg(scan),
+        scanMax: Math.max(...scan),
+        jitterAvg: avg(jitter),
+        jitterMax: Math.max(...jitter),
+      })
+      samples.current = { scan: [], jitter: [] }
+    }, 1000)
+    return () => clearInterval(t)
+  }, [active])
+
+  return shown
 }
 
 function SaveText() {
@@ -41,6 +86,7 @@ export function StatusBar() {
   const overrun = useLive((s) => s.overrun)
   const online = useLive((s) => s.online)
   const [now, setNow] = useState(() => Date.now())
+  const shown = useSmoothedStats(stats, mode === 'simulate')
 
   useEffect(() => {
     if (mode !== 'online') return
@@ -84,9 +130,19 @@ export function StatusBar() {
       {comms}
       {mode === 'simulate' && (
         <>
-          <Field label="Scan">{fmtMs(stats?.lastScanMs)}</Field>
-          <Field label="Period">{stats ? `${stats.periodMs} ms` : '—'}</Field>
-          <Field label="Jitter">{fmtMs(stats?.jitterMs)}</Field>
+          <span title="Average and worst case over the last second" className="flex items-center gap-5">
+            <Field label="Scan">
+              <span className="inline-block w-[15ch] tabular-nums">
+                {shown ? `${fmtMs(shown.scanAvg)} · max ${fmtMs(shown.scanMax)}` : '—'}
+              </span>
+            </Field>
+            <Field label="Period">{stats ? `${stats.periodMs} ms` : '—'}</Field>
+            <Field label="Jitter">
+              <span className="inline-block w-[15ch] tabular-nums">
+                {shown ? `${fmtMs(shown.jitterAvg)} · max ${fmtMs(shown.jitterMax)}` : '—'}
+              </span>
+            </Field>
+          </span>
           {(overrun || (stats?.overruns ?? 0) > 0) && (
             <span className="rounded-control bg-alarm-bg px-1.5 text-alarm">Scan overrun ×{stats?.overruns ?? 0}</span>
           )}
