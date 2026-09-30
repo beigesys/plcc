@@ -191,6 +191,25 @@ starting with `PLC STOP:`.
 | `mw <n> <value>` | `ok %MW<n> := <value>` | Write `%MWn` (bytes 2n, 2n+1, little-endian). `value` is taken modulo 2^16. |
 | anything else | `? commands: ...` | |
 
+### The Opta runtime
+
+The generic Opta runtime (`~/opta_plcc/runtime/runtime.ino`, built by
+`~/opta_plcc/build.sh`, which compiles with `--device arduino-opta`) implements
+manifest version 1 of `arduino-opta`. On the hardware:
+
+```
+> info
+{"device":"arduino-opta","manifest":1,"runtime":"plcc-arduino","abi":1,"image":{"I":18,"Q":1,"M":64}}
+> img
+I: 0 0 2 0 0 0 2 0 0 0 0 0 0 0 3 0 0 0  Q: 12  M: 1 0 E8 3 0 0 ... (64 bytes)
+> mw 1 1000
+ok %MW1 := 1000
+```
+
+It also refuses, at compile time, a program built for another device: with
+`PLCC_DEVICE_ID` in `plc.h` it `static_assert`s that the id is its own (and
+that `PLCC_ABI_VERSION` is its ABI).
+
 ## `[modbus]` (optional)
 
 | Key | Type | | |
@@ -323,7 +342,12 @@ passes floats in integer registers, `eabihf` in FPU registers). `softfp` and
 Opta's Arduino core builds with `-mcpu=cortex-m7 -mfloat-abi=softfp
 -mfpu=fpv5-d16`, which is exactly `cortex-m7`, `+fp-armv8d16` and `softfp`:
 REAL arithmetic is FPU instructions, and a program's object still links with
-the core's code.
+the core's code. On an Opta, `tests/fixtures/codegen/real_fpu.st` built this
+way (`vadd.f32`, `vmul.f32`, `vmla.f32`, `vsqrt.f64` in the object, no
+soft-float calls) leaves 1.5 + 2.25 = 3.75, 1.5 × 2.25 = 3.375 and
+3.75 × 3.375 + 0.5 = 13.15625 in `%MD2..%MD4` (`00 00 70 40`, `00 00 58 40`,
+`00 80 52 41` in `img`), and `%MW10` = 1316, `%MW11` = round(√2 × 1000) = 1414, as
+computed on the host.
 
 Catalog lookup: `$PLCC_DEVICES` if set, else the `devices/` directory of the
 plcc checkout the binary was built from, else the built-in copies.
