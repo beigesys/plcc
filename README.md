@@ -103,6 +103,7 @@ plcc/
 │   ├── plcc-plcopen/      PLCopen XML reader: LD/FBD/ST bodies lowered to the ST AST
 │   ├── plcc-twincat/      TwinCAT 3 reader: .plcproj, .TcPOU/.TcDUT/.TcGVL/.TcIO/.TcTTO
 │   ├── plcc-l5x/          Rockwell L5X reader: ladder + Logix ST lowered to the ST AST, Logix prelude
+│   ├── plcc-ladder/       Dialect-neutral ladder model (JSON), rung text, IEC ↔ Logix translation
 │   ├── plcc-hir/          Type checker, name resolution, IEC type hierarchy
 │   ├── plcc-codegen/      LLVM codegen via inkwell
 │   ├── plcc-stdlib/       IEC standard FBs as bundled ST source (TON, CTU, ...)
@@ -139,6 +140,7 @@ Complete IEC 61131-3:2013 (3rd edition) Structured Text:
 | Exponentiation `**` / EXPT | Full — per IEC Table 23/29 the result is ANY_REAL even for integer operands: an integer base converts to REAL (8/16-bit) or LREAL (32/64-bit, and bare literals), so `2 ** -1` is 0.5, `0 ** 0` is 1.0, `0 ** -1` is +inf; the result is converted back (rounded) when it is assigned to an integer variable (exact up to 2**53), and the type checker warns about that REAL-into-integer conversion, as CODESYS does |
 | POINTER TO, dereference (^), ADR, SIZEOF | Full — `pt^` as a value and a target, `pt^[i]`, `pt^.f`; CODESYS byte-addressed pointer arithmetic (`pt := pt + 1`) |
 | Pragmas, block/line comments | Full — `(* *)` nests, `/* */`, `//` |
+| Ladder model (`plcc-ladder`, `plcc convert --to ladder-json\|plcopen\|l5x`) | One series/parallel ladder model (JSON, stable element ids) for PLCopen LD and Rockwell RLL; readers for both, PLCopen XML writer with automatic layout, L5X writer with tags derived from use; the L5X compiler lowers RLL through it; round trips tested — see [docs/ladder-translation.md](docs/ladder-translation.md) |
 | ST emitter (`plcc convert --to st`) | Any AST (ST, PLCopen, L5X, TwinCAT) printed as canonical ST (`plcc_st::print_unit`); parse → print → parse gives the same AST on every fixture and all 559 OSCAT files. Source comments are not kept (the parser drops them); ladder rungs print with `(* rung N *)` comments |
 | Rockwell Logix 5000 (`.L5X`) | Ladder (RLL) and ST routines, UDTs, AOIs, controller/program/module tags with initial data, aliases, tasks, JSR/SBR/RET; 100+ instruction mnemonics with Logix rung-condition, prescan, status-flag and fault semantics; FBD/SFC routines and motion/PID instructions not yet — see docs/l5x.md |
 | CODESYS extensions | Bit access `x.3` / `x.%X3`, `S=` / `R=`, `REFERENCE TO` / `REF=` / `__ISVALIDREF`, calling a PROGRAM from another POU, the CODESYS parameter names of SR/RS/CTU/CTD/CTUD, `VAR_INST` — see docs/codesys-compatibility.md; not yet: PROPERTY, `ARRAY[*]` (docs/known-issues.md) |

@@ -22,8 +22,16 @@
 mod embed;
 mod error;
 mod graph;
+mod ladder_read;
+mod ladder_write;
 mod project;
 mod xml;
+
+/// PLCopen LD ↔ the ladder model of `plcc-ladder`.
+pub mod ladder {
+    pub use crate::ladder_read::read;
+    pub use crate::ladder_write::{WriteError, write};
+}
 
 pub use error::PlcOpenError;
 use plcc_st::{CompilationUnit, Span};

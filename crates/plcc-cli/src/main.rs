@@ -87,10 +87,12 @@ enum Commands {
         #[arg(long, value_name = "FILE")]
         io_map: Option<PathBuf>,
     },
-    /// Convert a program to another notation: canonical Structured Text
-    /// (`--to st`) from ST, PLCopen XML, L5X or TwinCAT inputs
+    /// Convert a program to another notation: canonical Structured Text, IEC
+    /// ladder (PLCopen XML), Rockwell ladder (L5X) or the ladder model as JSON;
+    /// dialect differences are reported as warnings (docs/ladder-translation.md)
     Convert {
-        /// Input .st, PLCopen .xml, .L5X, TwinCAT objects, .plcproj files or directories
+        /// Input .st, PLCopen .xml, .L5X, ladder .json, TwinCAT objects,
+        /// .plcproj files or directories (ladder outputs take one input)
         inputs: Vec<PathBuf>,
         /// Output notation
         #[arg(long, value_enum)]
@@ -98,6 +100,10 @@ enum Commands {
         /// Output file (default: standard output)
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Ladder dialect of `--to ladder-json` / `--to st` output (translates
+        /// between IEC and Logix ladder); plcopen is always IEC, l5x Logix
+        #[arg(long, value_enum)]
+        dialect: Option<convert::DialectOpt>,
         /// With L5X inputs and `--to st`: append the Logix prelude the
         /// generated ST calls, so the output compiles on its own
         #[arg(long)]
@@ -633,12 +639,14 @@ fn main() -> Result<()> {
             inputs,
             to,
             output,
+            dialect,
             prelude,
         } => convert::run(convert::Args {
             inputs,
             to,
             output,
             prelude,
+            dialect,
         }),
         Commands::Parse {
             input,

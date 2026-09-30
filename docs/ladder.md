@@ -169,9 +169,11 @@ them as byte offsets into the `.xml` file.
 
 ## Limitations
 
-- **SFC** is not supported yet: `<SFC>` bodies, SFC elements, and POU
-  `<actions>` / `<transitions>` are all reported as unsupported. IL bodies are
-  rejected (IL is deprecated by IEC 61131-3:2013).
+- **SFC** is not supported yet: `<SFC>` bodies, SFC elements and POU
+  `<transitions>` are reported as unsupported. POU `<actions>` with ST, LD or
+  FBD bodies compile as ACTIONs of the PROGRAM / FUNCTION_BLOCK (called by
+  name, e.g. from a box). IL bodies are rejected (IL is deprecated by IEC
+  61131-3:2013).
 - `<structValue>` initial values are rejected, because the AST has no struct
   aggregate initializer. Use field defaults on the STRUCT type instead.
 - Only the result of a function block can be read. Reading a function's other

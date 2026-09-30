@@ -31,7 +31,8 @@ use crate::error::L5xError;
 use crate::lower::AoiSig;
 use crate::model::{RoutineDef, Usage};
 use crate::operand::{self, LExpr, LKind, Seg, TagPath};
-use crate::rung::{self, Element, Instr};
+use plcc_ladder::model::{Element, Ids, Rung as LRung};
+use plcc_ladder::rll::{self as rung, Instr};
 use crate::scope::{Ctx, Dom, SpanOf, Val, conv, dom_of};
 use crate::types::{Elem, StructKind, Ty, TypeEnv};
 use crate::xml::Text;
@@ -220,16 +221,21 @@ pub(crate) fn routine_with(
     };
     w.temps.insert("lx__rc : BOOL".into());
     // Parse every rung first: labels and MCR/JMP use are routine-wide.
-    let mut parsed: Vec<(Span, Option<&Text>, Vec<Vec<Element>>)> = Vec::new();
+    // Each rung's text is read into the ladder model (plcc-ladder), and the
+    // model is what is lowered: one ladder representation for reading,
+    // converting and compiling.
+    let mut ids = Ids::new();
+    let mut parsed: Vec<(Span, Option<&Text>, Vec<LRung>)> = Vec::new();
     for rung in &r.rungs {
         let Some(text) = &rung.text else {
             parsed.push((rung.span, None, Vec::new()));
             continue;
         };
-        match rung::parse(&text.text) {
+        match rung::read(&text.text, &mut ids) {
             Ok(rs) => {
-                for seq in &rs {
-                    w.scan_meta(seq, text);
+                for g in &rs {
+                    w.scan_label(g, text);
+                    w.scan_meta(&g.elements, text);
                 }
                 parsed.push((rung.span, Some(text), rs));
             }
@@ -269,29 +275,23 @@ pub(crate) fn routine_with(
             w.body.pop_ctx();
             c.push(note);
         }
-        for seq in rs {
+        for g in rs {
             w.body.push_ctx(text.whole());
             if w.jmp {
-                if let Some(Element::Instr(first)) = seq.first()
-                    && first.name.eq_ignore_ascii_case("LBL")
-                    && let Some(op) = first.operands.first()
+                if let Some(name) = rung_label(g, text)
+                    && let Some(id) = w.labels.get(&name.trim().to_ascii_lowercase())
                 {
-                    let name = text.text[op.clone()].trim().to_ascii_lowercase();
-                    if let Some(id) = w.labels.get(&name) {
-                        w.body
-                            .s(&format!("IF lx__jmp = {id} THEN lx__jmp := 0; END_IF;\n"));
-                    }
+                    w.body
+                        .s(&format!("IF lx__jmp = {id} THEN lx__jmp := 0; END_IF;\n"));
                 }
                 w.body.s("IF lx__jmp = 0 THEN\n");
             }
-            let has_mcr = seq_has(seq, "MCR");
             if w.mcr {
                 w.body.s("lx__rc := NOT lx__mcr;\n");
             } else {
                 w.body.s("lx__rc := TRUE;\n");
             }
-            let _ = has_mcr;
-            w.seq(seq, text);
+            w.seq(&g.elements, text);
             for _ in 0..w.guards {
                 w.body.s("END_IF;\n");
             }
@@ -337,11 +337,11 @@ pub(crate) fn subroutines(
             let mut found = None;
             'rungs: for rung in &r.rungs {
                 let Some(text) = &rung.text else { continue };
-                let Ok(rs) = rung::parse(&text.text) else {
+                let Ok(rs) = rung::read(&text.text, &mut Ids::new()) else {
                     continue;
                 };
-                for seq in &rs {
-                    if let Some(tys) = ret_in_seq(ctx, seq, text) {
+                for g in &rs {
+                    if let Some(tys) = ret_in_seq(ctx, &g.elements, text) {
                         found = Some(tys);
                         break 'rungs;
                     }
@@ -356,10 +356,29 @@ pub(crate) fn subroutines(
     subs
 }
 
+/// A rung's label: its `LBL` (read into the model's `label`), or a first
+/// instruction `lbl(...)` spelled in another case.
+fn rung_label(g: &LRung, text: &Text) -> Option<String> {
+    if let Some(l) = &g.label {
+        return Some(l.clone());
+    }
+    let first = rung::instr_of(g.elements.first()?)?;
+    if !first.name.eq_ignore_ascii_case("LBL") {
+        return None;
+    }
+    let op = first.operands.first()?;
+    Some(text.text[op.clone()].to_string())
+}
+
 fn ret_in_seq(ctx: &Ctx, seq: &[Element], text: &Text) -> Option<Vec<Ty>> {
     for e in seq {
+        let ins = rung::instr_of(e);
         match e {
-            Element::Instr(i) if i.name.eq_ignore_ascii_case("RET") && !i.operands.is_empty() => {
+            _ if ins
+                .as_ref()
+                .is_some_and(|i| i.name.eq_ignore_ascii_case("RET") && !i.operands.is_empty()) =>
+            {
+                let i = ins?;
                 let mut tys = Vec::new();
                 for op in &i.operands {
                     let ex = operand::parse_expr(&text.text, op.clone()).ok()?;
@@ -376,8 +395,8 @@ fn ret_in_seq(ctx: &Ctx, seq: &[Element], text: &Text) -> Option<Vec<Ty>> {
                 }
                 return Some(tys);
             }
-            Element::Branch(legs, _) => {
-                for l in legs {
+            Element::Branch(b) => {
+                for l in &b.legs {
                     if let Some(t) = ret_in_seq(ctx, l, text) {
                         return Some(t);
                     }
@@ -399,10 +418,13 @@ fn sbr_params(ctx: &Ctx, routines: &[RoutineDef]) -> HashMap<String, Vec<(String
         let Some(text) = r.rungs.first().and_then(|g| g.text.as_ref()) else {
             continue;
         };
-        let Ok(rs) = rung::parse(&text.text) else {
+        let Ok(rs) = rung::read(&text.text, &mut Ids::new()) else {
             continue;
         };
-        let Some(Element::Instr(first)) = rs.first().and_then(|s| s.first()) else {
+        let Some(g) = rs.first().filter(|g| g.label.is_none()) else {
+            continue;
+        };
+        let Some(first) = g.elements.first().and_then(rung::instr_of) else {
             continue;
         };
         if !first.name.eq_ignore_ascii_case("SBR") {
@@ -421,39 +443,47 @@ fn sbr_params(ctx: &Ctx, routines: &[RoutineDef]) -> HashMap<String, Vec<(String
     map
 }
 
-fn seq_has(seq: &[Element], name: &str) -> bool {
-    seq.iter().any(|e| match e {
-        Element::Instr(i) => i.name.eq_ignore_ascii_case(name),
-        Element::Branch(legs, _) => legs.iter().any(|l| seq_has(l, name)),
-    })
-}
-
 impl<'a, 'x> R<'a, 'x> {
+    fn add_label(&mut self, i: &Instr, text: &Text) {
+        if let Some(op) = i.operands.first() {
+            let name = text.text[op.clone()].trim().to_ascii_lowercase();
+            let id = self.labels.len() as u32 + 1;
+            if self.labels.insert(name, id).is_some() {
+                self.errors.push(L5xError::new(
+                    "label is defined twice in this routine",
+                    text.span(op.clone()),
+                ));
+            }
+        }
+    }
+
+    /// The rung's label (its leading `LBL`, which the model keeps apart).
+    fn scan_label(&mut self, g: &LRung, text: &Text) {
+        if let Some(src) = &g.label_src {
+            let i = Instr {
+                name: "LBL".into(),
+                name_span: src.name.clone(),
+                operands: src.operands.clone(),
+                span: src.span.clone(),
+            };
+            self.add_label(&i, text);
+        }
+    }
+
     fn scan_meta(&mut self, seq: &[Element], text: &Text) {
         for e in seq {
-            match e {
-                Element::Instr(i) => match i.name.to_ascii_uppercase().as_str() {
-                    "LBL" => {
-                        if let Some(op) = i.operands.first() {
-                            let name = text.text[op.clone()].trim().to_ascii_lowercase();
-                            let id = self.labels.len() as u32 + 1;
-                            if self.labels.insert(name, id).is_some() {
-                                self.errors.push(L5xError::new(
-                                    "label is defined twice in this routine",
-                                    text.span(op.clone()),
-                                ));
-                            }
-                        }
-                    }
-                    "JMP" => self.jmp = true,
-                    "MCR" => self.mcr = true,
-                    _ => {}
-                },
-                Element::Branch(legs, _) => {
-                    for l in legs {
-                        self.scan_meta(l, text);
-                    }
+            if let Element::Branch(b) = e {
+                for l in &b.legs {
+                    self.scan_meta(l, text);
                 }
+                continue;
+            }
+            let Some(i) = rung::instr_of(e) else { continue };
+            match i.name.to_ascii_uppercase().as_str() {
+                "LBL" => self.add_label(&i, text),
+                "JMP" => self.jmp = true,
+                "MCR" => self.mcr = true,
+                _ => {}
             }
         }
     }
@@ -461,17 +491,9 @@ impl<'a, 'x> R<'a, 'x> {
     fn seq(&mut self, seq: &[Element], text: &Text) {
         for e in seq {
             match e {
-                Element::Instr(i) => {
-                    let span = text.span(i.span.clone());
-                    self.body.push_ctx(span);
-                    self.pre.push_ctx(span);
-                    if let Err(err) = self.instr(i, text) {
-                        self.errors.push(err);
-                    }
-                    self.pre.pop_ctx();
-                    self.body.pop_ctx();
-                }
-                Element::Branch(legs, r) => {
+                Element::Branch(b) => {
+                    let legs = &b.legs;
+                    let r = b.src.as_ref().map(|s| s.span.clone()).unwrap_or(0..0);
                     self.depth += 1;
                     let d = self.depth;
                     self.temps.insert(format!("lx__bs{d} : BOOL"));
@@ -489,6 +511,18 @@ impl<'a, 'x> R<'a, 'x> {
                     self.body.s(&format!("lx__rc := lx__bo{d};\n"));
                     self.body.pop_ctx();
                     self.depth -= 1;
+                }
+                _ => {
+                    // Rung text always yields an instruction with its ranges.
+                    let Some(i) = rung::instr_of(e) else { continue };
+                    let span = text.span(i.span.clone());
+                    self.body.push_ctx(span);
+                    self.pre.push_ctx(span);
+                    if let Err(err) = self.instr(&i, text) {
+                        self.errors.push(err);
+                    }
+                    self.pre.pop_ctx();
+                    self.body.pop_ctx();
                 }
             }
         }

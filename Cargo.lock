@@ -402,11 +402,13 @@ dependencies = [
  "plcc-codegen",
  "plcc-hir",
  "plcc-l5x",
+ "plcc-ladder",
  "plcc-plcopen",
  "plcc-runtime",
  "plcc-st",
  "plcc-stdlib",
  "plcc-twincat",
+ "roxmltree",
  "serde_json",
 ]
 
@@ -455,6 +457,7 @@ dependencies = [
  "miette",
  "plcc-codegen",
  "plcc-hir",
+ "plcc-ladder",
  "plcc-st",
  "plcc-stdlib",
  "roxmltree",
@@ -465,6 +468,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "plcc-ladder"
+version = "0.1.0"
+dependencies = [
+ "plcc-st",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "plcc-plcopen"
 version = "0.1.0"
 dependencies = [
@@ -472,6 +485,7 @@ dependencies = [
  "miette",
  "plcc-codegen",
  "plcc-hir",
+ "plcc-ladder",
  "plcc-st",
  "plcc-stdlib",
  "roxmltree",
