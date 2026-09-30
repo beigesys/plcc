@@ -296,9 +296,11 @@ an old browser), projects are kept in memory and the status bar says so.
 4. Select StartPB and press Force ON then Force OFF. Relay 1 should seal in.
    Force StopPB ON to drop it.
 
-The WebSerial transport is untested against real hardware. The protocol layer
-(`src/serial/`) is tested against `FakeOptaTransport`, which reproduces the
-firmware's `img` / `mw` output byte for byte, including the unpadded hex.
+The protocol layer (`src/serial/`) is tested against `FakeConsoleTransport`,
+which reproduces the firmware's `info` / `img` / `mw` output byte for byte,
+including the unpadded hex (checked against lines recorded from an Opta). Detect
+and an Online session were also run against a real Opta through a Node tty
+transport; the WebSerial transport itself is still untested against hardware.
 
 ## Placeholders in this phase
 

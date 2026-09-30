@@ -283,3 +283,30 @@ describe('info: which device is on the port', () => {
     expect(matchCatalog({ ...id, device: 'unknown-board' }).entry).toBeUndefined()
   })
 })
+
+/** Lines recorded from an Opta running the generic runtime (chaser_io.st), 2026-09-30. */
+const HW_INFO = '{"device":"arduino-opta","manifest":1,"runtime":"plcc-arduino","abi":1,"image":{"I":18,"Q":1,"M":64}}'
+const HW_IMG =
+  'I: 0 0 2 0 0 0 2 0 0 0 0 0 0 0 3 0 0 0  Q: 12  M: 1 0 E8 3' + ' 0'.repeat(60)
+const HW_HELP = '? commands: info | img | mw <n> <value>'
+
+describe('the real runtime', () => {
+  it('prints exactly what the fake console prints', () => {
+    expect(formatInfoLine(ARDUINO_OPTA)).toBe(HW_INFO)
+    const f = parseImgLine(HW_IMG)!
+    expect(formatImgLine(f)).toBe(HW_IMG)
+    expect(new FakeOptaTransport()['handle']('bogus')).toBe(HW_HELP)
+  })
+
+  it('decodes a recorded info and img against the catalog manifest', () => {
+    const det = matchCatalog(parseInfoLine(HW_INFO)!)
+    expect(det.entry?.id).toBe('arduino-opta')
+    expect(det.check).toEqual({ mismatch: [], notes: [] })
+    const f = parseImgLine(HW_IMG)!
+    expect([f.I.length, f.Q.length, f.M.length]).toEqual([18, 1, 64])
+    // chaser_io.st: chase on (%MX0.0), period 1000 ms (%MW1), relay 2 and the LED lit.
+    expect(f.M[0] & 1).toBe(1)
+    expect(f.M[2] | (f.M[3] << 8)).toBe(1000)
+    expect(f.Q[0]).toBe(0x12)
+  })
+})
