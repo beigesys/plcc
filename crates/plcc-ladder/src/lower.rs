@@ -392,6 +392,19 @@ impl L<'_> {
                 }
                 p
             }
+            Element::Branch(b) if b.legs.iter().all(|l| pure(l)) => {
+                // Only contacts: nothing in a leg writes, so the branch is
+                // `p AND (leg OR leg ...)` and needs no latch.
+                let mut acc: Option<Expression> = None;
+                for leg in &b.legs {
+                    let r = self.series(leg, lit(true));
+                    acc = Some(match acc {
+                        None => r,
+                        Some(a) => or(a, r),
+                    });
+                }
+                and(p, acc.unwrap_or_else(|| lit(true)))
+            }
             Element::Branch(b) => {
                 let readers = b.legs.len();
                 let at = if readers > 1 {
@@ -724,6 +737,16 @@ impl L<'_> {
             args: call_args,
         }))
     }
+}
+
+/// A series of contacts only (nested branches of contacts included): it
+/// reads, it writes nothing.
+fn pure(series: &[Element]) -> bool {
+    series.iter().all(|e| match e {
+        Element::Contact(_) => true,
+        Element::Branch(b) => b.legs.iter().all(|l| pure(l)),
+        _ => false,
+    })
 }
 
 fn strip_spans_expr(e: Expression) -> Expression {

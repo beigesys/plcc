@@ -141,6 +141,8 @@ Complete IEC 61131-3:2013 (3rd edition) Structured Text:
 | POINTER TO, dereference (^), ADR, SIZEOF | Full — `pt^` as a value and a target, `pt^[i]`, `pt^.f`; CODESYS byte-addressed pointer arithmetic (`pt := pt + 1`) |
 | Pragmas, block/line comments | Full — `(* *)` nests, `/* */`, `//` |
 | Ladder model (`plcc-ladder`, `plcc convert --to ladder-json\|plcopen\|l5x`) | One series/parallel ladder model (JSON, stable element ids) for PLCopen LD and Rockwell RLL; readers for both, PLCopen XML writer with automatic layout, L5X writer with tags derived from use; the L5X compiler lowers RLL through it; round trips tested — see [docs/ladder-translation.md](docs/ladder-translation.md) |
+| IEC LD ↔ Logix RLL (`plcc convert --to l5x` / `--to plcopen`, `--dialect`) | Element-by-element translation with a mapping table (TIMER/COUNTER ↔ TON/TOF/RTO/CTU/CTD instances, ms ↔ TIME, one-shots with their storage bits, compares, math, CPT/CMP with Logix precedence); a warning names every element whose behaviour differs; what has no counterpart is reported NOT TRANSLATED. Translated programs are JIT-checked against the originals |
+| ST → ladder (`plcc convert x.st --to plcopen`) | Boolean assignments as contacts and coils, set/reset coils, compare boxes, FB calls as boxes, math/MOVE boxes; everything else in ST boxes; exact (JIT-checked on the fixtures and a generated corpus) |
 | ST emitter (`plcc convert --to st`) | Any AST (ST, PLCopen, L5X, TwinCAT) printed as canonical ST (`plcc_st::print_unit`); parse → print → parse gives the same AST on every fixture and all 559 OSCAT files. Source comments are not kept (the parser drops them); ladder rungs print with `(* rung N *)` comments |
 | Rockwell Logix 5000 (`.L5X`) | Ladder (RLL) and ST routines, UDTs, AOIs, controller/program/module tags with initial data, aliases, tasks, JSR/SBR/RET; 100+ instruction mnemonics with Logix rung-condition, prescan, status-flag and fault semantics; FBD/SFC routines and motion/PID instructions not yet — see docs/l5x.md |
 | CODESYS extensions | Bit access `x.3` / `x.%X3`, `S=` / `R=`, `REFERENCE TO` / `REF=` / `__ISVALIDREF`, calling a PROGRAM from another POU, the CODESYS parameter names of SR/RS/CTU/CTD/CTUD, `VAR_INST` — see docs/codesys-compatibility.md; not yet: PROPERTY, `ARRAY[*]` (docs/known-issues.md) |
@@ -165,6 +167,10 @@ Complete IEC 61131-3:2013 (3rd edition) Structured Text:
 **10 standard function blocks**, per IEC 61131-3 section 2.5.2:
 
 SR, RS, R_TRIG, F_TRIG, CTU, CTD, CTUD, TON, TOF, TP
+
+plus **RTO**, a retentive on-delay timer (IN, R, PT → Q, ET) that is not IEC
+standard: the IEC counterpart of the Logix RTO instruction, used when ladder is
+translated from Logix (docs/ladder-translation.md).
 
 These are written in ST (`crates/plcc-stdlib/st/`), embedded in the compiler with
 `include_str!`, and compiled into your module alongside your own POUs. There is no

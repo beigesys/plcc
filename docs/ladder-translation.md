@@ -311,3 +311,46 @@ each.
 | RLL text → model → RLL text | identical text for canonical input (105 of the 108 rungs in the fixtures are canonical); any input comes back canonical and stable, equal up to whitespace | `rung_text_round_trip` |
 | L5X → model → L5X → model | the same model (ids renumbered in order); the written L5X compiles and runs like the original (fixtures without UDTs, AOIs or event tasks) | `l5x_round_trip` |
 | PLCopen LD → model → ST | runs like the direct LD lowering | `plcopen_model_path_runs_like_the_direct_lowering` |
+| LD → ST → LD | the same rungs for rungs in canonical form (below); any LD comes back running the same | `ld_to_st_to_ld_is_identity_for_canonical_rungs`, `ld_to_st_to_ld_runs_like_ld` |
+| ST → LD → ST | runs like the input (drawable statements as rungs, the rest in ST boxes) | `st_fixtures_convert_exactly`, `generated_programs_convert_exactly` |
+| IEC ↔ Logix | runs like the original, up to the differences each warning names | `iec_to_logix_runs_alike`, `logix_to_iec_runs_alike` |
+| model → PLCopen XML | follows the TC6 v2.01 element order, unique `localId`s, every connection to an element of its body with its end points, a `relPosition` on every connection point; reads back without errors | `written_plcopen_follows_the_schema` |
+
+**Canonical form** (for LD → ST → LD). The IEC lowering prints a canonical
+rung as one statement, or one FB call and the copies of its outputs, and
+`from_st` draws that back as the same rung:
+
+- contacts and branches of contacts, then **one** coil:
+  `x := a AND NOT b;`, `y := (a OR (b AND NOT c)) AND d;` (a branch of
+  contacts needs no latch, so it prints as a parenthesized OR);
+- contacts, then one set or reset coil: `IF c THEN x := TRUE; END_IF;`;
+- contacts into the power input of a standard FB (IN, CU, CD, CLK, S1, S) whose
+  other inputs are values, whose outputs go to variables, with at most one coil
+  on its power output (Q):
+  `T1(IN := a, PT := T#100ms); Elapsed := T1.ET; Done := T1.Q;`.
+
+Not canonical, and what they come back as (running the same): several coils in
+one rung (one rung per coil); a branch holding coils or boxes, which latches
+the power in a hidden `_ld_p<id>` (a rung assigning it); a compare box
+(`x := a > b` comes back as a compare box writing `ld_cmp<n>` and a contact on
+it); a negated coil (`x := NOT y` comes back as a normally closed contact);
+edge contacts and coils (their hidden `R_TRIG` calls); an FB with power on EN
+(an `IF` around the call becomes an ST box); jumps (the `_ld_jmp` logic).
+
+## Limits
+
+- **PLCopen compiles through its own LD lowering**, not the model (the model
+  path is checked against it); FBD networks are not in the model (an FBD body
+  is an ST box).
+- **Not in the model**: data types, configurations and tasks, Logix UDTs, AOIs,
+  modules and tasks (L5X output schedules every program in one continuous
+  task); graphical positions (the writer lays out afresh).
+- **Non-series-parallel LD networks** are ST boxes (with the ST they lower to);
+  editing such a rung in a ladder editor means editing ST.
+- **L5X output** is checked by plcc's reader, not by Studio 5000; undeclared
+  indexed tags (`a[3]`) cannot be sized and must be declared.
+- **Translation** is per element; what has no counterpart is NOT TRANSLATED
+  (an ST box with a comment), never dropped. Logix status flags (S:V, S:Z,
+  S:N), module tags, MCR, file/array, FIFO and string instructions, AOIs and
+  JSR parameters have no IEC ladder form here; neither do IEC TP, SR, RS,
+  CTUD, LIMIT and user FBs in Logix.
