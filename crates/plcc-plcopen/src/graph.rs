@@ -575,6 +575,8 @@ struct Graph<'l, 's> {
     /// ENO values of FB blocks that have been called.
     eno: HashMap<usize, Expression>,
     labels: HashMap<String, i128>,
+    /// `rung` (LD) or `network` (FBD), for annotations.
+    unit_word: &'static str,
 }
 
 pub(crate) fn lower_body(
@@ -621,6 +623,7 @@ pub(crate) fn lower_body(
         declared,
         eno: HashMap::new(),
         labels: HashMap::new(),
+        unit_word: if xml::name(body) == "LD" { "rung" } else { "network" },
     };
     g.count_fanout();
     if g.lower.errors.len() > before {
@@ -830,7 +833,14 @@ impl Graph<'_, '_> {
             ));
         }
         let mut pass = Vec::new();
-        for net in &nets {
+        for (ni, net) in nets.iter().enumerate() {
+            if self.lower.annotate {
+                let span = net.first().map_or(body_span, |&i| self.elems[i].span);
+                pass.push(stmt(
+                    StatementKind::Comment(format!("{} {}", self.unit_word, ni + 1)),
+                    span,
+                ));
+            }
             if let [only] = net.as_slice()
                 && let Kind::Label { label } = &self.elems[*only].kind
             {

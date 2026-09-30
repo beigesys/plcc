@@ -6033,7 +6033,7 @@ impl<'ctx> Compiler<'ctx> {
             StatementKind::Return { value } => {
                 self.compile_return(value.as_ref(), function)?;
             }
-            StatementKind::Empty => {}
+            StatementKind::Empty | StatementKind::Comment(_) => {}
         }
         Ok(())
     }

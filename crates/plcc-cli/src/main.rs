@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+mod convert;
+
 use clap::{Parser, Subcommand};
 use miette::{IntoDiagnostic, NamedSource, Result};
 use std::path::PathBuf;
@@ -85,6 +87,22 @@ enum Commands {
         #[arg(long, value_name = "FILE")]
         io_map: Option<PathBuf>,
     },
+    /// Convert a program to another notation: canonical Structured Text
+    /// (`--to st`) from ST, PLCopen XML, L5X or TwinCAT inputs
+    Convert {
+        /// Input .st, PLCopen .xml, .L5X, TwinCAT objects, .plcproj files or directories
+        inputs: Vec<PathBuf>,
+        /// Output notation
+        #[arg(long, value_enum)]
+        to: convert::Format,
+        /// Output file (default: standard output)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// With L5X inputs and `--to st`: append the Logix prelude the
+        /// generated ST calls, so the output compiles on its own
+        #[arg(long)]
+        prelude: bool,
+    },
     /// Compile and JIT-run ST programs, optionally with Modbus TCP for SCADA
     Sim {
         /// Input .st, PLCopen .xml, TwinCAT objects (.TcPOU/.TcDUT/.TcGVL/.TcIO/.TcTTO), .plcproj files or directories
@@ -145,6 +163,17 @@ fn parse_file(
     source: &str,
     l5x: &plcc_l5x::Options,
 ) -> (plcc_st::ast::CompilationUnit, Vec<miette::Report>, bool) {
+    parse_file_with(path, source, l5x, false)
+}
+
+/// [`parse_file`], optionally with ladder rungs annotated by comments
+/// (`plcc convert --to st`).
+fn parse_file_with(
+    path: &std::path::Path,
+    source: &str,
+    l5x: &plcc_l5x::Options,
+    annotate: bool,
+) -> (plcc_st::ast::CompilationUnit, Vec<miette::Report>, bool) {
     if plcc_twincat::is_object_file(path) || plcc_twincat::is_twincat_object(source) {
         let (unit, errors) = plcc_twincat::parse(source);
         let reports: Vec<miette::Report> = errors.into_iter().map(miette::Report::new).collect();
@@ -152,7 +181,11 @@ fn parse_file(
         return (unit, reports, failed);
     }
     if is_l5x_input(path, source) {
-        let (unit, diags) = plcc_l5x::parse_with(source, l5x);
+        let (unit, diags) = if annotate {
+            plcc_l5x::parse_annotated(source, l5x)
+        } else {
+            plcc_l5x::parse_with(source, l5x)
+        };
         let failed = diags.iter().any(|d| !d.is_warning());
         return (
             unit,
@@ -165,7 +198,10 @@ fn parse_file(
         .is_some_and(|e| e.eq_ignore_ascii_case("xml"))
         || plcc_plcopen::is_plcopen(source);
     let (unit, reports): (_, Vec<miette::Report>) = if is_xml {
-        let (unit, errors) = plcc_plcopen::parse(source);
+        let opts = plcc_plcopen::Options {
+            annotate_rungs: annotate,
+        };
+        let (unit, errors) = plcc_plcopen::parse_with(source, &opts);
         (unit, errors.into_iter().map(miette::Report::new).collect())
     } else {
         let (unit, errors) = plcc_st::parse(source);
@@ -593,6 +629,17 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Convert {
+            inputs,
+            to,
+            output,
+            prelude,
+        } => convert::run(convert::Args {
+            inputs,
+            to,
+            output,
+            prelude,
+        }),
         Commands::Parse {
             input,
             dump_ast,

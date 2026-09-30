@@ -158,6 +158,10 @@ after the network it sits in has run. `return` becomes
 `_ld_jmp`. They appear in `--emit-header` / `--emit-symbols` like any other
 variable.
 
+**Printing.** `plcc convert plant.xml --to st` prints the lowered ST, each
+network's statements after a `(* rung N *)` comment (`network N` in FBD),
+networks numbered from 1 in execution order.
+
 **Spans.** Every generated statement and expression carries the span of the XML
 element it came from: a coil's assignment points at the `<coil>`, and an
 identifier points into the `<variable>` text. `plcc parse --dump-ast` shows

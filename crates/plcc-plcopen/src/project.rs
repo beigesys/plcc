@@ -14,6 +14,8 @@ use plcc_st::ast::*;
 pub(crate) struct Lower<'s> {
     pub src: &'s str,
     pub errors: Vec<PlcOpenError>,
+    /// Put a `rung N` / `network N` comment before each network's statements.
+    pub annotate: bool,
 }
 
 /// Which kind of POU a body belongs to (graph lowering needs to know whether
@@ -60,6 +62,7 @@ impl<'s> Lower<'s> {
         Lower {
             src,
             errors: Vec::new(),
+            annotate: false,
         }
     }
 

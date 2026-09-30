@@ -96,6 +96,8 @@ pub(crate) enum RoutineKind {
 pub(crate) struct Rung {
     pub number: Option<u32>,
     pub text: Option<Text>,
+    /// The rung's `<Comment>` (documentation only).
+    pub comment: Option<String>,
     pub span: Span,
 }
 
@@ -472,6 +474,9 @@ impl<'s> Reader<'s> {
                     rungs.push(Rung {
                         number: xml::attr(rung, "Number").and_then(|n| n.trim().parse().ok()),
                         text: xml::child(rung, "Text").map(|t| Text::content(self.src, t)),
+                        comment: xml::child(rung, "Comment")
+                            .map(|t| Text::content(self.src, t).text.trim().to_string())
+                            .filter(|c| !c.is_empty()),
                         span: xml::tag_span(self.src, rung),
                     });
                 }

@@ -44,6 +44,10 @@ pub(crate) struct Shared<'a> {
     pub aois: &'a HashMap<String, AoiSig>,
     /// String helpers generated on demand.
     pub strings: &'a crate::strings::Helpers,
+    /// Rung annotations (`plcc convert`): when set, each rung is preceded by
+    /// a `__PLCC_COMMENT(k);` marker whose text is entry `k`, turned into a
+    /// comment statement after parsing.
+    pub comments: Option<&'a std::cell::RefCell<Vec<String>>>,
 }
 
 pub(crate) struct RoutineOut {
@@ -248,8 +252,23 @@ pub(crate) fn routine_with(
         w.temps.insert("lx__jmp : DINT".into());
         w.body.s("lx__jmp := 0;\nREPEAT\n");
     }
-    for (span, text, rs) in &parsed {
+    for (k, (span, text, rs)) in parsed.iter().enumerate() {
         let Some(text) = text else { continue };
+        if let Some(c) = sh.comments {
+            let rung = &r.rungs[k];
+            let mut note = format!("rung {}", rung.number.unwrap_or(k as u32));
+            if let Some(doc) = &rung.comment {
+                note.push_str(": ");
+                note.push_str(doc);
+            }
+            note.push('\n');
+            note.push_str(text.text.trim());
+            let mut c = c.borrow_mut();
+            w.body.push_ctx(text.whole());
+            w.body.s(&format!("__PLCC_COMMENT({});\n", c.len()));
+            w.body.pop_ctx();
+            c.push(note);
+        }
         for seq in rs {
             w.body.push_ctx(text.whole());
             if w.jmp {

@@ -133,9 +133,15 @@ pub fn is_l5x(source: &str) -> bool {
 
 /// Lower an L5X file to Structured Text: the generated text, its span map, and
 /// the diagnostics found on the way.
-type Lowered = (emit::Out, Vec<L5xError>, types::TypeEnv, strings::Helpers);
+type Lowered = (
+    emit::Out,
+    Vec<L5xError>,
+    types::TypeEnv,
+    strings::Helpers,
+    Vec<String>,
+);
 
-fn lower(source: &str, opts: &Options) -> Result<Lowered, Vec<L5xError>> {
+fn lower(source: &str, opts: &Options, annotate: bool) -> Result<Lowered, Vec<L5xError>> {
     let opt = roxmltree::ParsingOptions {
         allow_dtd: false,
         ..Default::default()
@@ -167,15 +173,17 @@ fn lower(source: &str, opts: &Options) -> Result<Lowered, Vec<L5xError>> {
     let project = reader.project(root);
     let mut lw = lower::Lower::new(source, opts.io_map.clone());
     lw.errors = reader.errors;
+    lw.annotate = annotate;
     let out = lw.project(&project);
-    Ok((out, lw.errors, lw.env, lw.strings))
+    let comments = lw.comments.take();
+    Ok((out, lw.errors, lw.env, lw.strings, comments))
 }
 
 /// The Structured Text an L5X file lowers to (for inspection:
 /// `plcc parse --dump-st`), with the diagnostics of the lowering.
 pub fn to_st(source: &str, opts: &Options) -> (String, Vec<L5xError>) {
-    match lower(source, opts) {
-        Ok((out, errs, _, _)) => (out.text, errs),
+    match lower(source, opts, false) {
+        Ok((out, errs, _, _, _)) => (out.text, errs),
         Err(errs) => (String::new(), errs),
     }
 }
@@ -187,11 +195,23 @@ pub fn parse(source: &str) -> (CompilationUnit, Vec<L5xError>) {
 
 /// [`parse`] with options (I/O map).
 pub fn parse_with(source: &str, opts: &Options) -> (CompilationUnit, Vec<L5xError>) {
+    parse_impl(source, opts, false)
+}
+
+/// [`parse_with`] for printing the lowered ST (`plcc convert --to st`): each
+/// rung's statements are preceded by a comment statement with the rung
+/// number, its documentation and its neutral text. Compiling the result is
+/// the same as compiling [`parse_with`]'s.
+pub fn parse_annotated(source: &str, opts: &Options) -> (CompilationUnit, Vec<L5xError>) {
+    parse_impl(source, opts, true)
+}
+
+fn parse_impl(source: &str, opts: &Options, annotate: bool) -> (CompilationUnit, Vec<L5xError>) {
     let empty = CompilationUnit {
         declarations: Vec::new(),
         span: Span::new(0, source.len()),
     };
-    let (out, mut errors, env, strings) = match lower(source, opts) {
+    let (out, mut errors, env, strings, comments) = match lower(source, opts, annotate) {
         Ok(x) => x,
         Err(errs) => return (empty, errs),
     };
@@ -213,6 +233,9 @@ pub fn parse_with(source: &str, opts: &Options) -> (CompilationUnit, Vec<L5xErro
         )));
     }
     let mut declarations = unit.declarations;
+    if !comments.is_empty() {
+        comment_markers(&mut declarations, &comments);
+    }
     let before = strings.names();
     stsem::apply(&mut declarations, &env, &strings);
     // String helpers first needed by the AST pass (ST string compares and
@@ -232,6 +255,76 @@ pub fn parse_with(source: &str, opts: &Options) -> (CompilationUnit, Vec<L5xErro
         },
         errors,
     )
+}
+
+/// Replace the `__PLCC_COMMENT(k);` markers of an annotated lowering with
+/// comment statements.
+fn comment_markers(decls: &mut [plcc_st::Declaration], comments: &[String]) {
+    use plcc_st::{ExpressionKind, Statement, StatementKind};
+    fn stmts(list: &mut [Statement], comments: &[String]) {
+        for s in list {
+            match &mut s.kind {
+                StatementKind::FunctionCall { callee, args } => {
+                    if let ExpressionKind::Identifier(id) = &callee.kind
+                        && id.name == "__PLCC_COMMENT"
+                        && let [a] = args.as_slice()
+                        && let ExpressionKind::IntegerLiteral(k) = a.value.kind
+                        && let Some(text) = comments.get(k as usize)
+                    {
+                        s.kind = StatementKind::Comment(text.clone());
+                    }
+                }
+                StatementKind::If {
+                    then_body,
+                    elsif_branches,
+                    else_body,
+                    ..
+                } => {
+                    stmts(then_body, comments);
+                    for b in elsif_branches {
+                        stmts(&mut b.body, comments);
+                    }
+                    if let Some(e) = else_body {
+                        stmts(e, comments);
+                    }
+                }
+                StatementKind::Case {
+                    branches,
+                    else_body,
+                    ..
+                } => {
+                    for b in branches {
+                        stmts(&mut b.body, comments);
+                    }
+                    if let Some(e) = else_body {
+                        stmts(e, comments);
+                    }
+                }
+                StatementKind::For { body, .. }
+                | StatementKind::While { body, .. }
+                | StatementKind::Repeat { body, .. } => stmts(body, comments),
+                _ => {}
+            }
+        }
+    }
+    for d in decls {
+        match d {
+            plcc_st::Declaration::Program(p) => {
+                stmts(&mut p.body, comments);
+                for m in &mut p.methods {
+                    stmts(&mut m.body, comments);
+                }
+            }
+            plcc_st::Declaration::FunctionBlock(f) => {
+                stmts(&mut f.body, comments);
+                for m in &mut f.methods {
+                    stmts(&mut m.body, comments);
+                }
+            }
+            plcc_st::Declaration::Function(f) => stmts(&mut f.body, comments),
+            _ => {}
+        }
+    }
 }
 
 fn byte_offset(src: &str, pos: roxmltree::TextPos) -> usize {
