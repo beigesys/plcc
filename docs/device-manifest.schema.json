@@ -1,0 +1,623 @@
+{
+  "$defs": {
+    "Console": {
+      "additionalProperties": false,
+      "description": "`[console]`: the runtime's line-oriented text console.",
+      "properties": {
+        "baud": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "commands": {
+          "description": "Commands the runtime answers (docs/device-manifest.md, \"Console protocol\").",
+          "items": {
+            "$ref": "#/$defs/ConsoleCommand"
+          },
+          "type": "array"
+        },
+        "img_format": {
+          "$ref": "#/$defs/ImgFormat",
+          "description": "Format of the `img` reply."
+        },
+        "img_m_bytes": {
+          "description": "`%M` bytes the `img` reply includes (from byte 0).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "transport": {
+          "$ref": "#/$defs/ConsoleTransport"
+        }
+      },
+      "required": [
+        "transport",
+        "baud",
+        "commands",
+        "img_format",
+        "img_m_bytes"
+      ],
+      "type": "object"
+    },
+    "ConsoleCommand": {
+      "oneOf": [
+        {
+          "const": "info",
+          "description": "`info`: one line of JSON identifying the runtime.",
+          "type": "string"
+        },
+        {
+          "const": "img",
+          "description": "`img`: the process image.",
+          "type": "string"
+        },
+        {
+          "const": "mw",
+          "description": "`mw <n> <value>`: write `%MWn`.",
+          "type": "string"
+        }
+      ]
+    },
+    "ConsoleTransport": {
+      "oneOf": [
+        {
+          "const": "webserial",
+          "description": "A USB CDC serial port (WebSerial in the browser).",
+          "type": "string"
+        }
+      ]
+    },
+    "DeviceInfo": {
+      "additionalProperties": false,
+      "description": "`[device]`: identity and versions.",
+      "properties": {
+        "description": {
+          "default": "",
+          "type": "string"
+        },
+        "id": {
+          "description": "Stable id, lowercase letters, digits and `-` (`arduino-opta`). The\nruntime's `info` command reports the same id.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Display name.",
+          "type": "string"
+        },
+        "schema": {
+          "description": "Version of the manifest format (this spec): 1.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sha256": {
+          "description": "SHA-256 of the file as published at `source`, hex (reserved for a registry).",
+          "type": "string"
+        },
+        "source": {
+          "description": "Where the manifest was downloaded from (reserved for a registry).",
+          "type": "string"
+        },
+        "vendor": {
+          "type": "string"
+        },
+        "version": {
+          "description": "Version of this manifest; bump it on every change to the file.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "vendor",
+        "version",
+        "schema"
+      ],
+      "type": "object"
+    },
+    "Dir": {
+      "enum": [
+        "in",
+        "out",
+        "mem"
+      ],
+      "type": "string"
+    },
+    "Flash": {
+      "additionalProperties": false,
+      "description": "`[flash]`: how a built application gets onto the device.",
+      "properties": {
+        "address": {
+          "description": "Where the application image goes.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "alt": {
+          "default": 0,
+          "description": "DFU alternate setting.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "layout": {
+          "description": "The DfuSe alternate's layout name must start with this (`Internal Flash`).",
+          "type": "string"
+        },
+        "leave": {
+          "default": true,
+          "description": "Start the application after the download.",
+          "type": "boolean"
+        },
+        "max_size": {
+          "description": "Largest application image, bytes.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "method": {
+          "$ref": "#/$defs/FlashMethod"
+        },
+        "protected": {
+          "description": "Flash that must never be erased or written (a bootloader).",
+          "items": {
+            "$ref": "#/$defs/Region"
+          },
+          "type": "array"
+        },
+        "reboot": {
+          "$ref": "#/$defs/Reboot",
+          "default": "none",
+          "description": "How to get from the running application into the bootloader."
+        },
+        "runtime_usb": {
+          "description": "USB ids of the running application (its serial port), for `reboot`.",
+          "items": {
+            "$ref": "#/$defs/UsbId"
+          },
+          "type": "array"
+        },
+        "usb": {
+          "description": "USB ids of the bootloader (the device being flashed).",
+          "items": {
+            "$ref": "#/$defs/UsbId"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "method",
+        "usb",
+        "address",
+        "max_size"
+      ],
+      "type": "object"
+    },
+    "FlashMethod": {
+      "oneOf": [
+        {
+          "const": "dfuse",
+          "description": "USB DFU 1.1 with ST's DfuSe extensions (STM32 system and Arduino bootloaders).",
+          "type": "string"
+        }
+      ]
+    },
+    "FloatAbi": {
+      "enum": [
+        "soft",
+        "softfp",
+        "hard"
+      ],
+      "type": "string"
+    },
+    "ImageSizes": {
+      "additionalProperties": false,
+      "description": "Sizes of the `%I`, `%Q` and `%M` areas in bytes.",
+      "properties": {
+        "I": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "M": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "Q": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "I",
+        "Q",
+        "M"
+      ],
+      "type": "object"
+    },
+    "ImgFormat": {
+      "oneOf": [
+        {
+          "const": "hex-areas",
+          "description": "`I: <bytes>  Q: <bytes>  M: <bytes>`, each byte in unpadded upper-case hex.",
+          "type": "string"
+        }
+      ]
+    },
+    "IoEntry": {
+      "additionalProperties": false,
+      "description": "An `[[io]]` entry: one point, or with `repeat` a numbered group of points\nwhose string fields may contain `{expr}` (integer arithmetic on `n`).",
+      "properties": {
+        "address": {
+          "description": "Process-image address (`%IX0.{n-1}`).",
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "dir": {
+          "$ref": "#/$defs/Dir"
+        },
+        "eng": {
+          "description": "Engineering value at the raw `range` ends, `[at_min, at_max]` (linear).",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "from": {
+          "description": "First value of `n` (default 1).",
+          "format": "int64",
+          "type": "integer"
+        },
+        "group": {
+          "description": "Heading the point is listed under.",
+          "type": "string"
+        },
+        "id": {
+          "description": "Stable id, unique in the manifest (`I{n}`).",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/Kind"
+        },
+        "label": {
+          "type": "string"
+        },
+        "range": {
+          "description": "Raw value range (analog points), `[min, max]`.",
+          "items": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "repeat": {
+          "description": "Number of points this entry stands for; `n` runs from `from`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "terminal": {
+          "description": "Terminal name printed on the device.",
+          "type": "string"
+        },
+        "type": {
+          "description": "IEC elementary type (`BOOL`, `INT`, `UINT`, `REAL`).",
+          "type": "string"
+        },
+        "units": {
+          "description": "Engineering units (`V`, `mA`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "terminal",
+        "label",
+        "group",
+        "dir",
+        "kind",
+        "type",
+        "address"
+      ],
+      "type": "object"
+    },
+    "Kind": {
+      "enum": [
+        "digital",
+        "analog",
+        "register"
+      ],
+      "type": "string"
+    },
+    "Modbus": {
+      "additionalProperties": false,
+      "description": "`[modbus]`: the runtime's Modbus server.",
+      "properties": {
+        "map": {
+          "default": [],
+          "description": "Register tables and the process-image addresses they alias.",
+          "items": {
+            "$ref": "#/$defs/ModbusMap"
+          },
+          "type": "array"
+        },
+        "rtu": {
+          "$ref": "#/$defs/ModbusRtu"
+        }
+      },
+      "type": "object"
+    },
+    "ModbusMap": {
+      "additionalProperties": false,
+      "description": "One Modbus table range. Consecutive items map to consecutive addresses:\nbits for coils and discrete inputs, words for registers.",
+      "properties": {
+        "address": {
+          "description": "Process-image address of item `start` (`%MW0`, `%QX0.0`).",
+          "type": "string"
+        },
+        "count": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start": {
+          "default": 0,
+          "description": "First item number (0-based protocol address).",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "table": {
+          "$ref": "#/$defs/ModbusTable"
+        }
+      },
+      "required": [
+        "table",
+        "count",
+        "address"
+      ],
+      "type": "object"
+    },
+    "ModbusRtu": {
+      "additionalProperties": false,
+      "properties": {
+        "baud": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "data_bits": {
+          "default": 8,
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "interface": {
+          "description": "Physical interface (`RS485`).",
+          "type": "string"
+        },
+        "parity": {
+          "$ref": "#/$defs/Parity"
+        },
+        "stop_bits": {
+          "default": 1,
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unit": {
+          "description": "Server (slave) address, 1..247.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "unit",
+        "baud",
+        "parity"
+      ],
+      "type": "object"
+    },
+    "ModbusTable": {
+      "oneOf": [
+        {
+          "const": "coils",
+          "description": "Read/write bits (function codes 1, 5, 15).",
+          "type": "string"
+        },
+        {
+          "const": "discrete",
+          "description": "Read-only bits (function code 2).",
+          "type": "string"
+        },
+        {
+          "const": "input",
+          "description": "Read-only registers (function code 4).",
+          "type": "string"
+        },
+        {
+          "const": "holding",
+          "description": "Read/write registers (function codes 3, 6, 16).",
+          "type": "string"
+        }
+      ]
+    },
+    "Parity": {
+      "enum": [
+        "none",
+        "even",
+        "odd"
+      ],
+      "type": "string"
+    },
+    "Reboot": {
+      "oneOf": [
+        {
+          "const": "none",
+          "description": "The user enters the bootloader by hand.",
+          "type": "string"
+        },
+        {
+          "const": "1200-baud-touch",
+          "description": "Open the application's serial port at 1200 baud and close it (Arduino).",
+          "type": "string"
+        }
+      ]
+    },
+    "Region": {
+      "additionalProperties": false,
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "size": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start",
+        "size"
+      ],
+      "type": "object"
+    },
+    "Runtime": {
+      "additionalProperties": false,
+      "description": "`[target.runtime]`: the firmware or host that runs compiled programs.",
+      "properties": {
+        "abi": {
+          "description": "Runtime-contract ABI version (docs/process-image.md, `PLCC_ABI_VERSION`).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "kind": {
+          "description": "Runtime name (`plcc-arduino`, `plcc-studio-sim`), as its `info` reports it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "abi"
+      ],
+      "type": "object"
+    },
+    "Target": {
+      "additionalProperties": false,
+      "description": "`[target]`: what plcc compiles for and what the runtime provides.",
+      "properties": {
+        "cpu": {
+          "description": "LLVM CPU name (`cortex-m7`); absent means the triple's generic CPU.",
+          "type": "string"
+        },
+        "features": {
+          "description": "LLVM target features, each `+name` or `-name` (`+fp-armv8d16`).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "float_abi": {
+          "$ref": "#/$defs/FloatAbi",
+          "description": "ARM float ABI: `soft` (no FPU instructions), `softfp` (FPU\ninstructions, floats passed in integer registers) or `hard` (floats\nin FPU registers; needs an `eabihf` triple)."
+        },
+        "image": {
+          "$ref": "#/$defs/ImageSizes",
+          "description": "Process-image sizes in bytes; every program for the device is built with them."
+        },
+        "runtime": {
+          "$ref": "#/$defs/Runtime"
+        },
+        "triple": {
+          "description": "LLVM target triple (`thumbv7em-none-eabi`, `wasm32-unknown-unknown`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "triple",
+        "runtime",
+        "image"
+      ],
+      "type": "object"
+    },
+    "UsbId": {
+      "additionalProperties": false,
+      "properties": {
+        "pid": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "vid": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "vid",
+        "pid"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A device manifest as written in its TOML file.",
+  "properties": {
+    "console": {
+      "$ref": "#/$defs/Console"
+    },
+    "device": {
+      "$ref": "#/$defs/DeviceInfo"
+    },
+    "flash": {
+      "$ref": "#/$defs/Flash"
+    },
+    "io": {
+      "default": [],
+      "description": "I/O points. An entry with `repeat` stands for several points.",
+      "items": {
+        "$ref": "#/$defs/IoEntry"
+      },
+      "type": "array"
+    },
+    "modbus": {
+      "$ref": "#/$defs/Modbus"
+    },
+    "target": {
+      "$ref": "#/$defs/Target"
+    }
+  },
+  "required": [
+    "device",
+    "target"
+  ],
+  "title": "plcc device manifest",
+  "type": "object"
+}

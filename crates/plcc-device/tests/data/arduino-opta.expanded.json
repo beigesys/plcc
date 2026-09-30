@@ -1,0 +1,740 @@
+{
+  "device": {
+    "id": "arduino-opta",
+    "name": "Arduino Opta",
+    "vendor": "Arduino",
+    "description": "STM32H747 (Cortex-M7) PLC running the plcc generic runtime: 8 inputs (digital or 0-10 V analog), 4 relays, USER button and LED, Modbus RTU on RS485.",
+    "version": 1,
+    "schema": 1
+  },
+  "target": {
+    "triple": "thumbv7em-none-eabi",
+    "cpu": "cortex-m7",
+    "features": [
+      "+fp-armv8d16"
+    ],
+    "float_abi": "softfp",
+    "runtime": {
+      "kind": "plcc-arduino",
+      "abi": 1
+    },
+    "image": {
+      "I": 18,
+      "Q": 1,
+      "M": 64
+    }
+  },
+  "flash": {
+    "method": "dfuse",
+    "usb": [
+      {
+        "vid": 9025,
+        "pid": 868
+      },
+      {
+        "vid": 13777,
+        "pid": 868
+      }
+    ],
+    "alt": 0,
+    "layout": "Internal Flash",
+    "address": 134479872,
+    "max_size": 1835008,
+    "leave": true,
+    "reboot": "1200-baud-touch",
+    "runtime_usb": [
+      {
+        "vid": 9025,
+        "pid": 100
+      },
+      {
+        "vid": 9025,
+        "pid": 356
+      },
+      {
+        "vid": 9025,
+        "pid": 612
+      },
+      {
+        "vid": 13777,
+        "pid": 100
+      },
+      {
+        "vid": 13777,
+        "pid": 356
+      },
+      {
+        "vid": 13777,
+        "pid": 612
+      }
+    ],
+    "protected": [
+      {
+        "start": 134217728,
+        "size": 262144,
+        "reason": "Arduino bootloader (sectors 0 and 1)"
+      }
+    ]
+  },
+  "console": {
+    "transport": "webserial",
+    "baud": 115200,
+    "commands": [
+      "info",
+      "img",
+      "mw"
+    ],
+    "img_format": "hex-areas",
+    "img_m_bytes": 64
+  },
+  "modbus": {
+    "rtu": {
+      "interface": "RS485",
+      "unit": 1,
+      "baud": 19200,
+      "data_bits": 8,
+      "parity": "even",
+      "stop_bits": 1
+    },
+    "map": [
+      {
+        "table": "holding",
+        "start": 0,
+        "count": 32,
+        "address": "%MW0"
+      },
+      {
+        "table": "coils",
+        "start": 0,
+        "count": 8,
+        "address": "%QX0.0"
+      },
+      {
+        "table": "discrete",
+        "start": 0,
+        "count": 144,
+        "address": "%IX0.0"
+      },
+      {
+        "table": "input",
+        "start": 0,
+        "count": 9,
+        "address": "%IW0"
+      }
+    ]
+  },
+  "io": [
+    {
+      "id": "I1",
+      "terminal": "I1",
+      "label": "Input I1",
+      "group": "Digital inputs",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX0.0"
+    },
+    {
+      "id": "I2",
+      "terminal": "I2",
+      "label": "Input I2",
+      "group": "Digital inputs",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX0.1"
+    },
+    {
+      "id": "I3",
+      "terminal": "I3",
+      "label": "Input I3",
+      "group": "Digital inputs",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX0.2"
+    },
+    {
+      "id": "I4",
+      "terminal": "I4",
+      "label": "Input I4",
+      "group": "Digital inputs",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX0.3"
+    },
+    {
+      "id": "I5",
+      "terminal": "I5",
+      "label": "Input I5",
+      "group": "Digital inputs",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX0.4"
+    },
+    {
+      "id": "I6",
+      "terminal": "I6",
+      "label": "Input I6",
+      "group": "Digital inputs",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX0.5"
+    },
+    {
+      "id": "I7",
+      "terminal": "I7",
+      "label": "Input I7",
+      "group": "Digital inputs",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX0.6"
+    },
+    {
+      "id": "I8",
+      "terminal": "I8",
+      "label": "Input I8",
+      "group": "Digital inputs",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX0.7"
+    },
+    {
+      "id": "BTN",
+      "terminal": "USER",
+      "label": "USER button (TRUE while pressed)",
+      "group": "Digital inputs",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX1.0"
+    },
+    {
+      "id": "A1",
+      "terminal": "I1",
+      "label": "Input I1 analog",
+      "group": "Analog inputs (0..10 V, raw 0..4095)",
+      "dir": "in",
+      "kind": "analog",
+      "type": "INT",
+      "address": "%IW1",
+      "range": [
+        0,
+        4095
+      ],
+      "eng": [
+        0.0,
+        10.877
+      ],
+      "units": "V"
+    },
+    {
+      "id": "A2",
+      "terminal": "I2",
+      "label": "Input I2 analog",
+      "group": "Analog inputs (0..10 V, raw 0..4095)",
+      "dir": "in",
+      "kind": "analog",
+      "type": "INT",
+      "address": "%IW2",
+      "range": [
+        0,
+        4095
+      ],
+      "eng": [
+        0.0,
+        10.877
+      ],
+      "units": "V"
+    },
+    {
+      "id": "A3",
+      "terminal": "I3",
+      "label": "Input I3 analog",
+      "group": "Analog inputs (0..10 V, raw 0..4095)",
+      "dir": "in",
+      "kind": "analog",
+      "type": "INT",
+      "address": "%IW3",
+      "range": [
+        0,
+        4095
+      ],
+      "eng": [
+        0.0,
+        10.877
+      ],
+      "units": "V"
+    },
+    {
+      "id": "A4",
+      "terminal": "I4",
+      "label": "Input I4 analog",
+      "group": "Analog inputs (0..10 V, raw 0..4095)",
+      "dir": "in",
+      "kind": "analog",
+      "type": "INT",
+      "address": "%IW4",
+      "range": [
+        0,
+        4095
+      ],
+      "eng": [
+        0.0,
+        10.877
+      ],
+      "units": "V"
+    },
+    {
+      "id": "A5",
+      "terminal": "I5",
+      "label": "Input I5 analog",
+      "group": "Analog inputs (0..10 V, raw 0..4095)",
+      "dir": "in",
+      "kind": "analog",
+      "type": "INT",
+      "address": "%IW5",
+      "range": [
+        0,
+        4095
+      ],
+      "eng": [
+        0.0,
+        10.877
+      ],
+      "units": "V"
+    },
+    {
+      "id": "A6",
+      "terminal": "I6",
+      "label": "Input I6 analog",
+      "group": "Analog inputs (0..10 V, raw 0..4095)",
+      "dir": "in",
+      "kind": "analog",
+      "type": "INT",
+      "address": "%IW6",
+      "range": [
+        0,
+        4095
+      ],
+      "eng": [
+        0.0,
+        10.877
+      ],
+      "units": "V"
+    },
+    {
+      "id": "A7",
+      "terminal": "I7",
+      "label": "Input I7 analog",
+      "group": "Analog inputs (0..10 V, raw 0..4095)",
+      "dir": "in",
+      "kind": "analog",
+      "type": "INT",
+      "address": "%IW7",
+      "range": [
+        0,
+        4095
+      ],
+      "eng": [
+        0.0,
+        10.877
+      ],
+      "units": "V"
+    },
+    {
+      "id": "A8",
+      "terminal": "I8",
+      "label": "Input I8 analog",
+      "group": "Analog inputs (0..10 V, raw 0..4095)",
+      "dir": "in",
+      "kind": "analog",
+      "type": "INT",
+      "address": "%IW8",
+      "range": [
+        0,
+        4095
+      ],
+      "eng": [
+        0.0,
+        10.877
+      ],
+      "units": "V"
+    },
+    {
+      "id": "R1",
+      "terminal": "R1",
+      "label": "Relay 1",
+      "group": "Relay outputs",
+      "dir": "out",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%QX0.0"
+    },
+    {
+      "id": "R2",
+      "terminal": "R2",
+      "label": "Relay 2",
+      "group": "Relay outputs",
+      "dir": "out",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%QX0.1"
+    },
+    {
+      "id": "R3",
+      "terminal": "R3",
+      "label": "Relay 3",
+      "group": "Relay outputs",
+      "dir": "out",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%QX0.2"
+    },
+    {
+      "id": "R4",
+      "terminal": "R4",
+      "label": "Relay 4",
+      "group": "Relay outputs",
+      "dir": "out",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%QX0.3"
+    },
+    {
+      "id": "LED",
+      "terminal": "LED",
+      "label": "USER LED (blue)",
+      "group": "Relay outputs",
+      "dir": "out",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%QX0.4"
+    },
+    {
+      "id": "HR0",
+      "terminal": "HR0",
+      "label": "Holding register 0",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW0"
+    },
+    {
+      "id": "HR1",
+      "terminal": "HR1",
+      "label": "Holding register 1",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW1"
+    },
+    {
+      "id": "HR2",
+      "terminal": "HR2",
+      "label": "Holding register 2",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW2"
+    },
+    {
+      "id": "HR3",
+      "terminal": "HR3",
+      "label": "Holding register 3",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW3"
+    },
+    {
+      "id": "HR4",
+      "terminal": "HR4",
+      "label": "Holding register 4",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW4"
+    },
+    {
+      "id": "HR5",
+      "terminal": "HR5",
+      "label": "Holding register 5",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW5"
+    },
+    {
+      "id": "HR6",
+      "terminal": "HR6",
+      "label": "Holding register 6",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW6"
+    },
+    {
+      "id": "HR7",
+      "terminal": "HR7",
+      "label": "Holding register 7",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW7"
+    },
+    {
+      "id": "HR8",
+      "terminal": "HR8",
+      "label": "Holding register 8",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW8"
+    },
+    {
+      "id": "HR9",
+      "terminal": "HR9",
+      "label": "Holding register 9",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW9"
+    },
+    {
+      "id": "HR10",
+      "terminal": "HR10",
+      "label": "Holding register 10",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW10"
+    },
+    {
+      "id": "HR11",
+      "terminal": "HR11",
+      "label": "Holding register 11",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW11"
+    },
+    {
+      "id": "HR12",
+      "terminal": "HR12",
+      "label": "Holding register 12",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW12"
+    },
+    {
+      "id": "HR13",
+      "terminal": "HR13",
+      "label": "Holding register 13",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW13"
+    },
+    {
+      "id": "HR14",
+      "terminal": "HR14",
+      "label": "Holding register 14",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW14"
+    },
+    {
+      "id": "HR15",
+      "terminal": "HR15",
+      "label": "Holding register 15",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW15"
+    },
+    {
+      "id": "HR16",
+      "terminal": "HR16",
+      "label": "Holding register 16",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW16"
+    },
+    {
+      "id": "HR17",
+      "terminal": "HR17",
+      "label": "Holding register 17",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW17"
+    },
+    {
+      "id": "HR18",
+      "terminal": "HR18",
+      "label": "Holding register 18",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW18"
+    },
+    {
+      "id": "HR19",
+      "terminal": "HR19",
+      "label": "Holding register 19",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW19"
+    },
+    {
+      "id": "HR20",
+      "terminal": "HR20",
+      "label": "Holding register 20",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW20"
+    },
+    {
+      "id": "HR21",
+      "terminal": "HR21",
+      "label": "Holding register 21",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW21"
+    },
+    {
+      "id": "HR22",
+      "terminal": "HR22",
+      "label": "Holding register 22",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW22"
+    },
+    {
+      "id": "HR23",
+      "terminal": "HR23",
+      "label": "Holding register 23",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW23"
+    },
+    {
+      "id": "HR24",
+      "terminal": "HR24",
+      "label": "Holding register 24",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW24"
+    },
+    {
+      "id": "HR25",
+      "terminal": "HR25",
+      "label": "Holding register 25",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW25"
+    },
+    {
+      "id": "HR26",
+      "terminal": "HR26",
+      "label": "Holding register 26",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW26"
+    },
+    {
+      "id": "HR27",
+      "terminal": "HR27",
+      "label": "Holding register 27",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW27"
+    },
+    {
+      "id": "HR28",
+      "terminal": "HR28",
+      "label": "Holding register 28",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW28"
+    },
+    {
+      "id": "HR29",
+      "terminal": "HR29",
+      "label": "Holding register 29",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW29"
+    },
+    {
+      "id": "HR30",
+      "terminal": "HR30",
+      "label": "Holding register 30",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW30"
+    },
+    {
+      "id": "HR31",
+      "terminal": "HR31",
+      "label": "Holding register 31",
+      "group": "Modbus holding registers (HR0..HR31)",
+      "dir": "mem",
+      "kind": "register",
+      "type": "INT",
+      "address": "%MW31"
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+# Test manifest: repeat groups with expressions, a flat bit address layout
+# across bytes, and literal braces. Expanded form: expressions.expanded.json.
+
+[device]
+id = "test-expressions"
+name = "Expression test"
+vendor = "plcc"
+version = 3
+schema = 1
+
+[target]
+triple = "x86_64-unknown-linux-gnu"
+image = { I = 4, Q = 2, M = 8 }
+
+[target.runtime]
+kind = "test"
+abi = 1
+
+[[io]]
+repeat = 12
+id = "in{n}"
+terminal = "X{n}"
+label = "Input {n} {{raw}}"
+group = "Inputs byte {(n-1)/8}"
+dir = "in"
+kind = "digital"
+type = "bool"
+address = "%IX{(n-1)/8}.{(n-1)%8}"
+
+[[io]]
+repeat = 2
+from = -1
+id = "w{n+1}"
+terminal = "W{n * -1}"
+label = "Word {n+1}"
+group = "Words"
+dir = "mem"
+kind = "register"
+type = "UINT"
+address = "%MW{n+1}"
+units = "{n+1} units"
+
+[[io]]
+id = "Q"
+terminal = "Q"
+label = "Output byte"
+group = "Outputs"
+dir = "out"
+kind = "analog"
+type = "BYTE"
+address = "%QB1"
+range = [0, 255]
+eng = [0.0, 100.0]
+units = "%"

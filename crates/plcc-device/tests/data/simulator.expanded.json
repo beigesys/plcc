@@ -1,0 +1,240 @@
+{
+  "device": {
+    "id": "simulator",
+    "name": "Simulator",
+    "vendor": "plcc studio",
+    "description": "Virtual I/O for the in-browser simulator: 8 digital inputs, 4 analog inputs, 8 digital outputs.",
+    "version": 1,
+    "schema": 1
+  },
+  "target": {
+    "triple": "wasm32-unknown-unknown",
+    "runtime": {
+      "kind": "plcc-studio-sim",
+      "abi": 1
+    },
+    "image": {
+      "I": 16,
+      "Q": 4,
+      "M": 64
+    }
+  },
+  "io": [
+    {
+      "id": "DI0",
+      "terminal": "DI0",
+      "label": "Digital in 0",
+      "group": "Digital inputs",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX0.0"
+    },
+    {
+      "id": "DI1",
+      "terminal": "DI1",
+      "label": "Digital in 1",
+      "group": "Digital inputs",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX0.1"
+    },
+    {
+      "id": "DI2",
+      "terminal": "DI2",
+      "label": "Digital in 2",
+      "group": "Digital inputs",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX0.2"
+    },
+    {
+      "id": "DI3",
+      "terminal": "DI3",
+      "label": "Digital in 3",
+      "group": "Digital inputs",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX0.3"
+    },
+    {
+      "id": "DI4",
+      "terminal": "DI4",
+      "label": "Digital in 4",
+      "group": "Digital inputs",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX0.4"
+    },
+    {
+      "id": "DI5",
+      "terminal": "DI5",
+      "label": "Digital in 5",
+      "group": "Digital inputs",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX0.5"
+    },
+    {
+      "id": "DI6",
+      "terminal": "DI6",
+      "label": "Digital in 6",
+      "group": "Digital inputs",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX0.6"
+    },
+    {
+      "id": "DI7",
+      "terminal": "DI7",
+      "label": "Digital in 7",
+      "group": "Digital inputs",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX0.7"
+    },
+    {
+      "id": "AI1",
+      "terminal": "AI1",
+      "label": "Analog in 1",
+      "group": "Analog inputs (0..4095)",
+      "dir": "in",
+      "kind": "analog",
+      "type": "INT",
+      "address": "%IW1",
+      "range": [
+        0,
+        4095
+      ]
+    },
+    {
+      "id": "AI2",
+      "terminal": "AI2",
+      "label": "Analog in 2",
+      "group": "Analog inputs (0..4095)",
+      "dir": "in",
+      "kind": "analog",
+      "type": "INT",
+      "address": "%IW2",
+      "range": [
+        0,
+        4095
+      ]
+    },
+    {
+      "id": "AI3",
+      "terminal": "AI3",
+      "label": "Analog in 3",
+      "group": "Analog inputs (0..4095)",
+      "dir": "in",
+      "kind": "analog",
+      "type": "INT",
+      "address": "%IW3",
+      "range": [
+        0,
+        4095
+      ]
+    },
+    {
+      "id": "AI4",
+      "terminal": "AI4",
+      "label": "Analog in 4",
+      "group": "Analog inputs (0..4095)",
+      "dir": "in",
+      "kind": "analog",
+      "type": "INT",
+      "address": "%IW4",
+      "range": [
+        0,
+        4095
+      ]
+    },
+    {
+      "id": "DO0",
+      "terminal": "DO0",
+      "label": "Digital out 0",
+      "group": "Digital outputs",
+      "dir": "out",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%QX0.0"
+    },
+    {
+      "id": "DO1",
+      "terminal": "DO1",
+      "label": "Digital out 1",
+      "group": "Digital outputs",
+      "dir": "out",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%QX0.1"
+    },
+    {
+      "id": "DO2",
+      "terminal": "DO2",
+      "label": "Digital out 2",
+      "group": "Digital outputs",
+      "dir": "out",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%QX0.2"
+    },
+    {
+      "id": "DO3",
+      "terminal": "DO3",
+      "label": "Digital out 3",
+      "group": "Digital outputs",
+      "dir": "out",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%QX0.3"
+    },
+    {
+      "id": "DO4",
+      "terminal": "DO4",
+      "label": "Digital out 4",
+      "group": "Digital outputs",
+      "dir": "out",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%QX0.4"
+    },
+    {
+      "id": "DO5",
+      "terminal": "DO5",
+      "label": "Digital out 5",
+      "group": "Digital outputs",
+      "dir": "out",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%QX0.5"
+    },
+    {
+      "id": "DO6",
+      "terminal": "DO6",
+      "label": "Digital out 6",
+      "group": "Digital outputs",
+      "dir": "out",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%QX0.6"
+    },
+    {
+      "id": "DO7",
+      "terminal": "DO7",
+      "label": "Digital out 7",
+      "group": "Digital outputs",
+      "dir": "out",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%QX0.7"
+    }
+  ]
+}

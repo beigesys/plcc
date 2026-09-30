@@ -1,0 +1,185 @@
+{
+  "device": {
+    "id": "test-expressions",
+    "name": "Expression test",
+    "vendor": "plcc",
+    "description": "",
+    "version": 3,
+    "schema": 1
+  },
+  "target": {
+    "triple": "x86_64-unknown-linux-gnu",
+    "runtime": {
+      "kind": "test",
+      "abi": 1
+    },
+    "image": {
+      "I": 4,
+      "Q": 2,
+      "M": 8
+    }
+  },
+  "io": [
+    {
+      "id": "in1",
+      "terminal": "X1",
+      "label": "Input 1 {raw}",
+      "group": "Inputs byte 0",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX0.0"
+    },
+    {
+      "id": "in2",
+      "terminal": "X2",
+      "label": "Input 2 {raw}",
+      "group": "Inputs byte 0",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX0.1"
+    },
+    {
+      "id": "in3",
+      "terminal": "X3",
+      "label": "Input 3 {raw}",
+      "group": "Inputs byte 0",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX0.2"
+    },
+    {
+      "id": "in4",
+      "terminal": "X4",
+      "label": "Input 4 {raw}",
+      "group": "Inputs byte 0",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX0.3"
+    },
+    {
+      "id": "in5",
+      "terminal": "X5",
+      "label": "Input 5 {raw}",
+      "group": "Inputs byte 0",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX0.4"
+    },
+    {
+      "id": "in6",
+      "terminal": "X6",
+      "label": "Input 6 {raw}",
+      "group": "Inputs byte 0",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX0.5"
+    },
+    {
+      "id": "in7",
+      "terminal": "X7",
+      "label": "Input 7 {raw}",
+      "group": "Inputs byte 0",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX0.6"
+    },
+    {
+      "id": "in8",
+      "terminal": "X8",
+      "label": "Input 8 {raw}",
+      "group": "Inputs byte 0",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX0.7"
+    },
+    {
+      "id": "in9",
+      "terminal": "X9",
+      "label": "Input 9 {raw}",
+      "group": "Inputs byte 1",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX1.0"
+    },
+    {
+      "id": "in10",
+      "terminal": "X10",
+      "label": "Input 10 {raw}",
+      "group": "Inputs byte 1",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX1.1"
+    },
+    {
+      "id": "in11",
+      "terminal": "X11",
+      "label": "Input 11 {raw}",
+      "group": "Inputs byte 1",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX1.2"
+    },
+    {
+      "id": "in12",
+      "terminal": "X12",
+      "label": "Input 12 {raw}",
+      "group": "Inputs byte 1",
+      "dir": "in",
+      "kind": "digital",
+      "type": "BOOL",
+      "address": "%IX1.3"
+    },
+    {
+      "id": "w0",
+      "terminal": "W1",
+      "label": "Word 0",
+      "group": "Words",
+      "dir": "mem",
+      "kind": "register",
+      "type": "UINT",
+      "address": "%MW0",
+      "units": "0 units"
+    },
+    {
+      "id": "w1",
+      "terminal": "W0",
+      "label": "Word 1",
+      "group": "Words",
+      "dir": "mem",
+      "kind": "register",
+      "type": "UINT",
+      "address": "%MW1",
+      "units": "1 units"
+    },
+    {
+      "id": "Q",
+      "terminal": "Q",
+      "label": "Output byte",
+      "group": "Outputs",
+      "dir": "out",
+      "kind": "analog",
+      "type": "BYTE",
+      "address": "%QB1",
+      "range": [
+        0,
+        255
+      ],
+      "eng": [
+        0.0,
+        100.0
+      ],
+      "units": "%"
+    }
+  ]
+}
