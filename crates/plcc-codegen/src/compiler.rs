@@ -31,7 +31,7 @@ mod refs;
 mod shortcircuit;
 mod stdfns;
 mod strings;
-pub use contract::{RuntimeContract, TaskOptions};
+pub use contract::{DeviceStamp, RuntimeContract, TaskOptions};
 
 /// Name of the generated function that initializes VAR_GLOBAL FB instances.
 const GLOBALS_INIT_FN: &str = "plcc_globals_init";
@@ -533,6 +533,26 @@ pub struct Compiler<'ctx> {
     current_pou: Option<String>,
     /// Runtime fault sites (see `fault.rs`).
     fault: fault::FaultState<'ctx>,
+    /// LLVM CPU and feature string for every target machine (`--cpu`, `--features`).
+    machine: MachineOptions,
+}
+
+/// The CPU and target features code is generated for, beyond the triple.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MachineOptions {
+    /// LLVM CPU name; `generic` is the triple's baseline.
+    pub cpu: String,
+    /// Comma-separated LLVM features (`+fp-armv8d16,-neon`).
+    pub features: String,
+}
+
+impl Default for MachineOptions {
+    fn default() -> Self {
+        MachineOptions {
+            cpu: "generic".into(),
+            features: String::new(),
+        }
+    }
 }
 
 impl<'ctx> Compiler<'ctx> {
@@ -569,7 +589,20 @@ impl<'ctx> Compiler<'ctx> {
             reference_inputs: std::collections::HashSet::new(),
             current_pou: None,
             fault: fault::FaultState::default(),
+            machine: MachineOptions::default(),
         }
+    }
+
+    /// Generate code for this CPU and these target features (LLVM names, e.g.
+    /// `cortex-m7` and `+fp-armv8d16`). Applies to every target machine the
+    /// compiler creates and is recorded on each function as `target-cpu` /
+    /// `target-features`, so an `.ll`/`.bc` optimized or compiled later keeps it.
+    pub fn set_machine_options(&mut self, opts: MachineOptions) {
+        self.machine = opts;
+    }
+
+    pub fn machine_options(&self) -> &MachineOptions {
+        &self.machine
     }
 
     /// Register LLVM intrinsic declarations for standard math functions.
@@ -8725,7 +8758,7 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
-    fn target_machine(&self, triple: &str) -> Result<TargetMachine, CodegenError> {
+    pub(crate) fn target_machine(&self, triple: &str) -> Result<TargetMachine, CodegenError> {
         Target::initialize_all(&InitializationConfig::default());
         let target_triple = TargetTriple::create(triple);
         let target = Target::from_triple(&target_triple)
@@ -8733,8 +8766,8 @@ impl<'ctx> Compiler<'ctx> {
         target
             .create_target_machine(
                 &target_triple,
-                "generic",
-                "",
+                &self.machine.cpu,
+                &self.machine.features,
                 OptimizationLevel::Default,
                 RelocMode::Default,
                 CodeModel::Default,
@@ -8762,7 +8795,32 @@ impl<'ctx> Compiler<'ctx> {
         self.module.set_triple(&TargetTriple::create(triple));
         self.module
             .set_data_layout(&machine.get_target_data().get_data_layout());
+        self.stamp_machine_attributes();
         Ok(())
+    }
+
+    /// `target-cpu` / `target-features` on every defined function, as clang
+    /// writes them, when a CPU or features were chosen.
+    fn stamp_machine_attributes(&self) {
+        let m = &self.machine;
+        if m.cpu == "generic" && m.features.is_empty() {
+            return;
+        }
+        let kind = inkwell::attributes::AttributeLoc::Function;
+        for f in self.module.get_functions() {
+            if f.count_basic_blocks() == 0 {
+                continue;
+            }
+            if m.cpu != "generic" {
+                f.add_attribute(kind, self.context.create_string_attribute("target-cpu", &m.cpu));
+            }
+            if !m.features.is_empty() {
+                f.add_attribute(
+                    kind,
+                    self.context.create_string_attribute("target-features", &m.features),
+                );
+            }
+        }
     }
 
     /// Run LLVM's `default<O{level}>` pipeline over the module for `triple`

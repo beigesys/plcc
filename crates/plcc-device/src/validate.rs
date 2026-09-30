@@ -219,23 +219,8 @@ impl Validator<'_, '_> {
             }
         }
         if let Some(abi) = t.float_abi {
-            let arm = triple.starts_with("arm") || triple.starts_with("thumb");
-            let hf = triple.ends_with("hf");
-            if !arm {
-                self.error(
-                    &p.key("float_abi"),
-                    format!("float_abi applies to ARM targets only, not `{triple}`"),
-                );
-            } else if abi == FloatAbi::Hard && !hf {
-                self.error(
-                    &p.key("float_abi"),
-                    format!("`hard` passes floats in FPU registers and needs an `eabihf` triple, not `{triple}`"),
-                );
-            } else if abi != FloatAbi::Hard && hf {
-                self.error(
-                    &p.key("float_abi"),
-                    format!("`{}` passes floats in integer registers; `{triple}` is a hard-float triple (use `eabi`)", abi.as_str()),
-                );
+            if let Err(e) = abi.features_for(triple) {
+                self.error(&p.key("float_abi"), e);
             }
         }
         if t.runtime.kind.trim().is_empty() {

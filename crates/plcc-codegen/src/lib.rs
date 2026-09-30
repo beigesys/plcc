@@ -7,4 +7,4 @@ pub mod compiler;
 pub use plcc_runtime::direct_address;
 pub mod header;
 
-pub use compiler::{Compiler, RuntimeContract, TaskOptions};
+pub use compiler::{Compiler, DeviceStamp, MachineOptions, RuntimeContract, TaskOptions};

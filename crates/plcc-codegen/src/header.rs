@@ -31,6 +31,17 @@ pub fn c_member(name: &str) -> String {
     }
 }
 
+/// `s` escaped for a C string literal.
+fn c_string(s: &str) -> String {
+    s.chars()
+        .flat_map(|c| match c {
+            '"' | '\\' => vec!['\\', c],
+            c if c.is_ascii_graphic() || c == ' ' => vec![c],
+            _ => vec!['?'],
+        })
+        .collect()
+}
+
 fn macro_ident(s: &str) -> String {
     s.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
@@ -110,6 +121,12 @@ pub fn c_header(contract: &RuntimeContract, guard: &str) -> String {
     o.push_str("#ifdef __cplusplus\nextern \"C\" {\n#define PLCC_STATIC_ASSERT(c, m) static_assert(c, m)\n#define PLCC_ALIGNAS(n) alignas(n)\n#else\n#define PLCC_STATIC_ASSERT(c, m) _Static_assert(c, m)\n#define PLCC_ALIGNAS(n) _Alignas(n)\n#endif\n\n");
     let _ = writeln!(o, "#define PLCC_ABI_VERSION {}u", c.abi_version);
     let _ = writeln!(o, "#define PLCC_TARGET_TRIPLE \"{}\"", c.triple);
+    let _ = writeln!(o, "#define PLCC_TARGET_CPU \"{}\"", c_string(&c.cpu));
+    let _ = writeln!(o, "#define PLCC_TARGET_FEATURES \"{}\"", c_string(&c.features));
+    if let Some(d) = &c.device {
+        let _ = writeln!(o, "#define PLCC_DEVICE_ID \"{}\"", c_string(&d.id));
+        let _ = writeln!(o, "#define PLCC_DEVICE_MANIFEST_VERSION {}u", d.version);
+    }
     let _ = writeln!(o, "#define PLCC_POINTER_SIZE {}", c.pointer_size);
     let _ = writeln!(o, "#define PLCC_BIG_ENDIAN {}", c.big_endian as u8);
     let _ = writeln!(
@@ -275,6 +292,9 @@ pub fn symbols_json(contract: &RuntimeContract) -> String {
     let v = json!({
         "abi_version": c.abi_version,
         "target": c.triple,
+        "cpu": c.cpu,
+        "features": c.features,
+        "device": c.device.as_ref().map(|d| json!({ "id": d.id, "version": d.version })),
         "pointer_size": c.pointer_size,
         "byte_order": if c.big_endian { "big" } else { "little" },
         "image": {

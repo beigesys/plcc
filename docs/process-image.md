@@ -324,6 +324,10 @@ traps, which on a PLC is a crash rather than a controlled stop — define the ho
 `--emit-header prog.h` (C11 and C++11 — an Arduino sketch includes it directly):
 
 - `PLCC_ABI_VERSION`, `PLCC_TARGET_TRIPLE`, `PLCC_POINTER_SIZE`, `PLCC_BIG_ENDIAN`
+- `PLCC_TARGET_CPU` and `PLCC_TARGET_FEATURES` (`--cpu`, `--features`; `"generic"`
+  and `""` by default), and with `--device` also `PLCC_DEVICE_ID` and
+  `PLCC_DEVICE_MANIFEST_VERSION` (docs/device-manifest.md) — a runtime can
+  `static_assert` that the program was built for it
 - `PLCC_IMAGE_{I,Q,M}_SIZE` and the image, task, retain and app types above,
   plus prototypes for `plcc_init`, `plcc_run_task`, `plcc_get_app`
 - `PLCC_TASK_COUNT`, and per task `PLCC_TASK_<NAME>` (index),

@@ -1115,6 +1115,13 @@ pub struct VariableInfo {
 pub struct RuntimeContract {
     pub abi_version: u32,
     pub triple: String,
+    /// LLVM CPU (`generic` unless chosen).
+    pub cpu: String,
+    /// LLVM target features, comma-separated (may be empty).
+    pub features: String,
+    /// The device manifest the program was built for (`plcc compile --device`);
+    /// the caller fills it in.
+    pub device: Option<DeviceStamp>,
     pub pointer_size: u32,
     pub big_endian: bool,
     /// Sizes of the `%I`, `%Q`, `%M` areas in bytes.
@@ -1130,6 +1137,13 @@ pub struct RuntimeContract {
     /// `plcc_globals`, when the program has VAR_GLOBALs.
     pub globals: Option<StructInfo>,
     pub variables: Vec<VariableInfo>,
+}
+
+/// Which device manifest a build used: its id and version.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceStamp {
+    pub id: String,
+    pub version: u32,
 }
 
 struct TypeCtx<'a, 'ctx> {
@@ -1362,20 +1376,7 @@ impl<'ctx> Compiler<'ctx> {
             .layout
             .as_ref()
             .ok_or_else(|| CodegenError::TargetError("runtime_contract before compile".into()))?;
-        Target::initialize_all(&InitializationConfig::default());
-        let target_triple = TargetTriple::create(triple);
-        let target = Target::from_triple(&target_triple)
-            .map_err(|e| CodegenError::TargetError(e.to_string()))?;
-        let machine = target
-            .create_target_machine(
-                &target_triple,
-                "generic",
-                "",
-                OptimizationLevel::Default,
-                RelocMode::Default,
-                CodeModel::Default,
-            )
-            .ok_or_else(|| CodegenError::TargetError("failed to create target machine".into()))?;
+        let machine = self.target_machine(triple)?;
         let td = machine.get_target_data();
         let mut cx = TypeCtx {
             td: &td,
@@ -1500,6 +1501,9 @@ impl<'ctx> Compiler<'ctx> {
         Ok(RuntimeContract {
             abi_version: ABI_VERSION,
             triple: triple.to_string(),
+            cpu: self.machine.cpu.clone(),
+            features: self.machine.features.clone(),
+            device: None,
             pointer_size: td.get_pointer_byte_size(None),
             big_endian: matches!(td.get_byte_ordering(), ByteOrdering::BigEndian),
             image_sizes: self.rt.sizes,

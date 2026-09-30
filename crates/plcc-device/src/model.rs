@@ -90,6 +90,39 @@ impl FloatAbi {
             FloatAbi::Hard => "hard",
         }
     }
+
+    pub fn parse(s: &str) -> Option<FloatAbi> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "soft" => Some(FloatAbi::Soft),
+            "softfp" => Some(FloatAbi::Softfp),
+            "hard" => Some(FloatAbi::Hard),
+            _ => None,
+        }
+    }
+
+    /// Check this ABI against an LLVM triple and return the target features it
+    /// adds. LLVM takes the calling convention from the triple (`eabi`: floats
+    /// in integer registers; `eabihf`: in FPU registers), so `softfp` and `hard`
+    /// only check it; `soft` also turns the FPU registers off (`-fpregs`), which
+    /// makes every float operation a library call.
+    pub fn features_for(self, triple: &str) -> Result<Vec<&'static str>, String> {
+        let arm = triple.starts_with("arm") || triple.starts_with("thumb");
+        if !arm {
+            return Err(format!("a float ABI applies to ARM targets only, not `{triple}`"));
+        }
+        let hf = triple.ends_with("hf");
+        match self {
+            FloatAbi::Hard if !hf => Err(format!(
+                "the `hard` float ABI passes floats in FPU registers and needs an `eabihf` triple, not `{triple}`"
+            )),
+            FloatAbi::Soft | FloatAbi::Softfp if hf => Err(format!(
+                "the `{}` float ABI passes floats in integer registers; `{triple}` is a hard-float triple (use `eabi`)",
+                self.as_str()
+            )),
+            FloatAbi::Soft => Ok(vec!["-fpregs"]),
+            _ => Ok(Vec::new()),
+        }
+    }
 }
 
 /// `[target.runtime]`: the firmware or host that runs compiled programs.

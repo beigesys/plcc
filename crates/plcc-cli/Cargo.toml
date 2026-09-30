@@ -17,6 +17,7 @@ plcc-plcopen = { version = "0.1.0", path = "../plcc-plcopen" }
 plcc-twincat = { version = "0.1.0", path = "../plcc-twincat" }
 plcc-l5x = { version = "0.1.0", path = "../plcc-l5x" }
 plcc-ladder = { version = "0.1.0", path = "../plcc-ladder" }
+plcc-device = { version = "0.1.0", path = "../plcc-device" }
 
 [dev-dependencies]
 roxmltree = "0.21.1"

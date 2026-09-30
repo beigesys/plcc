@@ -54,6 +54,17 @@ enum Commands {
         /// Target triple (e.g. x86_64-unknown-linux-gnu, wasm32-unknown-unknown)
         #[arg(long, default_value = "x86_64-unknown-linux-gnu")]
         target: String,
+        /// LLVM CPU to generate code for (e.g. cortex-m7); default: the triple's generic CPU
+        #[arg(long, value_name = "CPU")]
+        cpu: Option<String>,
+        /// LLVM target features, comma-separated or repeated (e.g. +fp-armv8d16)
+        #[arg(long, value_name = "+FEATURE", value_delimiter = ',', allow_hyphen_values = true)]
+        features: Vec<String>,
+        /// ARM float ABI: soft (no FPU instructions), softfp (FPU instructions,
+        /// floats passed in integer registers; `eabi` triples) or hard (floats in
+        /// FPU registers; `eabihf` triples)
+        #[arg(long, value_name = "ABI")]
+        float_abi: Option<String>,
         /// Standard function block library to compile alongside the program
         #[arg(long, value_enum, default_value_t = StdlibOpt::BundledSt)]
         stdlib: StdlibOpt,
@@ -723,6 +734,9 @@ fn main() -> Result<()> {
             inputs,
             output,
             target,
+            cpu,
+            features,
+            float_abi,
             stdlib,
             emit_header,
             emit_symbols,
@@ -742,9 +756,11 @@ fn main() -> Result<()> {
                 eprintln!("not compiled: fix the type errors, or pass --no-typecheck");
                 std::process::exit(1);
             }
+            let machine = machine_options(&target, cpu.as_deref(), &features, float_abi.as_deref())?;
             let context = inkwell::context::Context::create();
             let mut compiler =
                 plcc_codegen::Compiler::new(&context, &inputs[0].display().to_string());
+            compiler.set_machine_options(machine);
             for spec in &image_size {
                 let (area, bytes) = parse_image_size(spec)?;
                 compiler.set_image_size(area, bytes);
@@ -796,6 +812,7 @@ fn main() -> Result<()> {
             let out_str = output.display().to_string();
             if out_str.ends_with(".ll") {
                 std::fs::write(&output, compiler.emit_ir()).into_diagnostic()?;
+
             } else if out_str.ends_with(".bc") {
                 compiler.emit_bitcode(&output);
             } else {
@@ -982,6 +999,35 @@ fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// `--cpu`, `--features` and `--float-abi` as LLVM's CPU and feature string.
+fn machine_options(
+    triple: &str,
+    cpu: Option<&str>,
+    features: &[String],
+    float_abi: Option<&str>,
+) -> Result<plcc_codegen::MachineOptions> {
+    let mut feats: Vec<String> = Vec::new();
+    for f in features.iter().map(|f| f.trim()).filter(|f| !f.is_empty()) {
+        if !(f.starts_with('+') || f.starts_with('-')) || f.len() < 2 {
+            miette::bail!("--features: `{f}` is not a target feature; write +name or -name");
+        }
+        feats.push(f.to_string());
+    }
+    if let Some(abi) = float_abi {
+        let abi = plcc_device::FloatAbi::parse(abi).ok_or_else(|| {
+            miette::miette!("--float-abi: `{abi}` is not soft, softfp or hard")
+        })?;
+        let extra = abi
+            .features_for(triple)
+            .map_err(|e| miette::miette!("--float-abi: {e}"))?;
+        feats.extend(extra.into_iter().map(str::to_string));
+    }
+    Ok(plcc_codegen::MachineOptions {
+        cpu: cpu.map(str::trim).filter(|c| !c.is_empty()).unwrap_or("generic").to_string(),
+        features: feats.join(","),
+    })
 }
 
 /// `I=64` / `q=16` / `M=256`.

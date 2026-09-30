@@ -205,7 +205,7 @@ fn device_and_target_errors() {
     );
     assert_one(
         &broken("triple = \"thumbv7em-none-eabi\"", "triple = \"wasm32-unknown-unknown\"\nfloat_abi = \"soft\""),
-        "float_abi applies to ARM targets only",
+        "a float ABI applies to ARM targets only",
     );
     assert_one(&broken("M = 4", "M = 99999999"), "target.image.M: 99999999 bytes");
 }
