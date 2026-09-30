@@ -44,10 +44,7 @@ function useSmoothedStats(stats: { lastScanMs: number; jitterMs: number } | null
   }, [stats, active])
 
   useEffect(() => {
-    if (!active) {
-      setShown(null)
-      return
-    }
+    if (!active) return
     const t = setInterval(() => {
       const { scan, jitter } = samples.current
       if (scan.length === 0) return
@@ -63,7 +60,7 @@ function useSmoothedStats(stats: { lastScanMs: number; jitterMs: number } | null
     return () => clearInterval(t)
   }, [active])
 
-  return shown
+  return active ? shown : null
 }
 
 function SaveText() {
