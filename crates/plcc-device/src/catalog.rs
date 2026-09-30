@@ -108,7 +108,7 @@ pub fn catalog_dir() -> Option<PathBuf> {
     let has_toml = std::fs::read_dir(&d).ok()?.flatten().any(|e| {
         e.path().extension().is_some_and(|x| x == "toml")
     });
-    has_toml.then_some(d)
+    has_toml.then(|| std::fs::canonicalize(&d).unwrap_or(d))
 }
 
 /// The catalog: the directory catalog's entries, then built-in entries whose

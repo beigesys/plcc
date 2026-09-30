@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 mod convert;
+mod device;
 
 use clap::{Parser, Subcommand};
 use miette::{IntoDiagnostic, NamedSource, Result};
@@ -51,9 +52,15 @@ enum Commands {
         /// Output file
         #[arg(short, long)]
         output: PathBuf,
-        /// Target triple (e.g. x86_64-unknown-linux-gnu, wasm32-unknown-unknown)
-        #[arg(long, default_value = "x86_64-unknown-linux-gnu")]
-        target: String,
+        /// Device manifest (a .toml file, or a catalog id such as arduino-opta):
+        /// sets the target triple, CPU, features, float ABI and process-image
+        /// sizes; explicit flags override it (docs/device-manifest.md)
+        #[arg(long, value_name = "FILE|ID")]
+        device: Option<String>,
+        /// Target triple (e.g. x86_64-unknown-linux-gnu, wasm32-unknown-unknown);
+        /// default: the device's, else x86_64-unknown-linux-gnu
+        #[arg(long)]
+        target: Option<String>,
         /// LLVM CPU to generate code for (e.g. cortex-m7); default: the triple's generic CPU
         #[arg(long, value_name = "CPU")]
         cpu: Option<String>,
@@ -120,6 +127,11 @@ enum Commands {
         #[arg(long)]
         prelude: bool,
     },
+    /// Device manifests: validate them, list the catalog (docs/device-manifest.md)
+    Device {
+        #[command(subcommand)]
+        command: DeviceCommand,
+    },
     /// Compile and JIT-run ST programs, optionally with Modbus TCP for SCADA
     Sim {
         /// Input .st, PLCopen .xml, TwinCAT objects (.TcPOU/.TcDUT/.TcGVL/.TcIO/.TcTTO), .plcproj files or directories
@@ -145,6 +157,19 @@ enum Commands {
         #[arg(long, value_name = "FILE")]
         io_map: Option<PathBuf>,
     },
+}
+
+#[derive(Subcommand)]
+enum DeviceCommand {
+    /// Validate device manifests and report problems with file, line and column
+    Check {
+        files: Vec<PathBuf>,
+        /// Print the expanded manifest(s) as JSON (`repeat` groups unrolled)
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the device catalog (`devices/`, or the built-in copies)
+    List,
 }
 
 /// `--stdlib` values.
@@ -730,9 +755,14 @@ fn main() -> Result<()> {
             println!("OK: {user_decls} declaration(s) checked");
             Ok(())
         }
+        Commands::Device { command } => match command {
+            DeviceCommand::Check { files, json } => device::check(&files, json),
+            DeviceCommand::List => device::list(),
+        },
         Commands::Compile {
             inputs,
             output,
+            device,
             target,
             cpu,
             features,
@@ -749,6 +779,46 @@ fn main() -> Result<()> {
             if inputs.is_empty() {
                 eprintln!("Error: at least one input file is required");
                 std::process::exit(1);
+            }
+
+            // The device manifest supplies what the flags leave out.
+            let device = device.as_deref().map(device::resolve).transpose()?;
+            let dev = device.as_ref().map(|d| &d.device);
+            if let Some(d) = dev {
+                let abi = plcc_codegen::compiler::contract::ABI_VERSION;
+                if d.target.runtime.abi != abi {
+                    miette::bail!(
+                        "{}: the {} runtime implements runtime ABI {}, this plcc compiles for ABI {abi}",
+                        device.as_ref().map_or("", |d| d.name.as_str()),
+                        d.target.runtime.kind,
+                        d.target.runtime.abi
+                    );
+                }
+            }
+            let target = target
+                .or_else(|| dev.map(|d| d.target.triple.clone()))
+                .unwrap_or_else(|| "x86_64-unknown-linux-gnu".to_string());
+            let cpu = cpu.or_else(|| dev.and_then(|d| d.target.cpu.clone()));
+            let features = if features.is_empty() {
+                dev.map(|d| d.target.features.clone()).unwrap_or_default()
+            } else {
+                features
+            };
+            let float_abi = float_abi.or_else(|| {
+                dev.and_then(|d| d.target.float_abi.map(|a| a.as_str().to_string()))
+            });
+            let mut image_size = image_size;
+            if let Some(d) = dev {
+                let given: Vec<String> = image_size
+                    .iter()
+                    .filter_map(|s| s.split_once('=').map(|(a, _)| a.trim().to_ascii_uppercase()))
+                    .collect();
+                let img = d.target.image;
+                for (area, bytes) in [("I", img.i), ("Q", img.q), ("M", img.m)] {
+                    if !given.iter().any(|g| g == area) {
+                        image_size.push(format!("{area}={bytes}"));
+                    }
+                }
             }
 
             let parsed = parse_inputs(&inputs, stdlib, &l5x_options(&io_map)?)?;
@@ -790,9 +860,13 @@ fn main() -> Result<()> {
             }
 
             if emit_header.is_some() || emit_symbols.is_some() {
-                let contract = compiler
+                let mut contract = compiler
                     .runtime_contract(&target)
                     .map_err(|e| miette::miette!("{e}"))?;
+                contract.device = dev.map(|d| plcc_codegen::DeviceStamp {
+                    id: d.device.id.clone(),
+                    version: d.device.version,
+                });
                 if let Some(path) = &emit_header {
                     let guard = format!(
                         "PLCC_{}_H",

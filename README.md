@@ -32,6 +32,11 @@ plcc compile MyPlc/MyPlc.plcproj -o plc.o
 # A Rockwell Studio 5000 project exported as L5X, I/O bound to %I/%Q
 plcc compile plant.L5X --io-map plant_io.toml -o plant.o --target thumbv7em-none-eabi
 
+# For a device from the catalog (target, CPU/FPU flags, process-image sizes)
+plcc compile plant.st -o plant.o --device arduino-opta --emit-header plant.h
+plcc device list
+plcc device check my-board.toml
+
 # Any input printed as canonical Structured Text (ladder rungs as the ST they
 # lower to, one `(* rung N *)` group per rung)
 plcc convert plant.L5X --to st -o plant.st --prelude

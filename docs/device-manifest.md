@@ -287,6 +287,43 @@ as JSON (`plcc device check --json`, `expandDevice` in plcc-wasm):
 built-in and test manifests; the Rust validator and studio's TypeScript loader
 are both tested against them.
 
+## Compiling for a device
+
+```bash
+plcc compile prog.st -o prog.o --device arduino-opta --emit-header prog.h
+plcc compile prog.st -o prog.o --device ./my-board.toml
+plcc device check my-board.toml           # diagnostics; --json prints the expansion
+plcc device list                          # the catalog
+```
+
+`--device` takes a manifest file or a catalog id. It sets:
+
+| From the manifest | Flag it stands for | Opta |
+|---|---|---|
+| `target.triple` | `--target` | `thumbv7em-none-eabi` |
+| `target.cpu` | `--cpu` | `cortex-m7` |
+| `target.features` | `--features` | `+fp-armv8d16` |
+| `target.float_abi` | `--float-abi` | `softfp` |
+| `target.image` | `--image-size I=… Q=… M=…` | 18, 1, 64 |
+
+An explicit flag overrides the manifest (`--image-size` per area; `--features`
+replaces the list). plcc refuses a manifest whose `target.runtime.abi` is not
+its own runtime-contract version. `--emit-header` records the manifest as
+`PLCC_DEVICE_ID` and `PLCC_DEVICE_MANIFEST_VERSION` (and `PLCC_TARGET_CPU`,
+`PLCC_TARGET_FEATURES`); `--emit-symbols` as `"device": {"id", "version"}`, so a
+runtime can refuse a program built for another device at compile time.
+
+The float ABI: LLVM takes the calling convention from the triple (`eabi`
+passes floats in integer registers, `eabihf` in FPU registers). `softfp` and
+`hard` check the triple against it; `soft` also turns the FPU off. The
+Opta's Arduino core builds with `-mcpu=cortex-m7 -mfloat-abi=softfp
+-mfpu=fpv5-d16`, which is exactly `cortex-m7`, `+fp-armv8d16` and `softfp`:
+REAL arithmetic is FPU instructions, and a program's object still links with
+the core's code.
+
+Catalog lookup: `$PLCC_DEVICES` if set, else the `devices/` directory of the
+plcc checkout the binary was built from, else the built-in copies.
+
 ## Versioning
 
 - `device.schema` is the format. This document is format 1; a later format

@@ -209,8 +209,8 @@ Bind LD variables to these addresses with `address=` in the interface, as in
 Motor is relay 1. A `<configuration>` sets the task interval. Without one, plcc
 adds an implicit task (`--task-interval`, default `T#20ms`).
 
-`build.sh` only forwards its first argument to `plcc compile`, so the XML flow
-needs no changes to it:
+`build.sh` passes its first argument to `plcc compile --device arduino-opta`
+(docs/device-manifest.md), so the XML flow needs no changes to it:
 
 ```bash
 cd ~/opta_plcc
@@ -225,8 +225,7 @@ by hand against a copy of the runtime:
 
 ```bash
 plcc compile tests/fixtures/plcopen/ld_seal_in.xml -o runtime/plc.o \
-    --target thumbv7em-none-eabi --emit-header runtime/plc.h \
-    --image-size I=18 --image-size Q=1 --image-size M=64
+    --device arduino-opta --emit-header runtime/plc.h
 arduino-cli compile -b arduino:mbed_opta:opta \
     --build-property "compiler.c.elf.extra_flags=$PWD/runtime/plc.o" runtime
 # Sketch uses 146464 bytes (7%) of program storage space.

@@ -356,14 +356,15 @@ local 1769 modules, run on the Opta generic runtime's map:
 
 ```bash
 plcc compile tests/fixtures/l5x/opta_io.L5X --io-map tests/fixtures/l5x/opta_io.toml \
-    -o runtime/plc.o --target thumbv7em-none-eabi --emit-header runtime/plc.h \
-    --image-size I=18 --image-size Q=1 --image-size M=64
+    -o runtime/plc.o --device arduino-opta --emit-header runtime/plc.h
 arduino-cli compile -b arduino:mbed_opta:opta \
     --build-property "compiler.c.elf.extra_flags=$PWD/runtime/plc.o" runtime
 ```
 
-(`~/opta_plcc/build.sh` forwards only its first argument to plcc; run the two
-steps by hand, or add `--io-map` to its plcc line.)
+`--device arduino-opta` (docs/device-manifest.md) sets the target, the
+Cortex-M7 FPU flags and the image sizes the runtime expects. `~/opta_plcc/build.sh`
+does both steps and flashes; `IO_MAP=plant_io.toml ./build.sh plant.L5X` passes
+the map.
 
 ## Measured on public L5X exports
 
