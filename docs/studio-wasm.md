@@ -26,7 +26,7 @@ piece that is not in the browser yet (code generation), and the plan for it.
 
 | Piece | Where | Size | Status |
 |---|---|---|---|
-| Front end: ST / PLCopen XML / L5X / TwinCAT → diagnostics, tag outline; `plcc convert` (ST, PLCopen LD, L5X RLL, ladder JSON, IEC↔Logix); ladder instruction catalog | `crates/plcc-driver`, `crates/plcc-wasm`, `packages/plcc-wasm` | 1.88 MB wasm, 658 KB gzip, 491 KB brotli | done, tested in Node |
+| Front end: ST / PLCopen XML / L5X / TwinCAT → diagnostics, tag outline; `plcc convert` (ST, PLCopen LD, L5X RLL, ladder JSON, IEC↔Logix); ladder instruction catalog; device manifests (parse, validate, expand) | `crates/plcc-driver`, `crates/plcc-device`, `crates/plcc-wasm`, `packages/plcc-wasm` | 2.15 MB wasm, 743 KB gzip, 547 KB brotli (the manifest API, mostly the TOML parser, is 269 KB / 85 KB gzip of it) | done, tested in Node |
 | Simulator runtime for plcc's wasm32 output | `packages/plc-wasm` | ~20 KB TS; programs 3-4 KB each | done, tested in Node |
 | Flashing (WebUSB DFU 1.1 + DfuSe), 1200-baud touch | `packages/webdfu` | ~15 KB TS | done, tested against a fake device; not yet run against hardware from a browser |
 | Code generation (ST → wasm32 for the simulator, → Thumb for the Opta) | `crates/plcc-codegen` (LLVM) | 31.7 MB wasm, 6.8 MB brotli (spike) | **spike works**: LLVM in wasm, output byte-identical to native |
@@ -103,6 +103,22 @@ const palette = await catalog("logix");   // [{ name: "XIC", category: "bit", ro
 Ladder outputs take one input file (a `.json` input is a ladder model; `.st`
 is converted, its drawable statements as rungs); translation warnings come back
 as `stage: "convert"` warnings, reader errors keep their spans.
+
+Device manifests (docs/device-manifest.md), through `crates/plcc-device`:
+
+```ts
+const r = await loadDevice(tomlText, "devices/arduino-opta.toml");
+// { ok, manifest, device, diagnostics }: `device` is the expansion (every `repeat`
+// unrolled), `diagnostics` [{ file, severity, message, path: "io[3].address", line, col, span }]
+await parseDevice(tomlText);      // TOML, value types, unknown keys only
+await validateDevice(tomlText);   // plus every semantic check, no expansion
+await builtinDevices();           // [{ file, text }]: the Opta and Simulator built into plcc
+await deviceSchema();             // the JSON Schema (docs/device-manifest.schema.json)
+```
+
+Studio has its own TypeScript loader for manifests (`studio/src/devices/manifest.ts`,
+so the editor does not load the 2 MB front end to show a device); both are
+tested against the same golden expansions in `crates/plcc-device/tests/data`.
 
 - A Rust panic aborts the instance (`panic = "abort"`) and wasm-bindgen keeps one
   instance per realm: run the package in a worker and restart the worker when

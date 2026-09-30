@@ -2,8 +2,9 @@
 
 //! plcc's front end for the browser: parse and type-check Structured Text,
 //! PLCopen XML, Rockwell L5X and TwinCAT projects held in memory, with
-//! structured diagnostics and a tag outline. No LLVM: code generation is not
-//! part of this module (see docs/studio-wasm.md).
+//! structured diagnostics and a tag outline, and device manifests (parse,
+//! validate, expand). No LLVM: code generation is not part of this module
+//! (see docs/studio-wasm.md).
 //!
 //! The interface is JSON in, JSON out, so the JavaScript side
 //! (`packages/plcc-wasm`) owns the TypeScript types.
@@ -236,6 +237,82 @@ pub fn validate_path(path: &str) -> Option<String> {
     plcc_driver::validate_path(path).err()
 }
 
+/// `device_*` responses: the manifest as written, its expansion, and every
+/// diagnostic (1-based `line`/`col`, byte `span`, document `path`).
+#[derive(Serialize)]
+pub struct DeviceResponse {
+    pub ok: bool,
+    pub manifest: Option<plcc_device::Manifest>,
+    pub device: Option<plcc_device::Device>,
+    pub diagnostics: Vec<plcc_device::Diagnostic>,
+}
+
+/// Parse, validate and expand a device manifest (docs/device-manifest.md)
+/// without JSON (for native tests).
+pub fn run_device(text: &str, file: Option<&str>, expand: bool) -> DeviceResponse {
+    let c = plcc_device::load(text, file);
+    DeviceResponse {
+        ok: c.device.is_some(),
+        manifest: c.manifest,
+        device: if expand { c.device } else { None },
+        diagnostics: c.diagnostics,
+    }
+}
+
+/// Parse only: the manifest as written (TOML syntax, value types and unknown
+/// keys checked), or `null` with the diagnostics. JSON `{ ok, manifest, diagnostics }`.
+#[wasm_bindgen]
+pub fn device_parse(text: &str, file: Option<String>) -> String {
+    let r = match plcc_device::parse(text, file.as_deref()) {
+        Ok(m) => DeviceResponse {
+            ok: true,
+            manifest: Some(m),
+            device: None,
+            diagnostics: Vec::new(),
+        },
+        Err(d) => DeviceResponse {
+            ok: false,
+            manifest: None,
+            device: None,
+            diagnostics: vec![d],
+        },
+    };
+    serde_json::to_string(&r).unwrap_or_default()
+}
+
+/// Parse and validate: JSON `{ ok, manifest, diagnostics }` (`ok` when there
+/// is no error; warnings may remain).
+#[wasm_bindgen]
+pub fn device_validate(text: &str, file: Option<String>) -> String {
+    serde_json::to_string(&run_device(text, file.as_deref(), false)).unwrap_or_default()
+}
+
+/// Parse, validate and expand (`repeat` groups unrolled, addresses
+/// canonical): JSON `{ ok, manifest, device, diagnostics }`.
+#[wasm_bindgen]
+pub fn device_load(text: &str, file: Option<String>) -> String {
+    serde_json::to_string(&run_device(text, file.as_deref(), true)).unwrap_or_default()
+}
+
+/// The built-in manifests compiled into plcc (the Opta and the Simulator),
+/// as JSON `[{ file, text }]`.
+#[wasm_bindgen]
+pub fn device_builtin() -> String {
+    let v: Vec<serde_json::Value> = plcc_device::catalog::BUILTIN
+        .iter()
+        .map(|(file, text)| serde_json::json!({ "file": file, "text": text }))
+        .collect();
+    serde_json::to_string(&v).unwrap_or_default()
+}
+
+/// The JSON Schema of the manifest format: docs/device-manifest.schema.json,
+/// embedded rather than generated here (schemars would add ~100 KB of code;
+/// plcc-device's tests keep the file current).
+#[wasm_bindgen]
+pub fn device_schema() -> String {
+    include_str!("../../../docs/device-manifest.schema.json").to_string()
+}
+
 /// The plcc version this module was built from.
 #[wasm_bindgen]
 pub fn version() -> String {
@@ -257,6 +334,28 @@ mod tests {
         let out: serde_json::Value = serde_json::from_str(&check("{nope")).unwrap();
         assert_eq!(out["ok"], false);
         assert_eq!(out["diagnostics"][0]["stage"], "input");
+    }
+
+    #[test]
+    fn device_manifests() {
+        let opta = plcc_device::catalog::builtin_source("arduino-opta").unwrap();
+        let out: serde_json::Value = serde_json::from_str(&device_load(opta, None)).unwrap();
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["device"]["io"][0]["address"], "%IX0.0");
+        assert_eq!(out["device"]["target"]["image"]["M"], 64);
+        let bad = opta.replace("address = \"%IX0.{n-1}\"", "address = \"%QX0.{n-1}\"");
+        let out: serde_json::Value =
+            serde_json::from_str(&device_validate(&bad, Some("x.toml".into()))).unwrap();
+        assert_eq!(out["ok"], false);
+        assert_eq!(out["device"], serde_json::Value::Null);
+        assert_eq!(out["diagnostics"][0]["file"], "x.toml");
+        assert!(out["diagnostics"][0]["line"].as_u64().unwrap() > 1);
+        let out: serde_json::Value = serde_json::from_str(&device_parse("[device", None)).unwrap();
+        assert_eq!(out["ok"], false);
+        assert_eq!(out["diagnostics"][0]["line"], 1);
+        let builtin: serde_json::Value = serde_json::from_str(&device_builtin()).unwrap();
+        assert_eq!(builtin.as_array().unwrap().len(), 2);
+        assert!(device_schema().contains("\"title\": \"plcc device manifest\""));
     }
 
     #[test]

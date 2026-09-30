@@ -239,6 +239,106 @@ export async function validatePath(path: string): Promise<string | null> {
   return raw.validate_path(path) ?? null;
 }
 
+// ---------------------------------------------------------------- device manifests
+
+/** A problem in a device manifest (docs/device-manifest.md). */
+export interface DeviceDiagnostic {
+  file: string | null;
+  severity: "error" | "warning";
+  message: string;
+  /** Document path of the value: `io[3].address`; empty for syntax errors. */
+  path: string;
+  /** 1-based; `col` counts characters. */
+  line: number | null;
+  col: number | null;
+  /** Byte range in the UTF-8 text. */
+  span?: { start: number; end: number };
+}
+
+/** One I/O point of an expanded manifest. */
+export interface DeviceIoPoint {
+  id: string;
+  terminal: string;
+  label: string;
+  group: string;
+  dir: "in" | "out" | "mem";
+  kind: "digital" | "analog" | "register";
+  type: string;
+  address: string;
+  range?: [number, number];
+  eng?: [number, number];
+  units?: string;
+  description?: string;
+}
+
+/**
+ * An expanded manifest (`plcc_device::Device`): the sections as written plus
+ * `io` with every `repeat` unrolled. The section types are those of the
+ * JSON Schema (`deviceSchema()`).
+ */
+export interface Device {
+  device: { id: string; name: string; vendor: string; description: string; version: number; schema: number; source?: string; sha256?: string };
+  target: {
+    triple: string;
+    cpu?: string;
+    features?: string[];
+    float_abi?: "soft" | "softfp" | "hard";
+    runtime: { kind: string; abi: number };
+    image: { I: number; Q: number; M: number };
+  };
+  flash?: Record<string, unknown>;
+  console?: { transport: "webserial"; baud: number; commands: ("info" | "img" | "mw")[]; img_format: "hex-areas"; img_m_bytes: number };
+  modbus?: Record<string, unknown>;
+  io: DeviceIoPoint[];
+}
+
+export interface DeviceResult {
+  ok: boolean;
+  /** The manifest as written (with `repeat` entries), when it parses. */
+  manifest: Record<string, unknown> | null;
+  /** The expansion (`loadDevice` only), when it is valid. */
+  device: Device | null;
+  diagnostics: DeviceDiagnostic[];
+}
+
+function deviceError(e: unknown): DeviceResult {
+  return {
+    ok: false,
+    manifest: null,
+    device: null,
+    diagnostics: [
+      { file: null, severity: "error", message: `internal error: ${e instanceof Error ? e.message : String(e)}`, path: "", line: null, col: null },
+    ],
+  };
+}
+
+/** Parse a manifest: TOML syntax, value types and unknown keys. */
+export function parseDevice(text: string, file?: string): Promise<DeviceResult> {
+  return guarded(() => JSON.parse(raw.device_parse(text, file)) as DeviceResult, deviceError);
+}
+
+/** Parse and validate a manifest (diagnostics with line and column). */
+export function validateDevice(text: string, file?: string): Promise<DeviceResult> {
+  return guarded(() => JSON.parse(raw.device_validate(text, file)) as DeviceResult, deviceError);
+}
+
+/** Parse, validate and expand a manifest. */
+export function loadDevice(text: string, file?: string): Promise<DeviceResult> {
+  return guarded(() => JSON.parse(raw.device_load(text, file)) as DeviceResult, deviceError);
+}
+
+/** The manifests built into plcc (Opta, Simulator): the fallback catalog. */
+export async function builtinDevices(): Promise<{ file: string; text: string }[]> {
+  await (ready ?? load());
+  return JSON.parse(raw.device_builtin()) as { file: string; text: string }[];
+}
+
+/** The JSON Schema of the manifest format, for editors. */
+export async function deviceSchema(): Promise<unknown> {
+  await (ready ?? load());
+  return JSON.parse(raw.device_schema());
+}
+
 export async function version(): Promise<string> {
   await (ready ?? load());
   return raw.version();

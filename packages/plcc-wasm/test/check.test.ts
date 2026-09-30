@@ -3,7 +3,9 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
-import { catalog, check, convert, load, parse, validatePath, version } from "../src/index";
+import {
+  builtinDevices, catalog, check, convert, deviceSchema, load, loadDevice, parse, parseDevice, validateDevice, validatePath, version,
+} from "../src/index";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(here, "../../../tests/fixtures");
@@ -142,5 +144,38 @@ describe("plcc-wasm", () => {
     const r = await parse("main.st", SEAL_IN);
     expect(r.diagnostics).toEqual([]);
     expect(JSON.stringify(r.ast)).toContain("SealIn");
+  });
+});
+
+describe("device manifests", () => {
+  const opta = readFileSync(join(here, "../../../crates/plcc-device/builtin/arduino-opta.toml"), "utf8");
+  const golden = JSON.parse(readFileSync(join(here, "../../../crates/plcc-device/tests/data/arduino-opta.expanded.json"), "utf8"));
+
+  it("expands a manifest like plcc device check --json", async () => {
+    const r = await loadDevice(opta, "arduino-opta.toml");
+    expect(r.ok).toBe(true);
+    expect(r.diagnostics).toEqual([]);
+    expect(r.device).toEqual(golden);
+    expect((r.manifest as { io: unknown[] }).io.length).toBe(6);
+  });
+
+  it("reports problems with line and column", async () => {
+    const bad = opta.replace('address = "%IX1.0"', 'address = "%QX1.0"');
+    const r = await validateDevice(bad, "x.toml");
+    expect(r.ok).toBe(false);
+    expect(r.device).toBeNull();
+    expect(r.diagnostics[0]).toMatchObject({ file: "x.toml", severity: "error", path: "io[1].address" });
+    expect(bad.split("\n")[r.diagnostics[0].line! - 1]).toContain("%QX1.0");
+    const p = await parseDevice("[device\n");
+    expect(p.ok).toBe(false);
+    expect(p.diagnostics[0].line).toBe(1);
+  });
+
+  it("lists the built-in manifests and the schema", async () => {
+    const b = await builtinDevices();
+    expect(b.map((x) => x.file).sort()).toEqual(["arduino-opta.toml", "simulator.toml"]);
+    const schema = (await deviceSchema()) as { title: string; required: string[] };
+    expect(schema.title).toBe("plcc device manifest");
+    expect(schema.required).toEqual(["device", "target"]);
   });
 });

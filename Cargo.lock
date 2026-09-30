@@ -603,6 +603,7 @@ dependencies = [
 name = "plcc-wasm"
 version = "0.1.0"
 dependencies = [
+ "plcc-device",
  "plcc-driver",
  "serde",
  "serde_json",
