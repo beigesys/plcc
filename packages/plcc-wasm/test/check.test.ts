@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
-import { check, load, parse, validatePath, version } from "../src/index";
+import { catalog, check, convert, load, parse, validatePath, version } from "../src/index";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(here, "../../../tests/fixtures");
@@ -99,6 +99,43 @@ describe("plcc-wasm", () => {
     const r = await check({ files: { "a.st": SEAL_IN }, stdlib: "bogus" as never });
     expect(r.ok).toBe(false);
     expect(r.diagnostics[0].message).toMatch(/stdlib/);
+  });
+
+  it("converts ST to ladder JSON, then to L5X and PLCopen", async () => {
+    const st = "PROGRAM P VAR a : BOOL; b : BOOL; q : BOOL; END_VAR q := (a OR q) AND NOT b; END_PROGRAM";
+    const j = await convert({ files: { "p.st": st }, to: "ladder-json" });
+    expect(j.ok).toBe(true);
+    const model = JSON.parse(j.output!);
+    expect(model.dialect).toBe("iec");
+    const l5x = await convert({ files: { "p.json": j.output! }, to: "l5x" });
+    expect(l5x.ok).toBe(true);
+    expect(l5x.output).toContain("RSLogix5000Content");
+    const back = await convert({ files: { "p.L5X": l5x.output! }, to: "plcopen" });
+    expect(back.ok).toBe(true);
+    expect(back.diagnostics.every((d) => d.severity !== "error")).toBe(true);
+    expect(back.diagnostics.every((d) => ["convert", "l5x"].includes(d.stage))).toBe(true);
+  });
+
+  it("converts an L5X project to ST with the Logix prelude", async () => {
+    const r = await convert({ files: { "s.L5X": fixture("l5x/seal_in.L5X") }, to: "st", prelude: true });
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain("Logix prelude");
+  });
+
+  it("reports conversion errors as diagnostics", async () => {
+    const r = await convert({ files: { "a.st": "PROGRAM P x := ; END_PROGRAM" }, to: "ladder-json" });
+    expect(r.ok).toBe(false);
+    expect(r.diagnostics[0].stage).toBe("parse");
+    const bad = await convert({ files: { "a.st": "" }, to: "docx" as never });
+    expect(bad.diagnostics[0].message).toMatch(/to:/);
+  });
+
+  it("lists the ladder instruction catalog", async () => {
+    const logix = await catalog("logix");
+    const xic = logix.find((s) => s.name === "XIC")!;
+    expect(xic).toMatchObject({ role: "input", category: "bit" });
+    const iec = await catalog("iec");
+    expect(iec.find((s) => s.name === "TON")).toMatchObject({ instance: true, role: "box" });
   });
 
   it("dumps one file's AST", async () => {

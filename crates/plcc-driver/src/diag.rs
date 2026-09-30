@@ -32,6 +32,8 @@ pub enum Stage {
     Input,
     /// The type checker (`plcc check`).
     Typecheck,
+    /// Converting between notations and ladder dialects (`plcc convert`).
+    Convert,
 }
 
 /// A position in a file. `line` and `col` are 1-based; `col` counts UTF-16 code

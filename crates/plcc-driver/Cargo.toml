@@ -8,6 +8,7 @@ license.workspace = true
 miette = "7.6.0"
 plcc-hir = { version = "0.1.0", path = "../plcc-hir" }
 plcc-l5x = { version = "0.1.0", path = "../plcc-l5x" }
+plcc-ladder = { version = "0.1.0", path = "../plcc-ladder" }
 plcc-plcopen = { version = "0.1.0", path = "../plcc-plcopen" }
 plcc-runtime = { version = "0.1.0", path = "../plcc-runtime" }
 plcc-st = { version = "0.1.0", path = "../plcc-st" }

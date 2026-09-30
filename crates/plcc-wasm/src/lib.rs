@@ -132,6 +132,104 @@ fn plcc_l5x_options_default() -> plcc_driver::L5xOptions {
     plcc_driver::L5xOptions::default()
 }
 
+/// `convert()` request.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConvertRequest {
+    pub files: BTreeMap<String, String>,
+    #[serde(default)]
+    pub entry: Option<Vec<String>>,
+    /// `"st"`, `"plcopen"`, `"l5x"` or `"ladder-json"`.
+    pub to: String,
+    /// Ladder dialect of ladder-json / st output: `"iec"` or `"logix"`.
+    #[serde(default)]
+    pub dialect: Option<String>,
+    /// With L5X input and `to: "st"`: append the Logix prelude.
+    #[serde(default)]
+    pub prelude: bool,
+}
+
+#[derive(Serialize)]
+pub struct ConvertResponse {
+    pub ok: bool,
+    pub output: Option<String>,
+    pub diagnostics: Vec<plcc_driver::Diagnostic>,
+}
+
+fn dialect(s: &str) -> Option<plcc_driver::Dialect> {
+    match s {
+        "iec" => Some(plcc_driver::Dialect::Iec),
+        "logix" => Some(plcc_driver::Dialect::Logix),
+        _ => None,
+    }
+}
+
+fn input_error(message: String) -> plcc_driver::Diagnostic {
+    plcc_driver::Diagnostic::plain(
+        None,
+        plcc_driver::Stage::Input,
+        plcc_driver::Severity::Error,
+        message,
+    )
+}
+
+/// Convert without JSON (for native tests).
+pub fn run_convert(req: ConvertRequest) -> ConvertResponse {
+    let bad = |m: String| ConvertResponse {
+        ok: false,
+        output: None,
+        diagnostics: vec![input_error(m)],
+    };
+    let Some(to) = plcc_driver::convert::Format::parse(&req.to) else {
+        return bad(format!(
+            "to: `{}` (expected \"st\", \"plcopen\", \"l5x\" or \"ladder-json\")",
+            req.to
+        ));
+    };
+    let d = match req.dialect.as_deref() {
+        None => None,
+        Some(s) => match dialect(s) {
+            Some(d) => Some(d),
+            None => return bad(format!("dialect: `{s}` (expected \"iec\" or \"logix\")")),
+        },
+    };
+    let project = plcc_driver::Project {
+        files: req.files,
+        entry: req.entry,
+        ..Default::default()
+    };
+    let c = plcc_driver::convert::convert(&project, to, d, req.prelude);
+    ConvertResponse {
+        ok: c.output.is_some(),
+        output: c.output,
+        diagnostics: c.diagnostics,
+    }
+}
+
+/// Convert a program between notations (`plcc convert`). `request` is JSON:
+/// `{ files, entry?, to: "st" | "plcopen" | "l5x" | "ladder-json", dialect?: "iec" | "logix", prelude?: bool }`.
+/// Returns JSON `{ ok, output, diagnostics }`; translation warnings are
+/// diagnostics with `stage: "convert"`.
+#[wasm_bindgen]
+pub fn convert(request: &str) -> String {
+    let r = match serde_json::from_str::<ConvertRequest>(request) {
+        Ok(req) => run_convert(req),
+        Err(e) => ConvertResponse {
+            ok: false,
+            output: None,
+            diagnostics: vec![input_error(format!("malformed request: {e}"))],
+        },
+    };
+    serde_json::to_string(&r).unwrap_or_default()
+}
+
+/// The ladder instruction catalog (pins, roles, categories) for `"iec"` or
+/// `"logix"`, as JSON (`plcc_ladder::catalog::all`); `null` for another dialect.
+#[wasm_bindgen]
+pub fn catalog(dialect_name: &str) -> Option<String> {
+    dialect(dialect_name).map(plcc_driver::convert::catalog_json)
+}
+
 /// `null` if `path` is acceptable as a project path, else why not.
 #[wasm_bindgen]
 pub fn validate_path(path: &str) -> Option<String> {
@@ -159,5 +257,26 @@ mod tests {
         let out: serde_json::Value = serde_json::from_str(&check("{nope")).unwrap();
         assert_eq!(out["ok"], false);
         assert_eq!(out["diagnostics"][0]["stage"], "input");
+    }
+
+    #[test]
+    fn convert_st_to_ladder_and_back() {
+        let st = "PROGRAM P VAR a : BOOL; b : BOOL; q : BOOL; END_VAR q := a AND NOT b; END_PROGRAM";
+        let req = format!(
+            r#"{{"files":{{"p.st":{}}},"to":"ladder-json"}}"#,
+            serde_json::to_string(st).unwrap()
+        );
+        let out: serde_json::Value = serde_json::from_str(&convert(&req)).unwrap();
+        assert_eq!(out["ok"], true, "{out}");
+        let json = out["output"].as_str().unwrap().to_string();
+        let req = format!(
+            r#"{{"files":{{"p.json":{}}},"to":"l5x"}}"#,
+            serde_json::to_string(&json).unwrap()
+        );
+        let out: serde_json::Value = serde_json::from_str(&convert(&req)).unwrap();
+        assert_eq!(out["ok"], true, "{out}");
+        assert!(out["output"].as_str().unwrap().contains("RSLogix5000Content"));
+        assert!(catalog("logix").unwrap().contains("XIC"));
+        assert!(catalog("x").is_none());
     }
 }

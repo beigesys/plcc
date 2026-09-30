@@ -7,7 +7,7 @@
 import init, * as raw from "../pkg/plcc_wasm.js";
 
 export type Severity = "error" | "warning" | "advice";
-export type Stage = "parse" | "plcopen" | "l5x" | "twincat" | "io-map" | "input" | "typecheck";
+export type Stage = "parse" | "plcopen" | "l5x" | "twincat" | "io-map" | "input" | "typecheck" | "convert";
 
 /** 1-based line; `col` is 1-based in UTF-16 code units; `utf16` is a JS string index. */
 export interface Position {
@@ -171,6 +171,66 @@ export function parse(path: string, text: string): Promise<{ ast: unknown; diagn
     () => JSON.parse(raw.parse(path, text)),
     (e) => ({ ast: null, diagnostics: internalError(e).diagnostics }),
   );
+}
+
+export type ConvertFormat = "st" | "plcopen" | "l5x" | "ladder-json";
+export type LadderDialect = "iec" | "logix";
+
+export interface ConvertRequest {
+  /** path → text: .st, PLCopen .xml, .L5X, a ladder model .json, TwinCAT files. */
+  files: Record<string, string>;
+  /** Inputs; ladder outputs take exactly one. Default: every file. */
+  entry?: string[];
+  to: ConvertFormat;
+  /** Dialect of ladder-json / st output; plcopen is always IEC, l5x Logix. */
+  dialect?: LadderDialect;
+  /** L5X to ST: append the Logix prelude so the ST compiles on its own. */
+  prelude?: boolean;
+}
+
+export interface ConvertResult {
+  ok: boolean;
+  output: string | null;
+  /** Reader errors, plus translation / write warnings and ST-to-ladder notes (`stage: "convert"`). */
+  diagnostics: Diagnostic[];
+}
+
+/** Convert between notations and ladder dialects, as `plcc convert` does. */
+export function convert(req: ConvertRequest): Promise<ConvertResult> {
+  return guarded(
+    () => JSON.parse(raw.convert(JSON.stringify(req))) as ConvertResult,
+    (e) => ({ ok: false, output: null, diagnostics: internalError(e).diagnostics }),
+  );
+}
+
+export interface PinSpec {
+  name: string;
+  dir: "input" | "output" | "in_out";
+}
+
+/** One instruction of the ladder palette (`plcc_ladder::catalog::Spec`). */
+export interface InstructionSpec {
+  name: string;
+  category:
+    | "bit" | "timer" | "counter" | "edge" | "compare" | "math" | "move" | "logical"
+    | "expression" | "program_control" | "file" | "string" | "other";
+  /** Logix input/output instruction, or an IEC box. */
+  role: "input" | "output" | "box";
+  pins: PinSpec[];
+  /** The last pin repeats. */
+  variadic: boolean;
+  power_in?: string;
+  power_out?: string;
+  /** IEC function block (needs an instance). */
+  instance: boolean;
+}
+
+/** The ladder instruction catalog of a dialect: names, pins, roles, categories. */
+export async function catalog(dialect: LadderDialect): Promise<InstructionSpec[]> {
+  await (ready ?? load());
+  const json = raw.catalog(dialect);
+  if (json == null) throw new Error(`unknown ladder dialect ${dialect}`);
+  return JSON.parse(json) as InstructionSpec[];
 }
 
 /** null if `path` is a valid project path, else the reason. */

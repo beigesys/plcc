@@ -440,6 +440,7 @@ dependencies = [
  "miette",
  "plcc-hir",
  "plcc-l5x",
+ "plcc-ladder",
  "plcc-plcopen",
  "plcc-runtime",
  "plcc-st",

@@ -9,11 +9,13 @@
 //! over a map of `path → text` so it can run in a browser (`plcc-wasm`) or any
 //! other host that keeps files in memory. It builds for `wasm32-unknown-unknown`.
 
+pub mod convert;
 pub mod diag;
 pub mod tags;
 
 pub use diag::{Diagnostic, Label, LineIndex, Position, Severity, Stage};
 pub use plcc_l5x::Options as L5xOptions;
+pub use plcc_ladder::model::Dialect;
 pub use plcc_st::ast::CompilationUnit;
 
 use plcc_st::ast::Declaration;
@@ -86,7 +88,7 @@ pub fn validate_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn extension(path: &str) -> String {
+pub(crate) fn extension(path: &str) -> String {
     let name = path.rsplit('/').next().unwrap_or(path);
     match name.rsplit_once('.') {
         Some((_, e)) => e.to_ascii_lowercase(),
@@ -99,7 +101,7 @@ const SOURCE_EXTENSIONS: &[&str] = &[
     "st", "iecst", "xml", "l5x", "tcpou", "tcdut", "tcgvl", "tcio", "tctto",
 ];
 
-fn is_l5x(path: &str, source: &str) -> bool {
+pub(crate) fn is_l5x(path: &str, source: &str) -> bool {
     extension(path) == "l5x" || plcc_l5x::is_l5x(source)
 }
 
@@ -146,15 +148,15 @@ fn resolve_include<'a>(
 }
 
 /// The expanded input list.
-struct Inputs {
+pub(crate) struct Inputs {
     /// (path, belongs to a library project)
-    files: Vec<(String, bool)>,
-    tasks: Vec<plcc_twincat::Task>,
+    pub(crate) files: Vec<(String, bool)>,
+    pub(crate) tasks: Vec<plcc_twincat::Task>,
     /// (library references, project name) of each TwinCAT project.
     references: Vec<(Vec<String>, String)>,
 }
 
-fn expand(project: &Project, diags: &mut Vec<Diagnostic>) -> Inputs {
+pub(crate) fn expand(project: &Project, diags: &mut Vec<Diagnostic>) -> Inputs {
     let entry: Vec<String> = match &project.entry {
         Some(e) => e.clone(),
         None => {
@@ -250,6 +252,18 @@ pub fn parse_file(
     source: &str,
     l5x: &plcc_l5x::Options,
 ) -> (CompilationUnit, Vec<Diagnostic>) {
+    parse_file_with(path, source, l5x, false)
+}
+
+/// [`parse_file`]; with `annotate`, ladder and FBD bodies (L5X, PLCopen) put a
+/// `(* rung N *)` comment before each rung's statements, for printing the
+/// lowered ST (`plcc convert --to st`).
+pub fn parse_file_with(
+    path: &str,
+    source: &str,
+    l5x: &plcc_l5x::Options,
+    annotate: bool,
+) -> (CompilationUnit, Vec<Diagnostic>) {
     if is_twincat_object(path, source) {
         let (unit, errors) = plcc_twincat::parse(source);
         let d = errors
@@ -262,7 +276,11 @@ pub fn parse_file(
         return (unit, d);
     }
     if is_l5x(path, source) {
-        let (unit, errors) = plcc_l5x::parse_with(source, l5x);
+        let (unit, errors) = if annotate {
+            plcc_l5x::parse_annotated(source, l5x)
+        } else {
+            plcc_l5x::parse_with(source, l5x)
+        };
         let d = errors
             .iter()
             .map(|e| {
@@ -273,7 +291,10 @@ pub fn parse_file(
         return (unit, d);
     }
     if extension(path) == "xml" || plcc_plcopen::is_plcopen(source) {
-        let (unit, errors) = plcc_plcopen::parse(source);
+        let opts = plcc_plcopen::Options {
+            annotate_rungs: annotate,
+        };
+        let (unit, errors) = plcc_plcopen::parse_with(source, &opts);
         let d = errors
             .iter()
             .map(|e| Diagnostic::from_miette(e, path, source, Stage::Plcopen, None))
