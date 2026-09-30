@@ -293,6 +293,8 @@ struct Tr<'o> {
     first_scan: bool,
     /// Why the last operand could not be converted.
     why: String,
+    /// A structure member without an IEC counterpart met while converting.
+    member_fail: Option<String>,
     /// Variables the POU being translated needs (one-shot rung latches).
     extra_vars: Vec<Variable>,
     /// Storage bits that start TRUE (Logix prescan sets them).
@@ -320,6 +322,7 @@ impl<'o> Tr<'o> {
             ops,
             first_scan: false,
             why: String::new(),
+            member_fail: None,
             extra_vars: Vec::new(),
             init_true: Vec::new(),
             tag_data: HashMap::new(),
@@ -336,6 +339,21 @@ impl<'o> Tr<'o> {
     fn id(&mut self) -> Id {
         self.next += 1;
         self.next
+    }
+
+    /// Declare a helper BOOL the translated rungs use.
+    fn helper_bool(&mut self, name: &str) {
+        if !self
+            .extra_vars
+            .iter()
+            .any(|v| v.name.eq_ignore_ascii_case(name))
+        {
+            self.extra_vars.push(Variable {
+                name: name.to_string(),
+                data_type: "BOOL".into(),
+                ..Default::default()
+            });
+        }
     }
 
     fn warn(&mut self, e: &mut Element, what: &str, msg: String) {
@@ -459,12 +477,13 @@ impl<'o> Tr<'o> {
                     q.name
                 ));
             }
-            let variables = q
+            let mut variables: Vec<Variable> = q
                 .variables
                 .iter()
                 .filter_map(|v| self.var_to_logix(v))
                 .collect();
             let routines = self.translate_rungs(q, &mut |t, s, a| t.series_to_logix(s, a));
+            variables.append(&mut self.extra_vars);
             out.pous.push(Pou {
                 id: q.id,
                 name: q.name.clone(),
@@ -621,7 +640,9 @@ impl<'o> Tr<'o> {
             {
                 let tail = out.pop();
                 around.before.push(std::mem::take(&mut out));
-                around.before.push(reset);
+                if !reset.is_empty() {
+                    around.before.push(reset);
+                }
                 out.extend(tail);
             }
         }
@@ -646,6 +667,8 @@ impl<'o> Tr<'o> {
                         };
                         let q = format!("edge{}", c.id);
                         let sb = format!("edge{}_sb", c.id);
+                        self.helper_bool(&q);
+                        self.helper_bool(&sb);
                         let helper = vec![
                             contact(self.id(), op.clone(), ContactKind::No),
                             instr(self.id(), ins, &[("", sb.clone()), ("", q.clone())]),
@@ -673,6 +696,7 @@ impl<'o> Tr<'o> {
                     }
                     CoilKind::Negated => {
                         let tmp = format!("neg{}", c.id);
+                        self.helper_bool(&tmp);
                         let mut x = coil(c.id, tmp.clone(), CoilKind::Normal);
                         around.after.push(vec![
                             contact(self.id(), tmp.clone(), ContactKind::Nc),
@@ -694,6 +718,7 @@ impl<'o> Tr<'o> {
                             "OSF"
                         };
                         let sb = format!("{}_sb{}", base_member(&op).0, c.id);
+                        self.helper_bool(&sb);
                         let mut x = instr(c.id, ins, &[("", sb.clone()), ("", op.clone())]);
                         self.warn(
                             &mut x,
@@ -849,6 +874,7 @@ impl<'o> Tr<'o> {
                     "ET" => Some(format!("{tm}.ACC")),
                     _ => None,
                 });
+                self.continue_from_output(b.id, &what, &up, &tm, gated, &power_out);
                 if gated {
                     let mut leg = std::mem::take(out);
                     // A power output other than ENO continues the rung after
@@ -964,6 +990,7 @@ impl<'o> Tr<'o> {
                 self.warn(&mut x, &what, msg);
                 out.push(x);
                 let is_ctu = up == "CTU";
+                self.continue_from_output(b.id, &what, &up, &c, gated, &power_out);
                 self.fb_outputs_to_logix(b, &c, around, out, &power_out, |m| match m {
                     "Q" if is_ctu => Some(format!("{c}.DN")),
                     "CV" => Some(format!("{c}.ACC")),
@@ -994,6 +1021,7 @@ impl<'o> Tr<'o> {
             }
             (Some(inst), "R_TRIG") if power_in == "CLK" => {
                 let sb = format!("{inst}_sb");
+                self.helper_bool(&sb);
                 let mut x = instr(b.id, "ONS", &[("", sb.clone())]);
                 self.warn(
                     &mut x,
@@ -1148,6 +1176,32 @@ impl<'o> Tr<'o> {
                 out,
                 &format!("the function {} has no Logix instruction", b.name),
             ),
+        }
+    }
+
+    /// A TOF, RTO or counter whose Q continues the rung: its .DN can be TRUE
+    /// on a FALSE rung (TOF timing out, a held RTO or count), so the rest of
+    /// the rung must start from .DN alone. In the rung itself the rung is
+    /// split there; inside a branch it cannot be, which is warned.
+    fn continue_from_output(
+        &mut self,
+        id: Id,
+        what: &str,
+        up: &str,
+        tag: &str,
+        gated: bool,
+        power_out: &str,
+    ) {
+        if up == "TON" || power_out != "Q" {
+            return;
+        }
+        if self.depth == 1 && !gated {
+            if self.split.is_none() {
+                self.split = Some(Vec::new());
+                self.warn_at(id, what, format!("the rung is split after {up}({tag}): the rest of it continues from {tag}.DN in a rung of its own, as IEC continues with Q whatever the rung before it"));
+            }
+        } else {
+            self.warn_at(id, what, format!("the rung continues as (rung AND {tag}.DN); IEC continues with Q alone, which can be TRUE on a FALSE rung"));
         }
     }
 
@@ -1438,7 +1492,12 @@ impl<'o> Tr<'o> {
             self.why = format!("operand {t} is not an IEC expression ({iec})");
             return None;
         }
+        self.member_fail = None;
         let e = self.rewrite_members(e, id);
+        if let Some(why) = self.member_fail.take() {
+            self.why = why;
+            return None;
+        }
         let mut uses_fs = false;
         mentions(&e, "S_FS", &mut uses_fs);
         self.first_scan |= uses_fs;
@@ -1477,19 +1536,16 @@ impl<'o> Tr<'o> {
                             _ => None,
                         }
                     };
+                    let _ = id;
                     match mapped.map(|m| plcc_st::parse_expression(&m)) {
                         Some((x, errs)) if errs.is_empty() => return x,
                         _ => {
-                            self.warn_at(
-                                id,
-                                "operand",
-                                format!(
-                                    "{b}.{}: member {} of the {} {b} has no IEC counterpart; left as written",
-                                    member.name,
-                                    member.name,
-                                    k.iec_name()
-                                ),
-                            );
+                            self.member_fail = Some(format!(
+                                "{b}.{}: member {} of the {} {b} has no IEC counterpart",
+                                member.name,
+                                member.name,
+                                k.iec_name()
+                            ));
                         }
                     }
                 }
@@ -1532,6 +1588,46 @@ impl<'o> Tr<'o> {
         Expression { kind, span }
     }
 
+    /// The counter a branch of `CLR(C.ACC)` / `OTU(C.DN|OV|UN)` legs clears
+    /// (what the IEC → Logix translation makes of a CTU's R input).
+    fn counter_clear(&self, b: &Branch) -> Option<String> {
+        let mut tag: Option<String> = None;
+        let mut clr = false;
+        for leg in &b.legs {
+            let [e] = leg.as_slice() else { return None };
+            let (base, member) = match e {
+                Element::Block(x) if x.name.eq_ignore_ascii_case("CLR") => {
+                    let v = x.pins.first()?.value.clone()?;
+                    let (bse, m) = base_member(&v);
+                    if !m?.eq_ignore_ascii_case("ACC") {
+                        return None;
+                    }
+                    clr = true;
+                    (bse.to_string(), "ACC".to_string())
+                }
+                Element::Coil(c) if c.kind == CoilKind::Reset => {
+                    let (bse, m) = base_member(&c.operand);
+                    (bse.to_string(), m?.to_ascii_uppercase())
+                }
+                _ => return None,
+            };
+            if !["ACC", "DN", "OV", "UN"].contains(&member.as_str()) {
+                return None;
+            }
+            match &tag {
+                None => tag = Some(base),
+                Some(t) if t.eq_ignore_ascii_case(&base) => {}
+                _ => return None,
+            }
+        }
+        let t = tag?;
+        (clr && matches!(
+            self.fbs.get(&t.to_ascii_lowercase()),
+            Some(Fb::Ctu | Fb::Ctud)
+        ))
+        .then_some(t)
+    }
+
     /// An element whose operand has no IEC form: an ST box in its place.
     fn untranslatable(&mut self, id: Id, what: &str, out: &mut Vec<Element>) {
         let why = std::mem::take(&mut self.why);
@@ -1567,6 +1663,16 @@ impl<'o> Tr<'o> {
                 Some(op) => out.push(coil(c.id, op, c.kind)),
                 None => self.untranslatable(c.id, &what, out),
             },
+            Element::Branch(b) if self.counter_clear(b).is_some() => {
+                // `[CLR(C.ACC) ,OTU(C.DN) ,OTU(C.OV) ,OTU(C.UN) ]`, the reset
+                // an IEC CTU's R becomes in Logix: the instance's R again.
+                let c = self.counter_clear(b).unwrap_or_default();
+                out.push(st_box(
+                    b.id,
+                    format!("{c}(R := TRUE);\n{c}(R := FALSE);"),
+                    Vec::new(),
+                ));
+            }
             Element::Branch(b) => {
                 let legs = b
                     .legs
@@ -1699,7 +1805,8 @@ impl<'o> Tr<'o> {
                 };
                 let mut pins = vec![pin_in("IN", None)];
                 if up == "RTO" {
-                    pins.push(pin_in("R", None));
+                    // Released on every call; RES sets it for one call.
+                    pins.push(pin_in("R", Some("FALSE".into())));
                 }
                 pins.push(pin_in("PT", Some(pt)));
                 pins.push(pin_out("Q", None));
@@ -1784,7 +1891,10 @@ impl<'o> Tr<'o> {
                         self.warn_at(b.id, &what, format!("RES of the TOF {tag}: an IEC TOF has no reset; IN := FALSE starts its off-delay instead of clearing it"));
                         format!("{tag}(IN := FALSE);")
                     }
-                    Some(Fb::Rto) | Some(Fb::Ctu) | Some(Fb::Ctud) => {
+                    // The RTO's own call passes R := FALSE every scan; a
+                    // second call here would restart its timing early.
+                    Some(Fb::Rto) => format!("{tag}(R := TRUE);"),
+                    Some(Fb::Ctu) | Some(Fb::Ctud) => {
                         format!("{tag}(R := TRUE);\n{tag}(R := FALSE);")
                     }
                     Some(Fb::Ctd) => {

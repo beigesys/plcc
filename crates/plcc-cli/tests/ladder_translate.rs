@@ -275,6 +275,28 @@ fn logix_to_iec_runs_alike() {
     }
 }
 
+/// IEC → Logix → IEC: the model that comes back runs like the original.
+#[test]
+fn iec_to_logix_to_iec_runs_alike() {
+    let _clock = jit::clock();
+    let iec = Project::from_json(IEC_MIX).unwrap();
+    let (logix, _) = plcc_ladder::translate::translate(&iec, Dialect::Logix);
+    let (back, warnings) = plcc_l5x::ladder::translate(&logix, Dialect::Iec);
+    let untranslated: Vec<&String> = warnings
+        .iter()
+        .filter(|w| w.contains("NOT TRANSLATED"))
+        .collect();
+    assert!(untranslated.is_empty(), "{untranslated:#?}");
+    let ctx_a = inkwell::context::Context::create();
+    let ctx_b = inkwell::context::Context::create();
+    let a = jit::load(&ctx_a, "iec", &jit::with_libs(iec_unit(&iec), false)).unwrap();
+    let st = plcc_st::print_unit(&iec_unit(&back));
+    let b = jit::load(&ctx_b, "back", &jit::with_libs(iec_unit(&back), false))
+        .unwrap_or_else(|e| panic!("{e}\n{st}"));
+    jit::differential_with(&a, &b, &inputs(&iec), 400, 31, 25, &opts(&iec))
+        .unwrap_or_else(|e| panic!("{e}\n{st}"));
+}
+
 /// The math fixture is about Logix-only behaviour (status flags, division by
 /// zero, round-half-even stores): its translation says so, element by element.
 #[test]
