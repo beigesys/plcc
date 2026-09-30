@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import { catalogEntry, simulatorEntry } from '@/devices/catalog'
 import { newId } from './ids'
 import { parseRung } from './rungtext'
 import type { Project, Rung } from './types'
@@ -8,11 +9,18 @@ function rung(comment: string, text: string): Rung {
   return { id: newId('r'), comment, body: parseRung(text) }
 }
 
+/** A catalog manifest as a project device: its ref and its file. */
+function catalogDevice(id: string, name: string): Pick<Project, 'devices' | 'deviceFiles'> {
+  const e = catalogEntry(id) ?? simulatorEntry()
+  const path = `devices/${e.id}.toml`
+  return { devices: [{ name, manifest: path }], deviceFiles: { [path]: e.text } }
+}
+
 /** The seeded demo: seal-in motor start, run timer, level alarm, on an Arduino Opta. */
 export function demoProject(): Project {
   return {
     name: 'Demo Opta',
-    devices: [{ name: 'Opta', profile: 'arduino-opta' }],
+    ...catalogDevice('arduino-opta', 'Opta'),
     tasks: [{ name: 'MainTask', intervalMs: 10, programs: ['MainProgram'] }],
     programs: [
       {
@@ -45,7 +53,7 @@ export function demoProject(): Project {
 export function emptyProject(name: string): Project {
   return {
     name,
-    devices: [{ name: 'Simulator', profile: 'simulator' }],
+    ...catalogDevice('simulator', 'Simulator'),
     tasks: [{ name: 'MainTask', intervalMs: 10, programs: ['MainProgram'] }],
     programs: [{ name: 'MainProgram', main: 'MainRoutine', routines: [{ name: 'MainRoutine', kind: 'ladder', rungs: [] }] }],
     tags: [],

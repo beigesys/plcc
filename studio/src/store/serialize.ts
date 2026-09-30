@@ -3,7 +3,8 @@
 // The on-disk project format. All knowledge of file names and schemas lives
 // here, so switching to the plcc-ladder crate's JSON is a change to this file.
 //
-//   project.toml                   name, [[devices]], [[tasks]], [[programs]]
+//   project.toml                   name, [[devices]] (name, manifest), [[tasks]], [[programs]]
+//   devices/<id>.toml              device manifests (docs/device-manifest.md)
 //   tags.toml                      [[tag]] name, type, initial, address?, comment
 //   routines/<name>.ladder.json    { format, version, name, rungs }
 //   routines/<name>.st             ST routine source
@@ -11,6 +12,7 @@
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import type { Element, Project, Routine, RoutineKind, Rung, Series, Tag } from '@/model'
 import { BOX_INSTRS } from '@/model'
+import { DEVICE_PATH_RE, legacyProfileManifest } from '@/devices/project'
 
 export const LADDER_FORMAT = 'plcc-studio-ladder'
 export const LADDER_VERSION = 1
@@ -32,7 +34,7 @@ export function projectToFiles(p: Project): Record<string, string> {
   const files: Record<string, string> = {}
   files['project.toml'] = stringifyToml({
     name: p.name,
-    devices: p.devices.map((d) => ({ name: d.name, profile: d.profile })),
+    devices: p.devices.map((d) => ({ name: d.name, manifest: d.manifest })),
     tasks: p.tasks.map((t) => ({ name: t.name, interval_ms: t.intervalMs, programs: [...t.programs] })),
     programs: p.programs.map((pr) => ({
       name: pr.name,
@@ -48,6 +50,10 @@ export function projectToFiles(p: Project): Record<string, string> {
       return o
     }),
   })
+  for (const d of p.devices) {
+    const text = p.deviceFiles[d.manifest]
+    if (text !== undefined) files[d.manifest] = text
+  }
   for (const pr of p.programs) {
     for (const r of pr.routines) {
       files[routineFileName(r)] =
@@ -182,10 +188,26 @@ export function projectFromFiles(files: Record<string, string>): Project {
   const pt = readToml('project.toml', files['project.toml'])
   const name = str('project.toml', pt, 'name', 'project')
 
-  const devices = arr('project.toml', pt, 'devices', 'project').map((d, i) => ({
-    name: str('project.toml', d, 'name', `devices[${i}]`),
-    profile: str('project.toml', d, 'profile', `devices[${i}]`),
-  }))
+  const deviceFiles: Record<string, string> = {}
+  const devices = arr('project.toml', pt, 'devices', 'project').map((d, i) => {
+    const where = `devices[${i}]`
+    const name = str('project.toml', d, 'name', where)
+    if (d.manifest === undefined) {
+      // Saved before device manifests: `profile = "<catalog id>"`. The catalog's
+      // manifest becomes the project's copy (see projectNeedsMigration).
+      const legacy = legacyProfileManifest(str('project.toml', d, 'profile', where))
+      deviceFiles[legacy.path] ??= files[legacy.path] ?? legacy.text
+      return { name, manifest: legacy.path }
+    }
+    const manifest = str('project.toml', d, 'manifest', where)
+    if (!DEVICE_PATH_RE.test(manifest)) {
+      throw new ProjectFormatError('project.toml', `${where}: "manifest" must be devices/<id>.toml, not "${manifest}"`)
+    }
+    const text = files[manifest]
+    if (text === undefined) throw new ProjectFormatError(manifest, 'file is missing')
+    deviceFiles[manifest] = text
+    return { name, manifest }
+  })
 
   const tasks = arr('project.toml', pt, 'tasks', 'project').map((t, i) => {
     const where = `tasks[${i}]`
@@ -242,5 +264,16 @@ export function projectFromFiles(files: Record<string, string>): Project {
     })
   }
 
-  return { name, devices, tasks, programs, tags }
+  return { name, devices, deviceFiles, tasks, programs, tags }
+}
+
+/** Whether a project's files predate device manifests and should be saved again. */
+export function projectNeedsMigration(files: Record<string, string>): boolean {
+  try {
+    const pt = parseToml(files['project.toml'] ?? '') as Obj
+    const devs = Array.isArray(pt.devices) ? pt.devices : []
+    return devs.some((d) => isObj(d) && d.manifest === undefined)
+  } catch {
+    return false
+  }
 }

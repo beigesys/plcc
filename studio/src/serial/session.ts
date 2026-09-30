@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// An online connection to a device's console: polls `img`, decodes the process
-// image, and writes %M words / bits with `mw`. Commands go out one at a time.
+// An online connection to a device's console: identifies the device with
+// `info`, polls `img`, decodes the process image, and writes %M words / bits
+// with `mw`. Commands go out one at a time. The project's device manifest says
+// which commands exist and how much of %M `img` reports.
 
-import type { DeviceProfile } from '@/devices/profiles'
+import type { Device } from '@/devices/manifest'
 import { ProcessImage, parseAddress } from '@/model'
-import { bitForceWrite, mwCommand, parseFaultLine, parseImgLine, parseMwAck } from './protocol'
+import {
+  bitForceWrite, checkIdentity, mwCommand, parseFaultLine, parseImgLine, parseInfoLine, parseMwAck,
+  type DeviceIdentity, type IdentityCheck,
+} from './protocol'
 import type { ImgFrame } from './protocol'
 import type { SerialTransport } from './transport'
 
@@ -20,7 +25,7 @@ export interface SessionOptions {
   maxMisses?: number
 }
 
-type Expect = 'img' | 'mw'
+type Expect = 'img' | 'mw' | 'info'
 
 interface Command {
   text: string
@@ -31,8 +36,12 @@ interface Command {
 
 export class OnlineSession {
   readonly transport: SerialTransport
-  readonly profile: DeviceProfile
+  readonly device: Device
   readonly image: ProcessImage
+  /** What the device said about itself (`info`), once connected. */
+  identity?: DeviceIdentity
+  /** The identity compared with the manifest; `mismatch` entries are warnings to show. */
+  identityCheck?: IdentityCheck
   state: SessionState = 'disconnected'
   error?: string
   /** Last `PLC STOP: ...` message from the device, if any. */
@@ -54,10 +63,10 @@ export class OnlineSession {
   private pollTimer?: ReturnType<typeof setInterval>
   private unsubs: (() => void)[] = []
 
-  constructor(transport: SerialTransport, profile: DeviceProfile, opts: SessionOptions = {}) {
+  constructor(transport: SerialTransport, device: Device, opts: SessionOptions = {}) {
     this.transport = transport
-    this.profile = profile
-    this.image = new ProcessImage(profile.imageSizes)
+    this.device = device
+    this.image = new ProcessImage(device.target.image)
     this.pollMs = opts.pollMs ?? 100
     this.timeoutMs = opts.timeoutMs ?? 1000
     this.maxMisses = opts.maxMisses ?? 3
@@ -95,8 +104,34 @@ export class OnlineSession {
       this.transport.onLine((line) => this.onLine(line)),
       this.transport.onClose((reason) => this.onTransportClose(reason)),
     )
+    if (this.device.console?.commands.includes('info')) {
+      // Not awaited: polling starts at once; the identity arrives first
+      // because commands go out in order.
+      this.identify().catch(() => {})
+    }
     this.pollTimer = setInterval(() => this.poll(), this.pollMs)
     this.poll()
+  }
+
+  /** Sends `info` and compares the answer with the manifest. */
+  async identify(): Promise<DeviceIdentity | undefined> {
+    try {
+      const line = await this.send('info', 'info')
+      const id = parseInfoLine(line)
+      this.identity = id
+      this.identityCheck = id
+        ? checkIdentity(id, this.device)
+        : { mismatch: [`The device's info reply is not understood: ${line.slice(0, 80)}`], notes: [] }
+    } catch (e) {
+      this.identity = undefined
+      const why = e instanceof Error ? e.message : String(e)
+      this.identityCheck = {
+        mismatch: [],
+        notes: [`The device did not identify itself (${why}); its runtime may predate the \`info\` command, so the manifest cannot be checked.`],
+      }
+    }
+    this.notify()
+    return this.identity
   }
 
   async disconnect(): Promise<void> {
@@ -178,6 +213,10 @@ export class OnlineSession {
   }
 
   private onLine(line: string): void {
+    if (this.current?.cmd.expect === 'info' && parseInfoLine(line)) {
+      this.finish(line)
+      return
+    }
     const frame = parseImgLine(line)
     if (frame) {
       this.applyFrame(frame)
@@ -217,9 +256,16 @@ export class OnlineSession {
     if (this.state !== 'online' && this.state !== 'error') throw new Error('not connected')
   }
 
+  private requireCommand(cmd: 'mw' | 'img'): void {
+    if (!this.device.console?.commands.includes(cmd)) {
+      throw new Error(`${this.device.device.name}'s console has no \`${cmd}\` command (see its manifest)`)
+    }
+  }
+
   /** Writes %MWn (a Modbus holding register on the Opta). */
   async writeWord(n: number, value: number): Promise<void> {
     this.requireOpen()
+    this.requireCommand('mw')
     const v = Math.trunc(value) & 0xffff
     await this.send(mwCommand(n, v), 'mw')
     this.applyWord(n, v)
@@ -240,6 +286,7 @@ export class OnlineSession {
   /** Sets or clears a %MX bit by read-modify-writing its containing %MW word. */
   async forceBit(address: string, on: boolean): Promise<void> {
     this.requireOpen()
+    this.requireCommand('mw')
     const a = parseAddress(address)
     if (!a) throw new Error(`"${address}" is not a direct address`)
     const { n, value } = bitForceWrite(this.knownM, a, on)
@@ -250,8 +297,8 @@ export class OnlineSession {
   /** Whether `address` can be written over this console. */
   canWrite(address: string): boolean {
     const a = parseAddress(address)
-    if (!a || a.area !== 'M') return false
-    if (a.size === 'X') return 2 * Math.floor(a.byte / 2) + 1 < Math.max(this.knownM.length, this.profile.transport?.imgMBytes ?? 0)
+    if (!a || a.area !== 'M' || !this.device.console?.commands.includes('mw')) return false
+    if (a.size === 'X') return 2 * Math.floor(a.byte / 2) + 1 < Math.max(this.knownM.length, this.device.console?.img_m_bytes ?? 0)
     return a.size === 'W'
   }
 }

@@ -124,9 +124,13 @@ src/
               pure trace for Online
   runtime/    fixed-period scan loop (drift correction, bounded catch-up),
               SimHost + sim.worker.ts (simulator in a Web Worker), messages
-  devices/    device profiles as data (Arduino Opta, Simulator)
-  serial/     console protocol (img / mw), OnlineSession (polling, misses,
-              recovery, faults), WebSerial transport, FakeOptaTransport
+  devices/    device manifests (docs/device-manifest.md): TOML loader and
+              validator (manifest.ts, checked against plcc-device's goldens),
+              the bundled catalog, a project's devices (add, remove, change
+              with tag remapping, catalog updates with a diff)
+  serial/     console protocol (info / img / mw), OnlineSession (identify,
+              polling, misses, recovery, faults), detect, WebSerial
+              transport, FakeConsoleTransport
   store/      FileStore (OPFS or memory), project <-> files, ProjectRepo,
               zip export/import, autosave debouncer
   state/      zustand stores: editor (project, undo/redo, view, selection),
@@ -174,8 +178,8 @@ These are the draft types in `src/model/types.ts`. They will be swapped for the
 to change when that happens.
 
 ```ts
-Project  { name, devices: DeviceRef[], tasks: Task[], programs: Program[], tags: Tag[] }
-DeviceRef{ name, profile }                      // profile id from src/devices
+Project  { name, devices: DeviceRef[], deviceFiles: { [path]: toml }, tasks: Task[], programs: Program[], tags: Tag[] }
+DeviceRef{ name, manifest }                     // "devices/<id>.toml", a key of deviceFiles
 Task     { name, intervalMs, programs: string[] }
 Program  { name, main, routines: Routine[] }
 Routine  { name, kind: 'ladder' | 'st', rungs: Rung[], st?: string }
@@ -197,11 +201,16 @@ a stable `id`.
 ### On disk (OPFS)
 
 ```
-projects/<id>/project.toml                 name, [[devices]], [[tasks]], [[programs]] (+ routine names/kinds)
+projects/<id>/project.toml                 name, [[devices]] (name, manifest), [[tasks]], [[programs]] (+ routine names/kinds)
+projects/<id>/devices/<device-id>.toml     the project's copy of each device manifest (docs/device-manifest.md)
 projects/<id>/tags.toml                    [[tag]] name, type, initial, address, comment
 projects/<id>/routines/<name>.ladder.json  { "format": "plcc-studio-ladder", "version": 1, "name", "rungs" }
 projects/<id>/routines/<name>.st           ST routines
 ```
+
+Projects saved before device manifests (`[[devices]] profile = "arduino-opta"`)
+are migrated when opened: the catalog's manifest for that id (the Simulator's
+for an unknown one) is written to `devices/` and project.toml names it.
 
 Export and import produce the same files inside a `.zip`. TOML is handled by
 smol-toml and zip by fflate, both MIT. If OPFS is unavailable (a private window,
@@ -220,13 +229,27 @@ an old browser), projects are kept in memory and the status bar says so.
   - renaming a tag also renames every reference to it
   - address/type mismatch and duplicate-address warnings
   - live values in Simulate and Online
+- **Devices (manifests):**
+  - the catalog (`devices/` at the repository root, or the built-in Opta and
+    Simulator copies when that submodule is not checked out) is bundled at
+    build time
+  - **Add device** (the + beside Devices): pick from the catalog, import a
+    `.toml` (validated as you paste, with line numbers), or **Detect** a
+    device over WebSerial (`info`, matched to the catalog). The manifest is
+    copied into the project.
+  - when the catalog has a newer version of a project's manifest, the device
+    shows an update mark and the I/O mapping view a notice; **Review and
+    update** shows the diff and applies it only on request
+  - a broken or missing manifest is reported, with the Simulator standing in
 - **I/O mapping:**
-  - the device's terminals as a diagram and as tables
+  - the device's terminals as a diagram and as tables, from its manifest
   - binding a tag to a point, which sets the tag's address
   - creating a new tag for a point
   - type-mismatch and shared-address warnings, and tags whose addresses are
     not on the device
-  - switching the device profile
+  - changing the device: tags move to the point with the same terminal (and
+    direction and size) on the new device; the rest keep their address and
+    are listed as warnings
 - **Tasks:** interval and program assignment. The simulator scans at the first
   task's interval.
 - **Simulate:** the in-browser *preview* simulator. It is labelled as such and
@@ -242,9 +265,13 @@ an old browser), projects are kept in memory and the status bar says so.
   - Force ON/OFF, value writes, and Space or double-click on a contact to
     toggle it.
   - Live power flow.
-- **Online:** WebSerial to the Opta's USB console at 115200 baud.
-  - `img` is polled every 100 ms and the %I, %Q and first 8 %M bytes are
-    decoded.
+- **Online:** WebSerial to the device's USB console at the manifest's baud
+  rate (115200 on the Opta).
+  - `info` first: the device id, runtime and ABI and image sizes are compared
+    with the project's manifest, and a mismatch is shown as a warning (a
+    runtime without `info` gets a note).
+  - `img` is polled every 100 ms and the %I, %Q and the manifest's
+    `img_m_bytes` of %M (all 64 on the Opta) are decoded.
   - Tags with an address show live values, and power flow is computed from
     them.
   - Force ON/OFF on %M BOOL tags is a read-modify-write of the containing word
@@ -279,7 +306,8 @@ firmware's `img` / `mw` output byte for byte, including the unpadded hex.
   Their tooltip says "needs plcc serve — phase 2".
 - ST routines and inline ST boxes are edited and saved but not simulated. An ST
   box passes power through and flags "ST box not simulated".
-- There is one device per project in the UI, although the model allows more.
+- A project can list several devices, but Simulate and Online use the first
+  (the controller).
 
 ## Phase 2 plan
 

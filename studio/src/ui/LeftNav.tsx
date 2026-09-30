@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 import { useState, type ReactNode } from 'react'
-import { Cable, Cpu, FileCode2, FolderOpen, Plus, Rows3, Tags, Timer, Trash2 } from 'lucide-react'
+import { ArrowUpCircle, Cable, Cpu, FileCode2, FolderOpen, Plus, Rows3, Tags, Timer, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { getProfile } from '@/devices/profiles'
+import { catalogUpdates, removeDevice, resolveDevice } from '@/devices/project'
 import type { RoutineKind } from '@/model'
 import { findProgram, useEditor, type View } from '@/state/editor'
 import { useLive } from '@/state/live'
+import { AddDeviceDialog } from './DeviceDialogs'
 import { StateDot } from './StateDot'
 
 function sameView(a: View, b: View): boolean {
@@ -118,6 +119,8 @@ export function LeftNav() {
   const simRunning = useLive((s) => s.stats?.running ?? false)
   const openProjects = useEditor((s) => s.setProjectsOpen)
   const [adding, setAdding] = useState<string | null>(null)
+  const [addingDevice, setAddingDevice] = useState(false)
+  const updates = catalogUpdates(project)
 
   const deleteRoutine = (program: string, routine: string) => {
     const s = useEditor.getState()
@@ -142,26 +145,56 @@ export function LeftNav() {
   return (
     <aside aria-label="Project navigation" className="flex min-h-0 flex-col border-r border-line bg-nav">
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-3">
-        <Section title="Devices">
-          {project.devices.map((d) => {
+        <Section
+          title="Devices"
+          action={
+            <Button variant="ghost" size="icon-xs" aria-label="Add device" onClick={() => setAddingDevice(true)}>
+              <Plus />
+            </Button>
+          }
+        >
+          {project.devices.map((d, i) => {
             const state =
-              mode === 'simulate' && simRunning ? 'power' : mode === 'online' ? (onlineState === 'online' ? 'power' : onlineState === 'error' ? 'alarm' : 'idle') : 'idle'
+              i > 0 ? 'idle' : mode === 'simulate' && simRunning ? 'power' : mode === 'online' ? (onlineState === 'online' ? 'power' : onlineState === 'error' ? 'alarm' : 'idle') : 'idle'
+            const r = resolveDevice(project, d.name)
+            const update = updates.find((u) => u.path === d.manifest)
             return (
               <Item
                 key={d.name}
                 view={{ kind: 'io', device: d.name }}
                 icon={<Cpu />}
                 trailing={
-                  <span className="pr-2">
-                    <StateDot state={state} />
+                  <span className="flex items-center gap-1 pr-2">
+                    {update && (
+                      <span title={`Catalog has version ${update.latest.device.device.version} of this manifest`} aria-label="Manifest update available">
+                        <ArrowUpCircle className="size-3.5 text-text-muted" />
+                      </span>
+                    )}
+                    {project.devices.length > 1 && (
+                      <Button
+                        variant="ghost"
+                        size="icon-xs"
+                        className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                        aria-label={`Remove device ${d.name}`}
+                        onClick={() => {
+                          const s = useEditor.getState()
+                          s.commit((p) => removeDevice(p, d.name))
+                          s.notify(`Removed ${d.name}; its tags keep their addresses`)
+                        }}
+                      >
+                        <Trash2 />
+                      </Button>
+                    )}
+                    <StateDot state={r.problem ? 'alarm' : state} />
                   </span>
                 }
               >
-                {d.name} <span className="text-text-muted">· {getProfile(d.profile).name}</span>
+                {d.name} <span className="text-text-muted">· {r.device.device.name}</span>
               </Item>
             )
           })}
         </Section>
+        <AddDeviceDialog open={addingDevice} onOpenChange={setAddingDevice} />
 
         {project.programs.map((prog) => (
           <Section

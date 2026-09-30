@@ -4,6 +4,8 @@
 // and posts throttled snapshots; they are merged here at most once per
 // animation frame. Online values are decoded from the device's process image.
 
+import type { Device } from '@/devices/manifest'
+import type { DeviceIdentity } from '@/serial/protocol'
 import { create } from 'zustand'
 import { unpackTrace, type Trace } from '@/engine'
 import { parseAddress, ProcessImage, type Project } from '@/model'
@@ -30,6 +32,11 @@ export interface LiveState {
     transport: 'webserial' | 'fake' | null
     /** Bytes of %M the device reports. */
     mKnown: number
+    /** What the device reported with `info`. */
+    identity?: DeviceIdentity
+    /** `info` compared with the project's manifest: warnings to show. */
+    mismatch?: string[]
+    notes?: string[]
   }
 }
 
@@ -121,13 +128,13 @@ export function simSend(msg: ToWorker) {
   worker?.postMessage(msg)
 }
 
-export function startSimulator(project: Project, profileId: string, periodMs = 10) {
+export function startSimulator(project: Project, device: Device, periodMs = 10) {
   stopSimulator()
   worker = new Worker(new URL('../runtime/sim.worker.ts', import.meta.url), { type: 'module' })
   worker.onmessage = onWorkerMessage
   worker.onerror = (e) => console.error('simulator worker failed:', e.message)
   useLive.setState({ ...initial, source: 'sim' })
-  simSend({ type: 'init', project, profileId, periodMs })
+  simSend({ type: 'init', project, device, periodMs })
   simSend({ type: 'start' })
 }
 

@@ -9,7 +9,7 @@
 
 import { BOX_SPECS, ProcessImage } from '@/model'
 import type { Box, Element, Program, Project, Routine, Series } from '@/model'
-import type { DeviceProfile } from '@/devices/profiles'
+import type { Device } from '@/devices/manifest'
 import { evaluateExpression } from './expr'
 import { TagStore, parseLiteral, toBool, toNumber } from './values'
 import type { Scalar } from './values'
@@ -353,9 +353,10 @@ export class Simulator {
   private project: Project
   private mem = new Map<string, Scalar>()
 
-  constructor(project: Project, profile: DeviceProfile) {
+  /** `device` sizes the process image (its manifest's `target.image`). */
+  constructor(project: Project, device: Pick<Device, 'target'>) {
     this.project = project
-    this.image = new ProcessImage(profile.imageSizes)
+    this.image = new ProcessImage(device.target.image)
     this.tags = new TagStore(project, this.image)
   }
 

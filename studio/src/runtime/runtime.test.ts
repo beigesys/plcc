@@ -4,6 +4,10 @@ import { demoProject, parseRung, type Project } from '@/model'
 import { FixedPeriodLoop, type LoopClock } from './loop'
 import type { FromWorker, Snapshot } from './messages'
 import { SimHost } from './simHost'
+import { catalogEntry } from '@/devices/catalog'
+
+const OPTA = catalogEntry('arduino-opta')!.device
+const SIM = catalogEntry('simulator')!.device
 
 /** A clock whose timers fire when `advance` passes them. setTimeout clamps to `minDelay` like a browser. */
 function fakeClock(minDelay = 0) {
@@ -80,7 +84,7 @@ describe('fixed-period loop', () => {
     // In the app the loop runs in a worker; this checks it also yields when it does not.
     const project = demoProject()
     const host = new SimHost(() => {})
-    host.handle({ type: 'init', project, profileId: 'arduino-opta', periodMs: 1 })
+    host.handle({ type: 'init', project, device: OPTA, periodMs: 1 })
     host.handle({ type: 'start' })
     const frames: number[] = []
     const started = performance.now()
@@ -110,7 +114,7 @@ describe('simulator host', () => {
       clock: f.clock,
       postEveryMs: opts.post ?? 33,
     })
-    host.handle({ type: 'init', project, profileId: 'arduino-opta', periodMs: 10 })
+    host.handle({ type: 'init', project, device: OPTA, periodMs: 10 })
     host.handle({ type: 'start' })
     f.advance(ms)
     return { host, posts, f }
@@ -144,7 +148,7 @@ describe('simulator host', () => {
     p.programs[0].routines[0].rungs = Array.from({ length: 40_000 }, (_, i) => ({ id: `r${i}`, comment: '', body: rung }))
     const posts: Snapshot[] = []
     const host = new SimHost((m) => m.type === 'snapshot' && posts.push(m), { scanBudgetMs: 5 })
-    host.handle({ type: 'init', project: p, profileId: 'simulator', periodMs: 10 })
+    host.handle({ type: 'init', project: p, device: SIM, periodMs: 10 })
     const t0 = performance.now()
     // One scan through the private loop path: call the tick the loop would call.
     ;(host as unknown as { scan(dt: number): void }).scan(10)

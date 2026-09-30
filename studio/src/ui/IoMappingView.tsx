@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 import { useMemo, useState } from 'react'
-import { AlertTriangle } from 'lucide-react'
+import { AlertTriangle, ArrowUpCircle } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { getProfile, PROFILES, type DeviceProfile, type IoPoint } from '@/devices/profiles'
+import { CATALOG } from '@/devices/catalog'
+import type { Device, IoPoint } from '@/devices/manifest'
+import { catalogUpdates, changeDevice, resolveDevice, type ManifestUpdate, type RemapReport } from '@/devices/project'
 import { defaultInitial, parseAddress, type Tag } from '@/model'
 import { useEditor } from '@/state/editor'
 import { useLive, type LiveState } from '@/state/live'
 import { pointMismatch, pointState, tagsAt } from './io'
 import { StateDot } from './StateDot'
+import { ManifestUpdateDialog, RemapReportView } from './DeviceDialogs'
 
 const NEW = '__new__'
 const NONE = ''
@@ -54,20 +58,20 @@ function Terminal({ point, image, onPick }: { point: IoPoint; image: LiveState['
   )
 }
 
-function DeviceFace({ profile, image }: { profile: DeviceProfile; image: LiveState['image'] }) {
-  const ins = profile.points.filter((p) => p.dir === 'in' && p.kind === 'digital')
-  const outs = profile.points.filter((p) => p.dir === 'out')
+function DeviceFace({ profile, image }: { profile: Device; image: LiveState['image'] }) {
+  const ins = profile.io.filter((p) => p.dir === 'in' && p.kind === 'digital')
+  const outs = profile.io.filter((p) => p.dir === 'out')
   const pick = (p: IoPoint) => document.getElementById(`io-${p.id}`)?.focus()
   return (
-    <figure className="rounded-xl border border-line bg-surface p-4" aria-label={`${profile.name} terminals`}>
+    <figure className="rounded-xl border border-line bg-surface p-4" aria-label={`${profile.device.name} terminals`}>
       <div className="flex flex-wrap gap-1.5">
         {ins.map((p) => (
           <Terminal key={p.id} point={p} image={image} onPick={() => pick(p)} />
         ))}
       </div>
       <div className="my-3 flex items-center gap-3 rounded-lg border border-dashed border-line px-3 py-4">
-        <span className="font-semibold">{profile.name}</span>
-        <span className="text-dense text-text-muted">{profile.description}</span>
+        <span className="font-semibold">{profile.device.name}</span>
+        <span className="text-dense text-text-muted">{profile.device.description}</span>
       </div>
       <div className="flex flex-wrap gap-1.5">
         {outs.map((p) => (
@@ -102,6 +106,7 @@ function PointRow({ point, tags, image }: { point: IoPoint; tags: Tag[]; image: 
       <TableCell className="text-mono text-text-muted">
         {point.type}
         {point.range && ` ${point.range[0]}..${point.range[1]}`}
+        {point.eng && point.units && ` = ${point.eng[0]}..${point.eng[1]} ${point.units}`}
       </TableCell>
       <TableCell className="w-64">
         {creating ? (
@@ -177,61 +182,108 @@ function PointRow({ point, tags, image }: { point: IoPoint; tags: Tag[]; image: 
 export function IoMappingView({ device }: { device: string }) {
   const project = useEditor((s) => s.project)
   const image = useLive((s) => s.image)
-  const dev = project.devices.find((d) => d.name === device) ?? project.devices[0]
-  const profile = getProfile(dev?.profile ?? 'simulator')
+  const [report, setReport] = useState<RemapReport | null>(null)
+  const [reviewing, setReviewing] = useState<ManifestUpdate | null>(null)
+  const resolved = useMemo(() => resolveDevice(project, device), [project, device])
+  const dev = resolved.ref
+  const profile = resolved.device
+  const update = useMemo(() => catalogUpdates(project).find((u) => u.path === dev?.manifest), [project, dev])
   const groups = useMemo(() => {
     const m = new Map<string, IoPoint[]>()
-    for (const p of profile.points) m.set(p.group, [...(m.get(p.group) ?? []), p])
+    for (const p of profile.io) m.set(p.group, [...(m.get(p.group) ?? []), p])
     return [...m.entries()]
   }, [profile])
-  const known = new Set(profile.points.map((p) => p.address.toUpperCase()))
+  const known = new Set(profile.io.map((p) => p.address.toUpperCase()))
+  const img = profile.target.image
   const stray = project.tags.filter((t) => {
     if (!t.address) return false
     const a = parseAddress(t.address)
     if (!a) return true
-    if (a.area === 'M') return a.byte + a.width > profile.imageSizes.M
+    if (a.area === 'M') return a.byte + a.width > img.M
     return !known.has(t.address.toUpperCase())
   })
 
   const setProfile = (id: string) => {
-    useEditor.getState().commit((p) => ({
-      ...p,
-      devices: p.devices.map((d) => (d === dev ? { ...d, profile: id } : d)),
-    }))
+    const entry = CATALOG.find((e) => e.id === id)
+    if (!entry || !dev) return
+    const s = useEditor.getState()
+    try {
+      const r = changeDevice(s.project, dev.name, entry.text)
+      s.commit(() => r.project)
+      setReport(r.report)
+      s.notify(
+        `${dev.name} is now ${entry.device.device.name}: ${r.report.moved.length} tag(s) remapped${r.report.warnings.length ? `, ${r.report.warnings.length} warning(s)` : ''}`,
+        r.report.warnings.length ? 'alarm' : 'info',
+      )
+    } catch (e) {
+      s.notify(e instanceof Error ? e.message : String(e), 'fault')
+    }
   }
+  const console_ = profile.console
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="flex flex-wrap items-end gap-3 border-b border-line bg-surface px-4 py-3">
         <div>
           <h1 className="text-base font-semibold">I/O mapping · {dev?.name}</h1>
-          <p className="text-dense text-text-muted">Bind tags to the device's terminals. Binding sets the tag's address.</p>
+          <p className="text-dense text-text-muted">
+            Bind tags to the device's terminals. Binding sets the tag's address. Manifest{' '}
+            <span className="text-mono">{dev?.manifest ?? 'built-in simulator'}</span> · {profile.device.id} v{profile.device.version} ·{' '}
+            {profile.target.triple} · image I={img.I} Q={img.Q} M={img.M}
+          </p>
         </div>
         <div className="ml-auto">
           <label htmlFor="profile" className="block text-[11px] text-text-muted">
-            Device profile
+            Change device (tags follow their terminals)
           </label>
           <select
             id="profile"
-            value={profile.id}
+            value={CATALOG.some((e) => e.id === profile.device.id) ? profile.device.id : ''}
             onChange={(e) => setProfile(e.target.value)}
             className="h-8 rounded-control border border-line bg-bg px-2 outline-none focus-visible:border-text-muted"
           >
-            {PROFILES.map((p) => (
+            {!CATALOG.some((e) => e.id === profile.device.id) && (
+              <option value="" className="bg-surface-2">
+                {profile.device.name} (imported)
+              </option>
+            )}
+            {CATALOG.map((p) => (
               <option key={p.id} value={p.id} className="bg-surface-2">
-                {p.name}
+                {p.device.device.name}
               </option>
             ))}
           </select>
         </div>
       </div>
       <div className="space-y-4 p-4">
+        {resolved.problem && (
+          <p role="alert" className="flex items-center gap-1.5 rounded-lg border border-alarm-border bg-alarm-bg p-3 text-dense text-alarm">
+            <AlertTriangle className="size-4" aria-hidden /> {resolved.problem}. The Simulator stands in until it is fixed.
+          </p>
+        )}
+        {update && (
+          <div role="status" className="flex items-center gap-2 rounded-lg border border-line bg-surface p-3 text-dense">
+            <ArrowUpCircle className="size-4 text-text-muted" aria-hidden />
+            <span>
+              The catalog has version {update.latest.device.device.version} of this manifest; the project has version {update.current.device.version}.
+            </span>
+            <Button size="xs" variant="outline" className="ml-auto" onClick={() => setReviewing(update)}>
+              Review and update…
+            </Button>
+          </div>
+        )}
+        {report && <RemapReportView report={report} onDismiss={() => setReport(null)} />}
         <DeviceFace profile={profile} image={image} />
-        {profile.transport && (
+        {console_ && (
           <p className="text-dense text-text-muted">
-            Online: USB console at {profile.transport.baudRate} baud; <span className="text-mono">img</span> reports %I, %Q and the first{' '}
-            {profile.transport.imgMBytes} bytes of %M (so %MW0..%MW{profile.transport.imgMBytes / 2 - 1} are visible online),{' '}
-            <span className="text-mono">mw n v</span> writes %MWn.
+            Online: USB console at {console_.baud} baud ({console_.commands.join(', ')}); <span className="text-mono">img</span> reports %I, %Q and
+            the first {console_.img_m_bytes} bytes of %M (so %MW0..%MW{Math.floor(console_.img_m_bytes / 2) - 1} are visible online)
+            {console_.commands.includes('mw') && (
+              <>
+                , <span className="text-mono">mw n v</span> writes %MWn
+              </>
+            )}
+            .
           </p>
         )}
         {groups.map(([group, points]) => (
@@ -264,7 +316,7 @@ export function IoMappingView({ device }: { device: string }) {
         {stray.length > 0 && (
           <section className="rounded-lg border border-alarm-border bg-alarm-bg p-3 text-dense text-alarm" aria-label="Addresses not on this device">
             <h2 className="mb-1 flex items-center gap-1.5 font-semibold">
-              <AlertTriangle className="size-4" aria-hidden /> Addresses not on {profile.name}
+              <AlertTriangle className="size-4" aria-hidden /> Addresses not on {profile.device.name}
             </h2>
             <ul className="list-inside list-disc">
               {stray.map((t) => (
@@ -276,6 +328,7 @@ export function IoMappingView({ device }: { device: string }) {
           </section>
         )}
       </div>
+      <ManifestUpdateDialog update={reviewing} onClose={() => setReviewing(null)} onUpdated={setReport} />
     </div>
   )
 }

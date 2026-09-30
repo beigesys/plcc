@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 import { parseAddress, ProcessImage, typesForSize, type Tag } from '@/model'
-import type { IoPoint } from '@/devices/profiles'
+import type { IoPoint } from '@/devices/manifest'
 import type { LiveState } from '@/state/live'
 import type { Scalar } from '@/runtime/messages'
 import type { DotState } from './StateDot'

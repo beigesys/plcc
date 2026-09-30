@@ -3,7 +3,8 @@ import { useState, type ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
 import { Slider } from '@/components/ui/slider'
 import { Switch } from '@/components/ui/switch'
-import { getProfile, type IoPoint } from '@/devices/profiles'
+import type { IoPoint } from '@/devices/manifest'
+import { primaryDevice } from '@/devices/project'
 import { BOX_SPECS, baseTag, parseAddress, type Instruction, type Tag } from '@/model'
 import { selectedElement, useEditor } from '@/state/editor'
 import { formatValue, simSend, useLive } from '@/state/live'
@@ -77,12 +78,12 @@ function NumberWrite({ tag, onWrite }: { tag: Tag; onWrite(v: number): void }) {
 function TagPanel({ tag }: { tag: Tag }) {
   const mode = useEditor((s) => s.mode)
   const notify = useEditor((s) => s.notify)
-  const device = useEditor((s) => s.project.devices[0])
+  const project = useEditor((s) => s.project)
   const values = useLive((s) => s.values)
   const forces = useLive((s) => s.forces)
   const mKnown = useLive((s) => s.online.mKnown)
-  const profile = getProfile(device?.profile ?? 'simulator')
-  const point = tag.address ? profile.points.find((p) => p.address.toUpperCase() === tag.address?.toUpperCase()) : undefined
+  const profile = primaryDevice(project)
+  const point = tag.address ? profile.io.find((p) => p.address.toUpperCase() === tag.address?.toUpperCase()) : undefined
   const v = values[tag.name.toLowerCase()]
   const forced = forces[tag.name.toLowerCase()]
   const isBool = tag.type.toUpperCase() === 'BOOL'
@@ -101,7 +102,7 @@ function TagPanel({ tag }: { tag: Tag }) {
     if (!canForce && isBool) {
       forceNote =
         a?.area === 'M'
-          ? `The console reports only the first ${mKnown || 8} %M bytes, so ${tag.address} cannot be read-modify-written.`
+          ? `The console reports only the first ${mKnown || profile.console?.img_m_bytes || 0} %M bytes, so ${tag.address} cannot be read-modify-written.`
           : 'Online, only %M bits can be forced (via mw on the containing %MW word).'
     }
   }
@@ -224,11 +225,12 @@ function IoPointRow({ p }: { p: IoPoint }) {
 
 function DevicePanel() {
   const mode = useEditor((s) => s.mode)
-  const device = useEditor((s) => s.project.devices[0])
-  const profile = getProfile(device?.profile ?? 'simulator')
+  const project = useEditor((s) => s.project)
+  const device = project.devices[0]
+  const profile = primaryDevice(project)
   const [showAll, setShowAll] = useState(false)
-  const points = profile.points.filter((p) => showAll || p.kind !== 'register')
-  const title = mode === 'simulate' ? 'Virtual I/O' : `${device?.name ?? profile.name} I/O`
+  const points = profile.io.filter((p) => showAll || p.kind !== 'register')
+  const title = mode === 'simulate' ? 'Virtual I/O' : `${device?.name ?? profile.device.name} I/O`
   return (
     <Panel
       title={title}

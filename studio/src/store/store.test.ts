@@ -3,8 +3,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { demoProject, emptyProject } from '@/model'
 import type { Project } from '@/model'
 import {
-  MemoryFileStore, ProjectFormatError, ProjectRepo, createAutosaver, projectFromFiles, projectToFiles,
+  MemoryFileStore, ProjectFormatError, ProjectRepo, createAutosaver, projectFromFiles, projectNeedsMigration, projectToFiles,
 } from '@/store'
+import { catalogEntry } from '@/devices/catalog'
 import type { AutosaveStatus } from '@/store'
 
 function withSt(): Project {
@@ -17,8 +18,10 @@ describe('project files', () => {
   it('writes the documented layout', () => {
     const files = projectToFiles(withSt())
     expect(Object.keys(files).sort()).toEqual([
-      'project.toml', 'routines/Calc.st', 'routines/MainRoutine.ladder.json', 'tags.toml',
+      'devices/arduino-opta.toml', 'project.toml', 'routines/Calc.st', 'routines/MainRoutine.ladder.json', 'tags.toml',
     ])
+    expect(files['project.toml']).toContain('manifest = "devices/arduino-opta.toml"')
+    expect(files['devices/arduino-opta.toml']).toContain('id = "arduino-opta"')
     expect(files['project.toml']).toContain('name = "Demo Opta"')
     expect(files['project.toml']).toContain('interval_ms = 10')
     expect(files['tags.toml']).toContain('address = "%MX0.0"')
@@ -173,5 +176,87 @@ describe('autosaver', () => {
     saver.schedule('x-0000', demoProject())
     await saver.flush()
     expect(statuses.at(-1)).toBe('saved')
+  })
+})
+
+/** project.toml as studio wrote it before device manifests. */
+const LEGACY_PROJECT = `name = "Old"
+
+[[devices]]
+name = "Opta"
+profile = "arduino-opta"
+
+[[tasks]]
+name = "MainTask"
+interval_ms = 10
+programs = ["MainProgram"]
+
+[[programs]]
+name = "MainProgram"
+main = "MainRoutine"
+
+[[programs.routines]]
+name = "MainRoutine"
+kind = "ladder"
+`
+const EMPTY_LADDER = '{ "format": "plcc-studio-ladder", "version": 1, "name": "MainRoutine", "rungs": [] }'
+
+describe('device manifests in projects', () => {
+  it('migrates a project saved with a device profile', async () => {
+    const files = { 'project.toml': LEGACY_PROJECT, 'routines/MainRoutine.ladder.json': EMPTY_LADDER }
+    expect(projectNeedsMigration(files)).toBe(true)
+    const p = projectFromFiles(files)
+    expect(p.devices).toEqual([{ name: 'Opta', manifest: 'devices/arduino-opta.toml' }])
+    expect(p.deviceFiles['devices/arduino-opta.toml']).toBe(catalogEntry('arduino-opta')!.text)
+
+    const store = new MemoryFileStore()
+    for (const [k, v] of Object.entries(files)) await store.writeText(`projects/old/${k}`, v)
+    const repo = new ProjectRepo(store)
+    await repo.load('old')
+    // The load wrote the devices/ folder and the new project.toml.
+    expect(await store.readText('projects/old/devices/arduino-opta.toml')).toBe(catalogEntry('arduino-opta')!.text)
+    const pt = (await store.readText('projects/old/project.toml'))!
+    expect(pt).toContain('manifest = "devices/arduino-opta.toml"')
+    expect(projectNeedsMigration({ 'project.toml': pt })).toBe(false)
+  })
+
+  it('migrates an unknown legacy profile to the Simulator', () => {
+    const p = projectFromFiles({
+      'project.toml': LEGACY_PROJECT.replace('profile = "arduino-opta"', 'profile = "gone-board"'),
+      'routines/MainRoutine.ladder.json': EMPTY_LADDER,
+    })
+    expect(p.devices[0].manifest).toBe('devices/simulator.toml')
+  })
+
+  it('rejects manifest paths outside devices/ and missing manifest files', () => {
+    const files = projectToFiles(demoProject())
+    const evil = files['project.toml'].replace('devices/arduino-opta.toml', '../../escape.toml')
+    expect(() => projectFromFiles({ ...files, 'project.toml': evil })).toThrow(/must be devices\/<id>\.toml/)
+    const { ['devices/arduino-opta.toml']: _, ...rest } = files
+    expect(_).toBeDefined()
+    expect(() => projectFromFiles(rest)).toThrow(/devices\/arduino-opta.toml: file is missing/)
+  })
+
+  it('removes manifest files no device uses when saving', async () => {
+    const repo = new ProjectRepo(new MemoryFileStore())
+    const p = demoProject()
+    const id = await repo.create(p)
+    expect(await repo.store.readText(`projects/${id}/devices/arduino-opta.toml`)).not.toBeNull()
+    const sim = catalogEntry('simulator')!
+    await repo.save(id, { ...p, devices: [{ name: 'Sim', manifest: 'devices/simulator.toml' }], deviceFiles: { 'devices/simulator.toml': sim.text } })
+    expect(await repo.store.readText(`projects/${id}/devices/arduino-opta.toml`)).toBeNull()
+    expect((await repo.load(id)).devices[0].name).toBe('Sim')
+  })
+
+  it('exports and imports devices in the zip', async () => {
+    const repo = new ProjectRepo(new MemoryFileStore())
+    const back = ProjectRepo.projectFromZip(repo.exportZip(demoProject()))
+    expect(back.deviceFiles).toEqual(demoProject().deviceFiles)
+  })
+
+  it('seeds an empty project with the Simulator', () => {
+    const p = emptyProject('x')
+    expect(p.devices).toEqual([{ name: 'Simulator', manifest: 'devices/simulator.toml' }])
+    expect(Object.keys(p.deviceFiles)).toEqual(['devices/simulator.toml'])
   })
 })

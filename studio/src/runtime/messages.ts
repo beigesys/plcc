@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 // Messages between the main thread and the simulator worker.
 
+import type { Device } from '@/devices/manifest'
 import type { Project } from '@/model'
 
 export type Scalar = boolean | number
 export type TagValue = Scalar | Record<string, Scalar>
 
 export type ToWorker =
-  | { type: 'init'; project: Project; profileId: string; periodMs: number }
+  | { type: 'init'; project: Project; device: Device; periodMs: number }
   | { type: 'project'; project: Project }
   | { type: 'start' }
   | { type: 'stop' }

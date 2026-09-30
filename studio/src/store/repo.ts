@@ -8,7 +8,7 @@ import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import type { Project } from '@/model'
 import type { FileStore } from './fs'
-import { ProjectFormatError, projectFromFiles, projectToFiles } from './serialize'
+import { ProjectFormatError, projectFromFiles, projectNeedsMigration, projectToFiles } from './serialize'
 
 export interface ProjectSummary {
   id: string
@@ -78,16 +78,21 @@ export class ProjectRepo {
   async load(id: string): Promise<Project> {
     const files = await this.readAll(this.dir(id))
     if (Object.keys(files).length === 0) throw new Error(`project "${id}" not found`)
-    return projectFromFiles(files)
+    const project = projectFromFiles(files)
+    // Projects saved before device manifests get their devices/ folder now.
+    if (projectNeedsMigration(files)) await this.save(id, project)
+    return project
   }
 
   async save(id: string, project: Project): Promise<void> {
     const dir = this.dir(id)
     const files = projectToFiles(project)
     for (const [path, text] of Object.entries(files)) await this.store.writeText(`${dir}/${path}`, text)
-    for (const e of await this.store.list(`${dir}/routines`)) {
-      const rel = `routines/${e.name}`
-      if (!(rel in files)) await this.store.remove(`${dir}/${rel}`)
+    for (const sub of ['routines', 'devices']) {
+      for (const e of await this.store.list(`${dir}/${sub}`)) {
+        const rel = `${sub}/${e.name}`
+        if (!(rel in files)) await this.store.remove(`${dir}/${rel}`)
+      }
     }
   }
 

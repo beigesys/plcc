@@ -99,8 +99,8 @@ export interface Tag {
 
 export interface DeviceRef {
   name: string
-  /** Id of a profile in `src/devices/`. */
-  profile: string
+  /** The device's manifest in the project: `devices/<id>.toml` (docs/device-manifest.md). */
+  manifest: string
 }
 
 export interface Task {
@@ -112,6 +112,8 @@ export interface Task {
 export interface Project {
   name: string
   devices: DeviceRef[]
+  /** Manifest files (TOML text) by project path, `devices/<id>.toml`. */
+  deviceFiles: Record<string, string>
   tasks: Task[]
   programs: Program[]
   tags: Tag[]

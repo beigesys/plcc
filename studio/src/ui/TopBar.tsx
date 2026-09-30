@@ -5,7 +5,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { getProfile } from '@/devices/profiles'
+import { resolveDevice } from '@/devices/project'
 import { useEditor, type Mode } from '@/state/editor'
 import { useLive } from '@/state/live'
 import { THEMES } from '@/state/theme'
@@ -44,10 +44,11 @@ function ModeSwitch() {
 
 function DeviceChip() {
   const mode = useEditor((s) => s.mode)
-  const device = useEditor((s) => s.project.devices[0])
+  const project = useEditor((s) => s.project)
+  const device = project.devices[0]
   const online = useLive((s) => s.online)
   const stats = useLive((s) => s.stats)
-  const profile = getProfile(device?.profile ?? 'simulator')
+  const profile = resolveDevice(project).device.device
   let state: 'power' | 'idle' | 'alarm' | 'fault' = 'idle'
   let text = 'offline'
   if (mode === 'simulate') {
@@ -57,6 +58,10 @@ function DeviceChip() {
     const s = online.state
     state = s === 'online' ? (online.fault ? 'fault' : 'power') : s === 'error' ? 'alarm' : 'idle'
     text = online.fault ? 'PLC STOP' : s === 'online' ? (online.transport === 'fake' ? 'online (demo)' : 'online') : s
+    if (s === 'online' && online.mismatch?.length) {
+      state = 'alarm'
+      text = 'wrong device?'
+    }
   }
   return (
     <div className="flex h-8 items-center gap-2 rounded-control border border-line bg-surface px-3 text-dense" aria-live="polite">

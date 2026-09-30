@@ -3,7 +3,10 @@ import { describe, expect, it } from 'vitest'
 import { Simulator, evaluateExpression, packTrace, parseLiteral, traceRoutine, unpackTrace } from '@/engine'
 import { demoProject, flatten, parseAddress, parseRung } from '@/model'
 import type { Project, Tag } from '@/model'
-import { ARDUINO_OPTA, SIMULATOR } from '@/devices/profiles'
+import { catalogEntry } from '@/devices/catalog'
+
+const ARDUINO_OPTA = catalogEntry('arduino-opta')!.device
+const SIMULATOR = catalogEntry('simulator')!.device
 
 function tag(name: string, type: string, address?: string, initial = ''): Tag {
   return { name, type, initial, address, comment: '' }
@@ -13,6 +16,7 @@ function project(rungs: string[], tags: Tag[]): Project {
   return {
     name: 't',
     devices: [],
+    deviceFiles: {},
     tasks: [{ name: 'T', intervalMs: 10, programs: ['P'] }],
     programs: [
       {

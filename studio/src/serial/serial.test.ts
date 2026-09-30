@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ARDUINO_OPTA } from '@/devices/profiles'
+import { catalogEntry } from '@/devices/catalog'
 import { parseAddress } from '@/model'
 import type { Address } from '@/model'
 import {
-  FakeOptaTransport, OnlineSession, bitForceWrite, formatImgLine, mwCommand, parseFaultLine, parseImgLine, parseMwAck,
+  FakeOptaTransport, OnlineSession, bitForceWrite, checkIdentity, formatImgLine, formatInfoLine, identifyDevice, matchCatalog, mwCommand,
+  parseFaultLine, parseImgLine, parseInfoLine, parseMwAck,
 } from '@/serial'
+
+const ARDUINO_OPTA = catalogEntry('arduino-opta')!.device
+const SIMULATOR = catalogEntry('simulator')!.device
 
 const addr = (s: string): Address => {
   const a = parseAddress(s)
@@ -109,7 +113,7 @@ describe('OnlineSession against the fake Opta', () => {
     expect(session.image.read(addr('%IX0.1'))).toBe(false)
     expect(session.image.read(addr('%IW2'), 'INT')).toBe(2500)
     expect(session.image.read(addr('%QX0.4'))).toBe(true)
-    expect(session.knownM.length).toBe(8)
+    expect(session.knownM.length).toBe(64)
 
     fake.setInput(1, false)
     await vi.advanceTimersByTimeAsync(100)
@@ -132,7 +136,7 @@ describe('OnlineSession against the fake Opta', () => {
     await vi.advanceTimersByTimeAsync(1)
     await q
     expect(fake.M[2]).toBe(0x40)
-    await expect(session.forceBit('%MX20.0', true)).rejects.toThrow(/outside/)
+    await expect(session.forceBit('%MX64.0', true)).rejects.toThrow(/outside/)
   })
 
   it('writes words', async () => {
@@ -187,5 +191,95 @@ describe('OnlineSession against the fake Opta', () => {
     fake.emit('PLC STOP: fault 1 (division by zero) at Main')
     expect(session.fault).toBe('fault 1 (division by zero) at Main')
     expect(session.state).toBe('online')
+  })
+})
+
+describe('info: which device is on the port', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('formats and parses the runtime info line', () => {
+    const line = formatInfoLine(ARDUINO_OPTA)
+    expect(line).toBe('{"device":"arduino-opta","manifest":1,"runtime":"plcc-arduino","abi":1,"image":{"I":18,"Q":1,"M":64}}')
+    expect(parseInfoLine(line)).toEqual({ device: 'arduino-opta', manifest: 1, runtime: 'plcc-arduino', abi: 1, image: { I: 18, Q: 1, M: 64 } })
+    expect(parseInfoLine('I: 0  Q: 0  M: 0')).toBeUndefined()
+    expect(parseInfoLine('{"device":"x"}')).toBeUndefined()
+    expect(parseInfoLine('{nope')).toBeUndefined()
+  })
+
+  it('compares an identity with a manifest', () => {
+    const id = parseInfoLine(formatInfoLine(ARDUINO_OPTA))!
+    expect(checkIdentity(id, ARDUINO_OPTA)).toEqual({ mismatch: [], notes: [] })
+    const sim = checkIdentity(id, SIMULATOR)
+    expect(sim.mismatch.join(' ')).toMatch(/connected device is "arduino-opta", but the project's device is "simulator"/)
+    const older = checkIdentity({ ...id, manifest: 0 }, ARDUINO_OPTA)
+    expect(older.mismatch).toEqual([])
+    expect(older.notes[0]).toMatch(/built for manifest version 0/)
+    expect(checkIdentity({ ...id, abi: 2 }, ARDUINO_OPTA).mismatch[0]).toMatch(/ABI 2/)
+  })
+
+  it('identifies the device when Online connects', async () => {
+    vi.useFakeTimers()
+    const fake = new FakeOptaTransport()
+    const session = new OnlineSession(fake, ARDUINO_OPTA, { pollMs: 100 })
+    await session.connect()
+    await vi.advanceTimersByTimeAsync(5)
+    expect(fake.sent[0]).toBe('info')
+    expect(session.identity?.device).toBe('arduino-opta')
+    expect(session.identityCheck).toEqual({ mismatch: [], notes: [] })
+    expect(session.state).toBe('online')
+    await session.disconnect()
+  })
+
+  it('warns when the device is not the project device', async () => {
+    vi.useFakeTimers()
+    const fake = new FakeOptaTransport()
+    fake.infoReply = formatInfoLine({ ...ARDUINO_OPTA, device: { ...ARDUINO_OPTA.device, id: 'other-board' } })
+    const session = new OnlineSession(fake, ARDUINO_OPTA, { pollMs: 100 })
+    await session.connect()
+    await vi.advanceTimersByTimeAsync(5)
+    expect(session.identityCheck?.mismatch[0]).toMatch(/"other-board"/)
+    // Polling goes on: a warning, not a refusal.
+    expect(session.state).toBe('online')
+    await session.disconnect()
+  })
+
+  it('notes a runtime without info and keeps working', async () => {
+    vi.useFakeTimers()
+    const fake = new FakeOptaTransport()
+    fake.infoReply = null
+    const session = new OnlineSession(fake, ARDUINO_OPTA, { pollMs: 100 })
+    await session.connect()
+    await vi.advanceTimersByTimeAsync(5)
+    expect(session.identity).toBeUndefined()
+    expect(session.identityCheck?.notes[0]).toMatch(/did not identify itself/)
+    expect(session.state).toBe('online')
+    await session.disconnect()
+  })
+
+  it('does not send info to a device whose manifest lacks it', async () => {
+    vi.useFakeTimers()
+    const noInfo = { ...ARDUINO_OPTA, console: { ...ARDUINO_OPTA.console!, commands: ['img', 'mw'] as ('img' | 'mw')[] } }
+    const fake = new FakeOptaTransport(noInfo)
+    const session = new OnlineSession(fake, noInfo, { pollMs: 100 })
+    await session.connect()
+    await vi.advanceTimersByTimeAsync(5)
+    expect(fake.sent).not.toContain('info')
+    await session.disconnect()
+  })
+
+  it('detects a device and matches the catalog', async () => {
+    const fake = new FakeOptaTransport()
+    const id = await identifyDevice(fake, 500)
+    expect(id.device).toBe('arduino-opta')
+    expect(fake.isOpen).toBe(false)
+    const det = matchCatalog(id)
+    expect(det.entry?.id).toBe('arduino-opta')
+    expect(det.check?.mismatch).toEqual([])
+    const old = new FakeOptaTransport()
+    old.infoReply = null
+    await expect(identifyDevice(old, 500)).rejects.toThrow(/does not know "info"/)
+    expect(matchCatalog({ ...id, device: 'unknown-board' }).entry).toBeUndefined()
   })
 })

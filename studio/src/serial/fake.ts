@@ -1,32 +1,48 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// A stand-in for an Opta running the plcc runtime: answers the USB console
-// commands exactly like runtime.ino. Used by tests and by the "Fake Opta"
+// A stand-in for a device running a plcc runtime: answers the console
+// commands its manifest lists exactly like runtime.ino (`info`, `img` with
+// `console.img_m_bytes` of %M, `mw`). Used by tests and by the "Demo device"
 // connection in the UI.
 
-import { ARDUINO_OPTA } from '@/devices/profiles'
-import type { DeviceProfile } from '@/devices/profiles'
-import { formatImgLine } from './protocol'
+import { catalogEntry } from '@/devices/catalog'
+import type { Device } from '@/devices/manifest'
+import { parseAddress, ProcessImage } from '@/model'
+import { formatImgLine, formatInfoLine } from './protocol'
 import { Listeners } from './transport'
 import type { SerialTransport } from './transport'
 
-export class FakeOptaTransport implements SerialTransport {
+function defaultDevice(): Device {
+  const e = catalogEntry('arduino-opta')
+  if (!e) throw new Error('the Opta manifest is missing from the build')
+  return e.device
+}
+
+export class FakeConsoleTransport implements SerialTransport {
   readonly I: Uint8Array
   readonly Q: Uint8Array
   readonly M: Uint8Array
+  readonly device: Device
   /** Every line written to the device, for tests. */
   readonly sent: string[] = []
+  /**
+   * The `info` reply. Default: what a runtime built for `device` prints; set a
+   * string to impersonate another device, or null for a runtime without `info`.
+   */
+  infoReply: string | null
   private open_ = false
   private muted = false
   private lines = new Listeners<[string]>()
   private closes = new Listeners<[string | undefined]>()
   private readonly mReport: number
 
-  constructor(profile: DeviceProfile = ARDUINO_OPTA) {
-    this.I = new Uint8Array(profile.imageSizes.I)
-    this.Q = new Uint8Array(profile.imageSizes.Q)
-    this.M = new Uint8Array(profile.imageSizes.M)
-    this.mReport = profile.transport?.imgMBytes ?? 8
+  constructor(device: Device = defaultDevice()) {
+    this.device = device
+    this.I = new Uint8Array(device.target.image.I)
+    this.Q = new Uint8Array(device.target.image.Q)
+    this.M = new Uint8Array(device.target.image.M)
+    this.mReport = device.console?.img_m_bytes ?? this.M.length
+    this.infoReply = device.console?.commands.includes('info') ? formatInfoLine(device) : null
   }
 
   get isOpen(): boolean {
@@ -73,24 +89,28 @@ export class FakeOptaTransport implements SerialTransport {
     if (line === 'img') {
       return formatImgLine({ I: this.I, Q: this.Q, M: this.M.subarray(0, this.mReport) })
     }
-    return '? commands: mw <n> <value> | img'
+    if (line === 'info' && this.infoReply !== null) return this.infoReply
+    return `? commands: ${this.infoReply !== null ? 'info | ' : ''}img | mw <n> <value>`
   }
 
-  /** Sets digital input I<n> (1-based), like wiring 24 V to it. */
+  /** Writes an input (or any) address, like wiring the terminal. */
+  setAddress(address: string, value: boolean | number): void {
+    const a = parseAddress(address)
+    if (a) ProcessImage.over({ I: this.I, Q: this.Q, M: this.M }).write(a, value)
+  }
+
+  /** Sets digital input I<n> (1-based) of the Opta map, %IX0.(n-1). */
   setInput(n: number, on: boolean): void {
-    const bit = n - 1
-    if (on) this.I[0] |= 1 << bit
-    else this.I[0] &= ~(1 << bit) & 0xff
+    this.setAddress(`%IX0.${n - 1}`, on)
   }
 
   /** Sets the raw analog reading of I<n> (1-based), 0..4095, as %IW<n>. */
   setAnalog(n: number, raw: number): void {
-    this.I[2 * n] = raw & 0xff
-    this.I[2 * n + 1] = (raw >> 8) & 0xff
+    this.setAddress(`%IW${n}`, raw)
   }
 
   setButton(pressed: boolean): void {
-    this.I[1] = pressed ? 1 : 0
+    this.setAddress('%IX1.0', pressed)
   }
 
   /** Stops answering (a hung or busy device). */
@@ -110,3 +130,6 @@ export class FakeOptaTransport implements SerialTransport {
     this.lines.emit(line)
   }
 }
+
+/** The Opta-flavoured name the tests and UI grew up with. */
+export { FakeConsoleTransport as FakeOptaTransport }

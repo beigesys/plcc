@@ -5,7 +5,6 @@
 // only) back. No DOM or Worker API here, so it runs under vitest too.
 
 import { Simulator } from '@/engine'
-import { getProfile } from '@/devices/profiles'
 import { parseAddress } from '@/model'
 import { FixedPeriodLoop, realClock, type LoopClock } from './loop'
 import type { FromWorker, Scalar, SimStats, TagValue, ToWorker } from './messages'
@@ -51,7 +50,7 @@ export class SimHost {
       case 'init':
         this.loop?.stop()
         this.periodMs = msg.periodMs
-        this.sim = new Simulator(msg.project, getProfile(msg.profileId))
+        this.sim = new Simulator(msg.project, msg.device)
         this.loop = new FixedPeriodLoop(msg.periodMs, (dt) => this.scan(dt), this.clock)
         this.sent.clear()
         this.maxScanMs = 0

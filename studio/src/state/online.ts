@@ -5,9 +5,9 @@
 // polls `img` on a timer and never waits in a loop.
 
 import { Simulator } from '@/engine'
-import { getProfile, type DeviceProfile } from '@/devices/profiles'
+import type { Device } from '@/devices/manifest'
 import type { Project } from '@/model'
-import { FakeOptaTransport, OnlineSession, WebSerialTransport, isWebSerialSupported } from '@/serial'
+import { FakeConsoleTransport, OnlineSession, WebSerialTransport, identifyDevice, isWebSerialSupported, matchCatalog, type Detection } from '@/serial'
 import { useLive, valuesFromImage } from './live'
 
 let session: OnlineSession | null = null
@@ -16,17 +16,18 @@ let projectRef: Project | null = null
 let frame = 0
 
 /**
- * The demo device: the fake Opta console with the preview simulator running
- * the project against its image, so Online mode can be tried without hardware.
+ * The demo device: a fake console for the project's device with the preview
+ * simulator running the project against its image, so Online mode can be
+ * tried without hardware.
  */
 class DemoDevice {
-  readonly transport: FakeOptaTransport
+  readonly transport: FakeConsoleTransport
   private sim: Simulator
   private timer: ReturnType<typeof setInterval>
 
-  constructor(project: Project, profile: DeviceProfile) {
-    this.transport = new FakeOptaTransport(profile)
-    this.sim = new Simulator(project, profile)
+  constructor(project: Project, device: Device) {
+    this.transport = new FakeConsoleTransport(device)
+    this.sim = new Simulator(project, device)
     this.timer = setInterval(() => this.step(), 20)
   }
 
@@ -66,6 +67,9 @@ function publish() {
       lastUpdate: s.lastUpdate,
       transport: demo ? 'fake' : 'webserial',
       mKnown: s.knownM.length,
+      identity: s.identity,
+      mismatch: s.identityCheck?.mismatch,
+      notes: s.identityCheck?.notes,
     },
   })
 }
@@ -78,18 +82,30 @@ export function onlineSupported(): boolean {
   return isWebSerialSupported()
 }
 
-export async function connectOnline(project: Project, profileId: string, kind: 'webserial' | 'fake') {
+export async function connectOnline(project: Project, device: Device, kind: 'webserial' | 'fake') {
   await disconnectOnline()
   projectRef = project
-  const profile = getProfile(profileId)
+  if (!device.console) {
+    useLive.setState({
+      source: 'online',
+      online: {
+        state: 'disconnected',
+        error: `${device.device.name}'s manifest has no [console]; there is nothing to connect to`,
+        lastUpdate: 0,
+        transport: kind,
+        mKnown: 0,
+      },
+    })
+    return
+  }
   let transport
   if (kind === 'fake') {
-    demo = new DemoDevice(project, profile)
+    demo = new DemoDevice(project, device)
     transport = demo.transport
   } else {
-    transport = new WebSerialTransport({ baudRate: profile.transport?.baudRate ?? 115200 })
+    transport = new WebSerialTransport({ baudRate: device.console.baud })
   }
-  session = new OnlineSession(transport, profile, { pollMs: 100 })
+  session = new OnlineSession(transport, device, { pollMs: 100 })
   session.subscribe(schedule)
   useLive.setState({
     source: 'online',
@@ -149,13 +165,16 @@ export async function onlineWriteWord(n: number, value: number) {
 
 /** Demo device only: drive an input terminal. */
 export function demoSetInput(address: string, value: boolean | number) {
-  const t = demo?.transport
-  if (!t) return
-  const m = /^%IX0\.(\d)$/.exec(address)
-  if (m) return t.setInput(Number(m[1]) + 1, !!value)
-  if (address === '%IX1.0') return t.setButton(!!value)
-  const w = /^%IW(\d+)$/.exec(address)
-  if (w) t.setAnalog(Number(w[1]), Number(value))
+  demo?.transport.setAddress(address, value)
+}
+
+/**
+ * "Add device → Detect": asks the device on a user-picked serial port for
+ * `info` and matches it to the catalog. Not while Online holds the port.
+ */
+export async function detectOverSerial(baudRate = 115200): Promise<Detection> {
+  if (session) throw new Error('Disconnect Online first; it holds the serial port')
+  return matchCatalog(await identifyDevice(new WebSerialTransport({ baudRate })))
 }
 
 export function isDemoDevice(): boolean {

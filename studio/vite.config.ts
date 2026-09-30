@@ -10,4 +10,7 @@ export default defineConfig({
   // One app bundle (React, Radix, the editor) is ~560 kB before gzip; fine for a local tool.
   build: { chunkSizeWarningLimit: 800 },
   worker: { format: 'es' },
+  // The device catalog (../devices) and the built-in manifests
+  // (../crates/plcc-device/builtin) are bundled from outside the studio root.
+  server: { fs: { allow: ['..'] } },
 })

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 import { useEffect } from 'react'
+import { primaryDevice } from '@/devices/project'
 import { useEditor } from '@/state/editor'
 import { startSimulator, stopSimulator, simSend } from '@/state/live'
 import { disconnectOnline, setOnlineProject } from '@/state/online'
@@ -21,7 +22,8 @@ function isTyping(t: EventTarget | null): boolean {
 export function App() {
   const mode = useEditor((s) => s.mode)
   const projectId = useEditor((s) => s.projectId)
-  const profileId = useEditor((s) => s.project.devices[0]?.profile)
+  // The simulator restarts when the controller's manifest changes (image sizes).
+  const deviceText = useEditor((s) => s.project.deviceFiles[s.project.devices[0]?.manifest ?? ''])
 
   useEffect(() => {
     initPersistence().catch((e: unknown) => useEditor.getState().notify(`Could not open projects: ${String(e)}`, 'fault'))
@@ -31,7 +33,7 @@ export function App() {
   useEffect(() => {
     if (mode !== 'simulate') return
     const { project } = useEditor.getState()
-    startSimulator(project, project.devices[0]?.profile ?? 'simulator', project.tasks[0]?.intervalMs ?? 10)
+    startSimulator(project, primaryDevice(project), project.tasks[0]?.intervalMs ?? 10)
     let timer: ReturnType<typeof setTimeout> | undefined
     let prev = project
     const unsub = useEditor.subscribe((s) => {
@@ -48,7 +50,7 @@ export function App() {
       clearTimeout(timer)
       stopSimulator()
     }
-  }, [mode, projectId, profileId])
+  }, [mode, projectId, deviceText])
 
   useEffect(() => {
     if (mode !== 'online') return
