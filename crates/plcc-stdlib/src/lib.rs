@@ -68,7 +68,7 @@ pub const UNITS: &[StdlibUnit] = &[BISTABLE, EDGE, COUNTERS, TIMERS];
 ///
 /// Kept in sync with the `.st` sources by `bundled_pou_names_match_sources`.
 pub const POU_NAMES: &[&str] = &[
-    "SR", "RS", "R_TRIG", "F_TRIG", "CTU", "CTD", "CTUD", "TON", "TOF", "TP",
+    "SR", "RS", "R_TRIG", "F_TRIG", "CTU", "CTD", "CTUD", "TON", "TOF", "TP", "RTO",
 ];
 
 /// The whole bundled standard library as a single ST source string.

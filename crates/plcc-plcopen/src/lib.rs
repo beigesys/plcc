@@ -22,8 +22,16 @@
 mod embed;
 mod error;
 mod graph;
+mod ladder_read;
+mod ladder_write;
 mod project;
 mod xml;
+
+/// PLCopen LD ↔ the ladder model of `plcc-ladder`.
+pub mod ladder {
+    pub use crate::ladder_read::read;
+    pub use crate::ladder_write::{WriteError, write};
+}
 
 pub use error::PlcOpenError;
 use plcc_st::{CompilationUnit, Span};
@@ -58,11 +66,24 @@ pub fn is_plcopen(source: &str) -> bool {
     }
 }
 
+/// Options for [`parse_with`].
+#[derive(Default, Clone, Debug)]
+pub struct Options {
+    /// Put a `(* rung N *)` comment (`network N` in FBD) before the statements
+    /// each network lowers to, for printing the lowered ST (`plcc convert`).
+    pub annotate_rungs: bool,
+}
+
 /// Parse a PLCopen XML project into a compilation unit.
 ///
 /// Like [`plcc_st::parse`], this recovers and reports as many problems as it can;
 /// the unit holds everything that lowered cleanly.
 pub fn parse(source: &str) -> (CompilationUnit, Vec<PlcOpenError>) {
+    parse_with(source, &Options::default())
+}
+
+/// [`parse`] with options.
+pub fn parse_with(source: &str, opts: &Options) -> (CompilationUnit, Vec<PlcOpenError>) {
     let empty = |errors| {
         (
             CompilationUnit {
@@ -93,6 +114,7 @@ pub fn parse(source: &str) -> (CompilationUnit, Vec<PlcOpenError>) {
         )]);
     }
     let mut lower = project::Lower::new(source);
+    lower.annotate = opts.annotate_rungs;
     let declarations = lower.project(root);
     (
         CompilationUnit {

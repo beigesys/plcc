@@ -351,6 +351,11 @@ pub enum StatementKind {
     },
     /// Empty statement (bare semicolon).
     Empty,
+    /// A comment kept as a statement, so it survives into printed ST. Never
+    /// produced by the parser (source comments are skipped by the lexer); the
+    /// ladder lowerings add one before each rung when asked to (`plcc convert`).
+    /// Does nothing.
+    Comment(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

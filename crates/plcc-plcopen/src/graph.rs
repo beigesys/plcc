@@ -33,45 +33,45 @@ use plcc_st::ast::*;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Edge {
+pub(crate) enum Edge {
     None,
     Rising,
     Falling,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Storage {
+pub(crate) enum Storage {
     None,
     Set,
     Reset,
 }
 
 #[derive(Debug)]
-struct Conn {
-    ref_id: u32,
-    formal: Option<String>,
-    span: Span,
+pub(crate) struct Conn {
+    pub ref_id: u32,
+    pub formal: Option<String>,
+    pub span: Span,
 }
 
 #[derive(Debug)]
-struct PinIn {
-    formal: String,
-    conns: Vec<Conn>,
+pub(crate) struct PinIn {
+    pub formal: String,
+    pub conns: Vec<Conn>,
     /// `connectionPointIn` may carry an `<expression>` instead of connections.
-    expr: Option<Expression>,
-    negated: bool,
-    edge: Edge,
-    span: Span,
+    pub expr: Option<Expression>,
+    pub negated: bool,
+    pub edge: Edge,
+    pub span: Span,
 }
 
 #[derive(Debug)]
-struct PinOut {
-    formal: String,
-    negated: bool,
+pub(crate) struct PinOut {
+    pub formal: String,
+    pub negated: bool,
 }
 
 #[derive(Debug)]
-enum Kind {
+pub(crate) enum Kind {
     LeftRail,
     RightRail,
     Contact {
@@ -117,15 +117,15 @@ enum Kind {
 }
 
 #[derive(Debug)]
-struct Elem {
-    id: u32,
-    kind: Kind,
+pub(crate) struct Elem {
+    pub id: u32,
+    pub kind: Kind,
     /// Span of the element's start tag.
-    span: Span,
-    pos: (f64, f64),
-    eo: Option<u32>,
-    ins: Vec<PinIn>,
-    outs: Vec<PinOut>,
+    pub span: Span,
+    pub pos: (f64, f64),
+    pub eo: Option<u32>,
+    pub ins: Vec<PinIn>,
+    pub outs: Vec<PinOut>,
 }
 
 impl Elem {
@@ -151,13 +151,13 @@ impl Elem {
         )
     }
 
-    fn pin(&self, formal: &str) -> Option<usize> {
+    pub(crate) fn pin(&self, formal: &str) -> Option<usize> {
         self.ins
             .iter()
             .position(|p| p.formal.eq_ignore_ascii_case(formal))
     }
 
-    fn label(&self) -> String {
+    pub(crate) fn label(&self) -> String {
         let what = match &self.kind {
             Kind::LeftRail => "left power rail".to_string(),
             Kind::RightRail => "right power rail".to_string(),
@@ -398,7 +398,7 @@ const SFC_ELEMENTS: &[&str] = &[
     "actionBlock",
 ];
 
-fn parse_elem(lower: &mut Lower, n: XNode) -> Option<Elem> {
+pub(crate) fn parse_elem(lower: &mut Lower, n: XNode) -> Option<Elem> {
     let tag = xml::name(n);
     if matches!(tag, "comment" | "documentation" | "addData" | "error") {
         return None;
@@ -556,11 +556,11 @@ fn parse_elem(lower: &mut Lower, n: XNode) -> Option<Elem> {
 
 // ── Lowering ──
 
-struct Graph<'l, 's> {
+pub(crate) struct Graph<'l, 's> {
     lower: &'l mut Lower<'s>,
     pou: PouKind,
-    elems: Vec<Elem>,
-    by_id: HashMap<u32, usize>,
+    pub elems: Vec<Elem>,
+    pub by_id: HashMap<u32, usize>,
     connectors: HashMap<String, usize>,
     /// Number of connections reading each (element, output formal).
     fanout: HashMap<(usize, String), usize>,
@@ -570,11 +570,13 @@ struct Graph<'l, 's> {
     /// Statements of the network being lowered.
     out: Vec<Statement>,
     /// Hidden variables, and names already declared by the POU.
-    extra: Vec<VarDecl>,
+    pub extra: Vec<VarDecl>,
     declared: HashSet<String>,
     /// ENO values of FB blocks that have been called.
     eno: HashMap<usize, Expression>,
     labels: HashMap<String, i128>,
+    /// `rung` (LD) or `network` (FBD), for annotations.
+    unit_word: &'static str,
 }
 
 pub(crate) fn lower_body(
@@ -583,6 +585,34 @@ pub(crate) fn lower_body(
     pou: PouKind,
     var_blocks: &mut Vec<VarBlock>,
 ) -> Vec<Statement> {
+    let Some(mut g) = Graph::build(lower, body, pou, var_blocks) else {
+        return Vec::new();
+    };
+    let body = g.lower_networks();
+    if !g.extra.is_empty() {
+        let span = g.extra[0].span;
+        var_blocks.push(VarBlock {
+            list_name: None,
+            kind: VarBlockKind::Var,
+            is_constant: false,
+            is_retain: false,
+            is_non_retain: false,
+            declarations: std::mem::take(&mut g.extra),
+            span,
+        });
+    }
+    body
+}
+
+impl<'l, 's> Graph<'l, 's> {
+/// Read a body's elements and check their wiring; `None` after a structural
+/// error (reported).
+pub(crate) fn build(
+    lower: &'l mut Lower<'s>,
+    body: XNode,
+    pou: PouKind,
+    var_blocks: &[VarBlock],
+) -> Option<Graph<'l, 's>> {
     let before = lower.errors.len();
     let elems: Vec<Elem> = xml::elements(body)
         .filter_map(|n| parse_elem(lower, n))
@@ -621,25 +651,14 @@ pub(crate) fn lower_body(
         declared,
         eno: HashMap::new(),
         labels: HashMap::new(),
+        unit_word: if xml::name(body) == "LD" { "rung" } else { "network" },
     };
     g.count_fanout();
     if g.lower.errors.len() > before {
-        return Vec::new();
+        return None;
     }
-    let body = g.lower_networks();
-    if !g.extra.is_empty() {
-        let span = g.extra[0].span;
-        var_blocks.push(VarBlock {
-            list_name: None,
-            kind: VarBlockKind::Var,
-            is_constant: false,
-            is_retain: false,
-            is_non_retain: false,
-            declarations: std::mem::take(&mut g.extra),
-            span,
-        });
-    }
-    body
+    Some(g)
+}
 }
 
 impl Graph<'_, '_> {
@@ -830,7 +849,14 @@ impl Graph<'_, '_> {
             ));
         }
         let mut pass = Vec::new();
-        for net in &nets {
+        for (ni, net) in nets.iter().enumerate() {
+            if self.lower.annotate {
+                let span = net.first().map_or(body_span, |&i| self.elems[i].span);
+                pass.push(stmt(
+                    StatementKind::Comment(format!("{} {}", self.unit_word, ni + 1)),
+                    span,
+                ));
+            }
             if let [only] = net.as_slice()
                 && let Kind::Label { label } = &self.elems[*only].kind
             {
@@ -897,7 +923,7 @@ impl Graph<'_, '_> {
         body
     }
 
-    fn lower_network(&mut self, net: &[usize]) -> Vec<Statement> {
+    pub(crate) fn lower_network(&mut self, net: &[usize]) -> Vec<Statement> {
         let mut sinks: Vec<usize> = net
             .iter()
             .copied()

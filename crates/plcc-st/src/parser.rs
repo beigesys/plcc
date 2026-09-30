@@ -3182,6 +3182,37 @@ pub fn parse(source: &str) -> (CompilationUnit, Vec<ParseError>) {
     Parser::new(source).parse()
 }
 
+/// Parse `source` as one expression (the operand of a ladder element, a pin
+/// value). Spans are offsets into `source`. Trailing tokens are an error.
+pub fn parse_expression(source: &str) -> (Expression, Vec<ParseError>) {
+    let mut p = Parser::new(source);
+    let e = p.parse_expression();
+    if p.ts.peek().is_some() {
+        let span = p.ts.peek_span();
+        p.errors.push(ParseError::General {
+            message: "unexpected text after the expression".into(),
+            span: span.into(),
+        });
+    }
+    (e, p.errors)
+}
+
+/// Parse `source` as a statement list (the body of a ladder ST box). Spans
+/// are offsets into `source`. Anything that does not start a statement is an
+/// error.
+pub fn parse_statements(source: &str) -> (Vec<Statement>, Vec<ParseError>) {
+    let mut p = Parser::new(source);
+    let body = p.parse_statement_list(&[]);
+    if p.ts.peek().is_some() {
+        let span = p.ts.peek_span();
+        p.errors.push(ParseError::General {
+            message: "expected a statement".into(),
+            span: span.into(),
+        });
+    }
+    (body, p.errors)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

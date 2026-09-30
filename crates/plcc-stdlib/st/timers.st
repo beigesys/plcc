@@ -146,3 +146,43 @@ END_VAR
         END_IF;
     END_IF;
 END_FUNCTION_BLOCK
+
+(* RTO — retentive on-delay timer. Not an IEC 61131-3 standard FB: plcc's IEC
+ * counterpart of the Logix RTO instruction (1756-RM003 "Retentive Timer On"),
+ * so ladder translated from Logix keeps its meaning (docs/ladder-translation.md).
+ *   ET accumulates while IN is TRUE and holds its value while IN is FALSE.
+ *   Q := ET >= PT; ET stops at PT (Logix: accumulation stops once DN is set).
+ *   R clears ET and Q (Logix: the RES instruction). *)
+FUNCTION_BLOCK RTO
+VAR_INPUT
+    IN : BOOL;
+    R : BOOL;
+    PT : TIME;
+END_VAR
+VAR_OUTPUT
+    Q : BOOL;
+    ET : TIME;
+END_VAR
+VAR
+    RUNNING : BOOL := FALSE;
+    LAST_NS : TIME;
+    NOW_NS : TIME;
+END_VAR
+    NOW_NS := MONOTONIC_NS();
+    IF R THEN
+        ET := T#0s;
+        RUNNING := FALSE;
+    ELSIF IN THEN
+        IF RUNNING AND ET < PT THEN
+            ET := ET + (NOW_NS - LAST_NS);
+            IF ET > PT THEN
+                ET := PT;
+            END_IF;
+        END_IF;
+        RUNNING := TRUE;
+        LAST_NS := NOW_NS;
+    ELSE
+        RUNNING := FALSE;
+    END_IF;
+    Q := ET >= PT AND NOT R;
+END_FUNCTION_BLOCK

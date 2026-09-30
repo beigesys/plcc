@@ -246,6 +246,44 @@ yields Source A, not a trap), integer operands are promoted to at least DINT
 ("optimal data type DINT"), and a REAL assigned to an integer rounds half to
 even. ST does not update the math status flags.
 
+## Reading the generated ST
+
+`plcc convert plant.L5X --to st` prints the Structured Text a project lowers
+to (`--prelude` appends the Logix prelude, so the file compiles on its own:
+`plcc compile plant.st -o plant.o`). The shape, so it can be read:
+
+- **Controller tags** are one `VAR_GLOBAL` block; each **program** is a
+  `FUNCTION_BLOCK lx__P_<Program>` holding its program tags, with one
+  `METHOD R_<Routine>` per routine and a `lx__prescan` method (the prescan
+  actions, above); a `PROGRAM lx__run_<Program>` and a `CONFIGURATION`
+  schedule them like the L5X tasks.
+- **Rungs** are separated by a comment with the rung number, its
+  documentation and its neutral text, then the rung-condition sequence
+  described under "Ladder (RLL) routines":
+
+  ```iec
+  (* rung 0: Seal-in: Start latches the motor through its own contact, Stop breaks it.
+     [XIC(Start) ,XIC(Motor) ]XIO(Stop)OTE(Motor);
+  *)
+  lx__rc := TRUE;
+  ...
+  Motor := lx__rc;
+  ```
+
+- **Instructions** that are more than a boolean become calls into the prelude,
+  named after the instruction: `lx__ton(T1, lx__rc)` / `lx__tof` / `lx__rto`
+  run a TIMER with the rung condition (the TIMER structure, `.PRE .ACC .EN .TT
+  .DN`, is the Logix one); `lx__ctu` / `lx__ctd` a COUNTER; `lx__res_timer`,
+  `lx__res_counter`, `lx__res_control` are RES. Arithmetic results are stored
+  through `lx__put_<TYPE>_i(v)` (integer value) or `lx__put_<TYPE>_r(v)`
+  (floating value), which apply the Logix conversion and set `lx__S_V`,
+  `lx__S_Z`, `lx__S_N` (S:V, S:Z, S:N); `lx__div_i`, `lx__mod_i`, `lx__round`,
+  `lx__r2l` are the division, modulo and rounding rules of the table above.
+  Status and first-scan flags are globals (`lx__S_FS`, `lx__S_V`, ...).
+- **Hidden variables** start with `lx__`: `lx__rc` (rung condition),
+  `lx__bs<n>` / `lx__bo<n>` (branch start / branch OR at nesting depth n),
+  `lx__jmp` (a taken JMP's label number), `lx__mcr`, `lx__first`.
+
 ## Faults
 
 Logix distinguishes minor faults (logged; the program keeps running) from major

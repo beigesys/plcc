@@ -14,6 +14,8 @@ use plcc_st::ast::*;
 pub(crate) struct Lower<'s> {
     pub src: &'s str,
     pub errors: Vec<PlcOpenError>,
+    /// Put a `rung N` / `network N` comment before each network's statements.
+    pub annotate: bool,
 }
 
 /// Which kind of POU a body belongs to (graph lowering needs to know whether
@@ -60,6 +62,7 @@ impl<'s> Lower<'s> {
         Lower {
             src,
             errors: Vec::new(),
+            annotate: false,
         }
     }
 
@@ -436,7 +439,7 @@ impl<'s> Lower<'s> {
         }
     }
 
-    fn interface(&mut self, iface: XNode) -> (Vec<VarBlock>, Option<TypeSpec>) {
+    pub(crate) fn interface(&mut self, iface: XNode) -> (Vec<VarBlock>, Option<TypeSpec>) {
         let mut blocks = Vec::new();
         let mut ret = None;
         for sec in xml::elements(iface) {
@@ -496,17 +499,36 @@ impl<'s> Lower<'s> {
                 self.tag(pou),
             );
         }
-        for extra in ["actions", "transitions"] {
-            if let Some(a) = xml::child(pou, extra)
-                && xml::elements(a).next().is_some()
-            {
-                self.errors.push(
-                    PlcOpenError::new(
-                        format!("POU <{extra}> are not supported yet"),
-                        self.tag(a),
-                    )
-                    .with_help("actions and transitions belong to SFC, which plcc does not support yet"),
-                );
+        if let Some(a) = xml::child(pou, "transitions")
+            && xml::elements(a).next().is_some()
+        {
+            self.errors.push(
+                PlcOpenError::new("POU <transitions> are not supported yet", self.tag(a))
+                    .with_help("transitions belong to SFC, which plcc does not support yet"),
+            );
+        }
+        // Actions (ST, LD or FBD bodies): ACTIONs of the PROGRAM /
+        // FUNCTION_BLOCK, called by name.
+        let mut actions = Vec::new();
+        if let Some(a) = xml::child(pou, "actions") {
+            for act in xml::children(a, "action") {
+                let Some(an) = self.ident_attr(act, "name") else {
+                    continue;
+                };
+                if kind == PouKind::Function {
+                    self.err("a function cannot have actions", self.tag(act));
+                    continue;
+                }
+                let Some(b) = xml::child(act, "body") else {
+                    self.err(format!("action `{}` has no <body>", an.name), self.tag(act));
+                    continue;
+                };
+                let body = self.body(b, kind, &an.name, &mut var_blocks);
+                actions.push(ActionDecl {
+                    name: an,
+                    body,
+                    span: xml::span(act),
+                });
             }
         }
         let body = match xml::child(pou, "body") {
@@ -523,7 +545,7 @@ impl<'s> Lower<'s> {
                 var_blocks,
                 methods: Vec::new(),
                 properties: Vec::new(),
-                actions: Vec::new(),
+                actions,
                 body,
                 span,
             }),
@@ -534,7 +556,7 @@ impl<'s> Lower<'s> {
                 var_blocks,
                 methods: Vec::new(),
                 properties: Vec::new(),
-                actions: Vec::new(),
+                actions,
                 body,
                 span,
             }),

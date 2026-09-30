@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 miette = "7.6.0"
+plcc-ladder = { version = "0.1.0", path = "../plcc-ladder" }
 plcc-st = { version = "0.1.0", path = "../plcc-st" }
 roxmltree = "0.21.1"
 serde = "1.0.229"

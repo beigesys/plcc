@@ -727,7 +727,10 @@ impl TypeChecker {
                     self.check_expression(val, scope);
                 }
             }
-            StatementKind::Exit | StatementKind::Continue | StatementKind::Empty => {}
+            StatementKind::Exit
+            | StatementKind::Continue
+            | StatementKind::Empty
+            | StatementKind::Comment(_) => {}
         }
     }
 

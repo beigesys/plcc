@@ -60,6 +60,10 @@ pub(crate) struct Lower<'s> {
     pub strings: crate::strings::Helpers,
     /// Names taken in the global namespace (lower-case).
     globals: HashMap<String, Span>,
+    /// Emit a comment before each rung (`plcc convert`).
+    pub annotate: bool,
+    /// Texts of the rung comments, by marker number.
+    pub comments: std::cell::RefCell<Vec<String>>,
 }
 
 fn dims_ty(base: Ty, dims: &[u32]) -> Ty {
@@ -84,6 +88,8 @@ impl<'s> Lower<'s> {
             io,
             strings: Default::default(),
             globals: HashMap::new(),
+            annotate: false,
+            comments: Default::default(),
         }
     }
 
@@ -893,6 +899,7 @@ impl<'s> Lower<'s> {
                 env: &self.env,
                 aois: &self.aois,
                 strings: &self.strings,
+                comments: self.annotate.then_some(&self.comments),
             };
             let sbr = rll::subroutines(&ctx, &pr.routines, &routines);
             for (method, tys) in &sbr.ret {
@@ -1133,6 +1140,7 @@ impl<'s> Lower<'s> {
             env: &self.env,
             aois: &self.aois,
             strings: &self.strings,
+            comments: self.annotate.then_some(&self.comments),
         };
         let mut lowered: Vec<(&str, RoutineOut)> = Vec::new();
         let mut errs = Vec::new();
