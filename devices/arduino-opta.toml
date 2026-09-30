@@ -1,0 +1,150 @@
+# Arduino Opta running the plcc generic runtime (opta_plcc/runtime/runtime.ino).
+# Device manifest format: docs/device-manifest.md in the plcc repository.
+
+[device]
+id = "arduino-opta"
+name = "Arduino Opta"
+vendor = "Arduino"
+description = "STM32H747 (Cortex-M7) PLC running the plcc generic runtime: 8 inputs (digital or 0-10 V analog), 4 relays, USER button and LED, Modbus RTU on RS485."
+version = 1
+schema = 1
+
+[target]
+triple = "thumbv7em-none-eabi"
+# The Arduino mbed_opta core (4.6.0, variants/OPTA/cflags.txt) builds with
+# -mcpu=cortex-m7 -mfloat-abi=softfp -mfpu=fpv5-d16: FPU instructions,
+# floats passed in integer registers. fpv5-d16 is LLVM's fp-armv8d16.
+cpu = "cortex-m7"
+features = ["+fp-armv8d16"]
+float_abi = "softfp"
+# Fixed sizes, so every program gets the whole I/O and Modbus map.
+image = { I = 18, Q = 1, M = 64 }
+
+[target.runtime]
+kind = "plcc-arduino"
+abi = 1
+
+# Arduino mbed_opta 4.6.0 boards.txt: upload.tool=dfu-util, vid 0x2341 pid 0x0364,
+# interface (alt) 0, address 0x08040000, use_1200bps_touch=true; the variant's
+# APPLICATION_SIZE is 0x1C0000 (to the end of the 2 MiB flash).
+[flash]
+method = "dfuse"
+usb = [{ vid = 0x2341, pid = 0x0364 }, { vid = 0x35D1, pid = 0x0364 }]
+alt = 0
+layout = "Internal Flash"
+address = 0x08040000
+max_size = 0x1C0000
+leave = true
+reboot = "1200-baud-touch"
+runtime_usb = [
+    { vid = 0x2341, pid = 0x0064 }, { vid = 0x2341, pid = 0x0164 }, { vid = 0x2341, pid = 0x0264 },
+    { vid = 0x35D1, pid = 0x0064 }, { vid = 0x35D1, pid = 0x0164 }, { vid = 0x35D1, pid = 0x0264 },
+]
+protected = [{ start = 0x08000000, size = 0x40000, reason = "Arduino bootloader (sectors 0 and 1)" }]
+
+[console]
+transport = "webserial"
+baud = 115200
+commands = ["info", "img", "mw"]
+img_format = "hex-areas"
+img_m_bytes = 64
+
+[modbus.rtu]
+interface = "RS485"
+unit = 1
+baud = 19200
+data_bits = 8
+parity = "even"
+stop_bits = 1
+
+# holding register n <-> %MWn, coil n <-> %QX(n/8).(n%8),
+# discrete input n -> %IX(n/8).(n%8), input register n -> %IWn.
+[[modbus.map]]
+table = "holding"
+count = 32
+address = "%MW0"
+
+[[modbus.map]]
+table = "coils"
+count = 8
+address = "%QX0.0"
+
+[[modbus.map]]
+table = "discrete"
+count = 144
+address = "%IX0.0"
+
+[[modbus.map]]
+table = "input"
+count = 9
+address = "%IW0"
+
+[[io]]
+repeat = 8
+id = "I{n}"
+terminal = "I{n}"
+label = "Input I{n}"
+group = "Digital inputs"
+dir = "in"
+kind = "digital"
+type = "BOOL"
+address = "%IX0.{n-1}"
+
+[[io]]
+id = "BTN"
+terminal = "USER"
+label = "USER button (TRUE while pressed)"
+group = "Digital inputs"
+dir = "in"
+kind = "digital"
+type = "BOOL"
+address = "%IX1.0"
+
+# The same terminals read by the 12-bit ADC. Opta user manual:
+# V = raw * 3.3 / 4095 / 0.3034, so 4095 is 10.877 V.
+[[io]]
+repeat = 8
+id = "A{n}"
+terminal = "I{n}"
+label = "Input I{n} analog"
+group = "Analog inputs (0..10 V, raw 0..4095)"
+dir = "in"
+kind = "analog"
+type = "INT"
+address = "%IW{n}"
+range = [0, 4095]
+eng = [0.0, 10.877]
+units = "V"
+
+[[io]]
+repeat = 4
+id = "R{n}"
+terminal = "R{n}"
+label = "Relay {n}"
+group = "Relay outputs"
+dir = "out"
+kind = "digital"
+type = "BOOL"
+address = "%QX0.{n-1}"
+
+[[io]]
+id = "LED"
+terminal = "LED"
+label = "USER LED (blue)"
+group = "Relay outputs"
+dir = "out"
+kind = "digital"
+type = "BOOL"
+address = "%QX0.4"
+
+[[io]]
+repeat = 32
+from = 0
+id = "HR{n}"
+terminal = "HR{n}"
+label = "Holding register {n}"
+group = "Modbus holding registers (HR0..HR31)"
+dir = "mem"
+kind = "register"
+type = "INT"
+address = "%MW{n}"

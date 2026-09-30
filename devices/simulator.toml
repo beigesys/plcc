@@ -1,0 +1,54 @@
+# plcc studio's in-browser simulator: virtual I/O, no hardware.
+# Device manifest format: docs/device-manifest.md in the plcc repository.
+
+[device]
+id = "simulator"
+name = "Simulator"
+vendor = "plcc studio"
+description = "Virtual I/O for the in-browser simulator: 8 digital inputs, 4 analog inputs, 8 digital outputs."
+version = 1
+schema = 1
+
+[target]
+triple = "wasm32-unknown-unknown"
+image = { I = 16, Q = 4, M = 64 }
+
+[target.runtime]
+kind = "plcc-studio-sim"
+abi = 1
+
+[[io]]
+repeat = 8
+from = 0
+id = "DI{n}"
+terminal = "DI{n}"
+label = "Digital in {n}"
+group = "Digital inputs"
+dir = "in"
+kind = "digital"
+type = "BOOL"
+address = "%IX0.{n}"
+
+[[io]]
+repeat = 4
+id = "AI{n}"
+terminal = "AI{n}"
+label = "Analog in {n}"
+group = "Analog inputs (0..4095)"
+dir = "in"
+kind = "analog"
+type = "INT"
+address = "%IW{n}"
+range = [0, 4095]
+
+[[io]]
+repeat = 8
+from = 0
+id = "DO{n}"
+terminal = "DO{n}"
+label = "Digital out {n}"
+group = "Digital outputs"
+dir = "out"
+kind = "digital"
+type = "BOOL"
+address = "%QX0.{n}"
