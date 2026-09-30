@@ -110,7 +110,11 @@ with weak linkage (ELF `STB_WEAK`), with a body that just traps. So:
   or not, so a handler inside a static library needs `--whole-archive` or an
   explicit reference;
 * a host that JIT-compiles the module drops the default body first
-  (`Compiler::use_external_fault_handler`) and maps the symbol to its handler.
+  (`Compiler::use_external_fault_handler`) and maps the symbol to its handler;
+* on WebAssembly (`--target wasm32-…`) there is no default at all: `plcc_fault`
+  is an import (`env.plcc_fault`, link with `wasm-ld --allow-undefined`), because
+  a JavaScript host cannot override a weak definition at link time.
+  `packages/plc-wasm` supplies it.
 
 Division by a constant non-zero divisor (`x / 10`, `x MOD 16#100`) has no check
 and no call. `MIN / -1` (e.g. `INT#-32768 / -1`) does not fault: it wraps to

@@ -8749,7 +8749,15 @@ impl<'ctx> Compiler<'ctx> {
     /// into byte offsets using LLVM's *default* layout, where an i64 is only 4-byte
     /// aligned: every LINT/LREAL/TIME field after a 4-byte one moves, and the code
     /// no longer agrees with the offsets in the generated C header.
+    ///
+    /// On WebAssembly it also turns `plcc_fault` into an import: a wasm module's
+    /// host (JavaScript) cannot replace a weak definition at link time the way a
+    /// C runtime does, so the weak trapping default would win and a fault would
+    /// reach the host as a bare `unreachable` trap without its code and site.
     pub fn set_target(&self, triple: &str) -> Result<(), CodegenError> {
+        if triple.starts_with("wasm") {
+            self.use_external_fault_handler();
+        }
         let machine = self.target_machine(triple)?;
         self.module.set_triple(&TargetTriple::create(triple));
         self.module

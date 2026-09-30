@@ -303,3 +303,111 @@ fn thumbv7em_objects_link_without_a_handler() {
         assert!(syms.contains(kind), "{exe}: expected `{kind}` in\n{syms}");
     }
 }
+
+/// Names of the functions a wasm module imports (a minimal reader of the
+/// import section, enough for this test).
+fn wasm_function_imports(bytes: &[u8]) -> Vec<(String, String)> {
+    fn leb(b: &[u8], i: &mut usize) -> u32 {
+        let (mut v, mut shift) = (0u32, 0);
+        loop {
+            let byte = b[*i];
+            *i += 1;
+            v |= ((byte & 0x7f) as u32) << shift;
+            if byte & 0x80 == 0 {
+                return v;
+            }
+            shift += 7;
+        }
+    }
+    fn name(b: &[u8], i: &mut usize) -> String {
+        let n = leb(b, i) as usize;
+        let s = String::from_utf8_lossy(&b[*i..*i + n]).into_owned();
+        *i += n;
+        s
+    }
+    assert_eq!(&bytes[..4], b"\0asm");
+    let mut i = 8;
+    let mut out = Vec::new();
+    while i < bytes.len() {
+        let id = bytes[i];
+        i += 1;
+        let size = leb(bytes, &mut i) as usize;
+        let end = i + size;
+        if id == 2 {
+            let mut j = i;
+            for _ in 0..leb(bytes, &mut j) {
+                let module = name(bytes, &mut j);
+                let field = name(bytes, &mut j);
+                let kind = bytes[j];
+                j += 1;
+                match kind {
+                    0 => {
+                        leb(bytes, &mut j);
+                        out.push((module, field));
+                    }
+                    // table: reftype, limits
+                    1 => {
+                        j += 1;
+                        let flags = leb(bytes, &mut j);
+                        leb(bytes, &mut j);
+                        if flags & 1 != 0 {
+                            leb(bytes, &mut j);
+                        }
+                    }
+                    // memory: limits
+                    2 => {
+                        let flags = leb(bytes, &mut j);
+                        leb(bytes, &mut j);
+                        if flags & 1 != 0 {
+                            leb(bytes, &mut j);
+                        }
+                    }
+                    // global: valtype, mutability
+                    _ => j += 2,
+                }
+            }
+        }
+        i = end;
+    }
+    out
+}
+
+/// On wasm there is no weak default: the host (JavaScript) supplies
+/// `plcc_fault` as an import, so a fault reaches it with its code and site
+/// instead of as a bare `unreachable` trap.
+#[test]
+fn wasm_modules_import_the_fault_handler() {
+    let dir = work_dir("fault_link_wasm32");
+    object(&dir, "wasm32-unknown-unknown");
+    let Some(ld) = ["wasm-ld", "wasm-ld-21", "/usr/lib/llvm-21/bin/wasm-ld"]
+        .into_iter()
+        .find(|c| have(c))
+    else {
+        eprintln!("skipping the link: no wasm-ld");
+        return;
+    };
+    let out = Command::new(ld)
+        .current_dir(&dir)
+        .args(["--no-entry", "--export-dynamic", "--allow-undefined", "program.o", "-o", "program.wasm"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let imports = wasm_function_imports(&std::fs::read(dir.join("program.wasm")).unwrap());
+    assert!(
+        imports.iter().any(|(m, f)| m == "env" && f == "plcc_fault"),
+        "{imports:?}"
+    );
+}
+
+#[test]
+fn wasm_ir_declares_the_fault_handler() {
+    let (unit, errors) = plcc_st::parse(LINK_PROGRAM);
+    assert!(errors.is_empty());
+    let ctx = Context::create();
+    let mut c = Compiler::new(&ctx, "program");
+    c.compile(&unit).unwrap();
+    c.set_target("wasm32-unknown-unknown").unwrap();
+    let ir = c.emit_ir();
+    assert!(ir.contains("declare void @plcc_fault(i32"), "{ir}");
+    assert!(!ir.contains("define weak void @plcc_fault"), "{ir}");
+}
