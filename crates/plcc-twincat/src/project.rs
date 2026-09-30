@@ -40,11 +40,61 @@ const GENERATED_DIRS: &[&str] = &["_boot", "_compileinfo", "_libraries", ".git"]
 /// with a TwinCAT object extension, in project order. Other items
 /// (visualizations, text lists, image pools) hold no code and are skipped.
 pub fn project_files(project: &Path, source: &str) -> Result<Vec<PathBuf>, TwinCatError> {
+    let dir = project.parent().unwrap_or(Path::new("."));
+    let mut files = Vec::new();
+    for item in project_includes(source)? {
+        let rel = item.relative_path();
+        // TwinCAT runs on Windows, whose paths ignore case: `Constants.TcGVL`
+        // may name `CONSTANTS.TcGVL`.
+        let path = resolve_case_insensitive(dir, &rel).unwrap_or_else(|| dir.join(&rel));
+        if !path.exists() {
+            return Err(item.missing());
+        }
+        files.push(path);
+    }
+    Ok(files)
+}
+
+/// One `<Compile Include="...">` object file of a `.plcproj`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectInclude {
+    /// The `Include` attribute as written (MSBuild: backslash-separated,
+    /// relative to the project file, case-insensitive).
+    pub include: String,
+    /// The `<Compile>` element in the project source.
+    pub span: Span,
+}
+
+impl ProjectInclude {
+    /// The include as a relative path (backslashes become separators).
+    pub fn relative_path(&self) -> PathBuf {
+        self.include.split(['\\', '/']).collect()
+    }
+
+    /// The include as a `/`-separated relative path, for hosts that keep
+    /// files in memory rather than on disk.
+    pub fn slash_path(&self) -> String {
+        self.include.replace('\\', "/")
+    }
+
+    /// The error for an include that names no file.
+    pub fn missing(&self) -> TwinCatError {
+        TwinCatError::new(
+            format!("the project includes `{}`, which does not exist", self.include),
+            self.span,
+        )
+    }
+}
+
+/// The object files a `.plcproj` compiles, as written in the project and
+/// without touching the file system: `<Compile Include="...">` items with a
+/// TwinCAT object extension that are not excluded from the build, in project
+/// order. [`project_files`] resolves them on disk.
+pub fn project_includes(source: &str) -> Result<Vec<ProjectInclude>, TwinCatError> {
     let doc = roxmltree::Document::parse(source).map_err(|e| {
         let at = crate::byte_offset(source, e.pos());
         TwinCatError::new(format!("malformed .plcproj: {e}"), Span::new(at, at))
     })?;
-    let dir = project.parent().unwrap_or(Path::new("."));
     // `<Folder Include="A\B"><ExcludeFromBuild>true</ExcludeFromBuild>`:
     // everything below the folder is left out of the build, unless a deeper
     // folder or the file itself says otherwise.
@@ -53,7 +103,7 @@ pub fn project_files(project: &Path, source: &str) -> Result<Vec<PathBuf>, TwinC
         .filter(|n| n.is_element() && n.tag_name().name() == "Folder")
         .filter_map(|n| Some((normalize_include(n.attribute("Include")?), exclude_flag(n)?)))
         .collect();
-    let mut files = Vec::new();
+    let mut items = Vec::new();
     for item in doc
         .descendants()
         .filter(|n| n.is_element() && n.tag_name().name() == "Compile")
@@ -69,19 +119,13 @@ pub fn project_files(project: &Path, source: &str) -> Result<Vec<PathBuf>, TwinC
         if excluded(&normalize_include(include), exclude_flag(item), &folders) {
             continue;
         }
-        // TwinCAT runs on Windows, whose paths ignore case: `Constants.TcGVL`
-        // may name `CONSTANTS.TcGVL`.
-        let path = resolve_case_insensitive(dir, &rel).unwrap_or_else(|| dir.join(&rel));
-        if !path.exists() {
-            let r = item.range();
-            return Err(TwinCatError::new(
-                format!("the project includes `{include}`, which does not exist"),
-                Span::new(r.start, r.end),
-            ));
-        }
-        files.push(path);
+        let r = item.range();
+        items.push(ProjectInclude {
+            include: include.to_string(),
+            span: Span::new(r.start, r.end),
+        });
     }
-    Ok(files)
+    Ok(items)
 }
 
 /// An MSBuild `Include` path as a comparable key: forward slashes, lowercase

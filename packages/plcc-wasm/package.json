@@ -1,0 +1,28 @@
+{
+  "name": "@plcc/plcc-wasm",
+  "version": "0.1.0",
+  "description": "plcc's IEC 61131-3 front end (parse, type check, diagnostics, tag outline) compiled to WebAssembly",
+  "license": "MPL-2.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./pkg/*": "./pkg/*"
+  },
+  "files": [
+    "src",
+    "pkg"
+  ],
+  "scripts": {
+    "build": "sh build.sh",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.2"
+  }
+}

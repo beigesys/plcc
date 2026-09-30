@@ -28,7 +28,8 @@ pub use error::TwinCatError;
 pub use object::parse;
 pub use project::{
     DirectoryInput, OBJECT_EXTENSIONS, Task, configuration_source, directory_input, is_object_file,
-    is_project_file, is_task_file, parse_task, project_files, project_libraries,
+    ProjectInclude, is_project_file, is_task_file, parse_task, project_files, project_includes,
+    project_libraries,
 };
 
 /// Whether `source` looks like a TwinCAT PLC object (root element

@@ -5,7 +5,7 @@ members = [
     "crates/plcc-codegen",
     "crates/plcc-runtime",
     "crates/plcc-cli",
-    "crates/plcc-hal", "crates/plcc-stdlib", "crates/plcc-plcopen", "crates/plcc-twincat", "crates/plcc-l5x", "crates/plcc-ladder",
+    "crates/plcc-hal", "crates/plcc-stdlib", "crates/plcc-plcopen", "crates/plcc-twincat", "crates/plcc-l5x", "crates/plcc-ladder", "crates/plcc-driver", "crates/plcc-wasm",
 ]
 resolver = "3"
 
@@ -13,3 +13,13 @@ resolver = "3"
 version = "0.1.0"
 edition = "2024"
 license = "MPL-2.0"
+
+# Size-optimized build of the browser front end (crates/plcc-wasm):
+# `cargo build -p plcc-wasm --target wasm32-unknown-unknown --profile wasm-release`.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

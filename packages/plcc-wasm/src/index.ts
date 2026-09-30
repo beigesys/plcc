@@ -1,0 +1,185 @@
+// SPDX-License-Identifier: MPL-2.0
+//
+// plcc's front end in the browser: parse + type-check ST, PLCopen XML, L5X and
+// TwinCAT projects held in memory. Typed wrapper over the wasm-bindgen module
+// in ../pkg (built by ../build.sh from crates/plcc-wasm).
+
+import init, * as raw from "../pkg/plcc_wasm.js";
+
+export type Severity = "error" | "warning" | "advice";
+export type Stage = "parse" | "plcopen" | "l5x" | "twincat" | "io-map" | "input" | "typecheck";
+
+/** 1-based line; `col` is 1-based in UTF-16 code units; `utf16` is a JS string index. */
+export interface Position {
+  line: number;
+  col: number;
+  /** Byte offset into the UTF-8 text. */
+  offset: number;
+  utf16: number;
+}
+
+export interface Label {
+  start: Position;
+  end: Position;
+  message: string | null;
+}
+
+export interface Diagnostic {
+  /** The caller's path; null for request-level problems. */
+  file: string | null;
+  severity: Severity;
+  stage: Stage;
+  code: string | null;
+  message: string;
+  help: string | null;
+  /** The primary range (first label). */
+  span: Label | null;
+  labels: Label[];
+}
+
+export interface ImageTag {
+  path: string;
+  scope: string;
+  name: string;
+  /** Canonical address, e.g. `%IX0.3`, `%QW1`. */
+  address: string;
+  area: "I" | "Q" | "M";
+  size_prefix: "X" | "B" | "W" | "D" | "L";
+  byte_offset: number;
+  bit: number | null;
+  bits: number;
+  iec_type: string;
+  file: string;
+}
+
+export interface VarTag {
+  name: string;
+  kind: string;
+  iec_type: string;
+  retain: boolean;
+  constant: boolean;
+  at: string | null;
+}
+
+export interface PouTags {
+  name: string;
+  kind: "program" | "function_block";
+  file: string;
+  variables: VarTag[];
+}
+
+export interface TaskTag {
+  name: string;
+  interval_ns: number | null;
+  priority: number | null;
+  single: string | null;
+  instances: { name: string; program: string }[];
+  implicit: boolean;
+}
+
+export interface Tags {
+  image: ImageTag[];
+  programs: PouTags[];
+  function_blocks: PouTags[];
+  globals: VarTag[];
+  tasks: TaskTag[];
+}
+
+export interface CheckRequest {
+  /** path → text. Paths are relative and `/`-separated. */
+  files: Record<string, string>;
+  /** Inputs in order; default: every .plcproj, else every source file. */
+  entry?: string[];
+  /** L5X I/O map (TOML), see docs/l5x.md. */
+  io_map?: string;
+  stdlib?: "bundled-st" | "none";
+  /** Include the tag outline (default true). */
+  tags?: boolean;
+}
+
+export interface CheckResult {
+  ok: boolean;
+  diagnostics: Diagnostic[];
+  tags: Tags | null;
+  declarations: number;
+}
+
+let ready: Promise<void> | null = null;
+let poisoned: string | null = null;
+
+/**
+ * Load the module. With a bundler, call with no argument (the .wasm is fetched
+ * next to the JS glue); otherwise pass a URL, Response, bytes or a
+ * WebAssembly.Module. Idempotent.
+ */
+export function load(source?: unknown): Promise<void> {
+  if (!ready) {
+    ready = init(source === undefined ? undefined : { module_or_path: source as never }).then(() => undefined);
+  }
+  return ready;
+}
+
+/**
+ * Whether an internal compiler error (a Rust panic, which aborts) has left the
+ * instance unusable. wasm-bindgen keeps one instance per JS realm, so the only
+ * recovery is a new realm: run this package in a Web Worker and restart the
+ * worker when this is non-null.
+ */
+export function poisonedReason(): string | null {
+  return poisoned;
+}
+
+async function guarded<T>(f: () => T, onError: (e: unknown) => T): Promise<T> {
+  await (ready ?? load());
+  if (poisoned) return onError(new Error(`module unusable after an earlier internal error: ${poisoned}`));
+  try {
+    return f();
+  } catch (e) {
+    poisoned = e instanceof Error ? e.message : String(e);
+    return onError(e);
+  }
+}
+
+function internalError(e: unknown): CheckResult {
+  return {
+    ok: false,
+    tags: null,
+    declarations: 0,
+    diagnostics: [
+      {
+        file: null,
+        severity: "error",
+        stage: "input",
+        code: "plcc::internal",
+        message: `internal compiler error: ${e instanceof Error ? e.message : String(e)}`,
+        help: "please report this with the project that triggered it; restart the worker to continue",
+        span: null,
+        labels: [],
+      },
+    ],
+  };
+}
+
+/** Parse and type-check, exactly as `plcc check` does. */
+export function check(req: CheckRequest): Promise<CheckResult> {
+  return guarded(() => JSON.parse(raw.check(JSON.stringify(req))) as CheckResult, internalError);
+}
+
+/** One file's AST (`plcc parse --dump-ast`), or null with diagnostics. */
+export function parse(path: string, text: string): Promise<{ ast: unknown; diagnostics: Diagnostic[] }> {
+  return guarded(
+    () => JSON.parse(raw.parse(path, text)),
+    (e) => ({ ast: null, diagnostics: internalError(e).diagnostics }),
+  );
+}
+
+/** null if `path` is a valid project path, else the reason. */
+export async function validatePath(path: string): Promise<string | null> {
+  await (ready ?? load());
+  return raw.validate_path(path) ?? null;
+}
+
+export async function version(): Promise<string> {
+  await (ready ?? load());
+  return raw.version();
+}

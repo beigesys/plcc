@@ -1,0 +1,17 @@
+[package]
+name = "plcc-driver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+miette = "7.6.0"
+plcc-hir = { version = "0.1.0", path = "../plcc-hir" }
+plcc-l5x = { version = "0.1.0", path = "../plcc-l5x" }
+plcc-plcopen = { version = "0.1.0", path = "../plcc-plcopen" }
+plcc-runtime = { version = "0.1.0", path = "../plcc-runtime" }
+plcc-st = { version = "0.1.0", path = "../plcc-st" }
+plcc-stdlib = { version = "0.1.0", path = "../plcc-stdlib" }
+plcc-twincat = { version = "0.1.0", path = "../plcc-twincat" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
