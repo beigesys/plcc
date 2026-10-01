@@ -30,7 +30,7 @@ piece that is not in the browser yet (code generation), and the plan for it.
 | Simulator runtime for plcc's wasm32 output | `packages/plc-wasm` | ~20 KB TS; programs 3-4 KB each | done, tested in Node |
 | Flashing (WebUSB DFU 1.1 + DfuSe), 1200-baud touch | `packages/webdfu` | ~15 KB TS | done, tested against a fake device; not yet run against hardware from a browser |
 | Code generation (ST → wasm32 for the simulator, → Thumb for the Opta) | `crates/plcc-codegen` (LLVM) | 31.7 MB wasm, 6.8 MB brotli (spike) | **spike works**: LLVM in wasm, output byte-identical to native |
-| Linking for the Opta | Arduino CLI + arm-gcc today | 140 KB (spike) | **spike works**: single-object linker, byte-identical to lld; needs a firmware that loads program images |
+| Linking for the Opta: program images | `crates/plcc-image`, `packages/plc-image` | 88 KB wasm | done, tested in Node and under QEMU; byte-identical to lld. The runtime that loads them (`runtimes/arduino-opta/loader`) is built and statically verified, first hardware flash pending |
 
 ## `@plcc/plcc-wasm` — the front end
 
@@ -212,12 +212,16 @@ bootloader's alt 0 name is `@Internal Flash  2MB   /0x08000000/01*128Ka,15*128Kg
   marks read-only (`a`) or not erasable / not writable, lies outside the layout,
   starts below the profile's `minAddress` (0x08040000 for the Opta: sector 0 is
   `a`, sector 1 is writable in the layout but holds the rest of the bootloader),
-  or runs past the profile's application area (0x08040000-0x081FFFFF; the
-  `boards.txt` maximum of 1966080 bytes would run 128 KiB past the end of flash
-  from that address, so the profile uses the real 1.75 MiB).
+  or runs past the profile's area: the runtime 0x08040000-0x0817FFFF for
+  `OPTA`, the program slot 0x08180000-0x081FFFFF for `OPTA_PROGRAM` /
+  `programProfileFromManifest` (whose `minAddress` is the slot, so a program
+  download cannot erase or write the runtime). The `boards.txt` maximum of
+  1966080 bytes would run 128 KiB past the end of flash from 0x08040000.
 - Every erase command and every data chunk is re-checked right before it is sent.
 - No mass erase exists in the code. `leave()` refuses a start address below
-  `minAddress`.
+  `minAddress`, except the profile's `entry` (a program-slot profile starts the
+  runtime at 0x08040000: an image is not a vector table), and never below the
+  floor.
 - `DfuseDevice.open` refuses a device whose VID:PID, alternate setting or layout
   name the profile does not describe.
 - Under every profile sit **built-in floors per bootloader USB id**
@@ -246,10 +250,10 @@ Everything above runs in the browser. Two steps still need native tools:
 1. **Code generation.** `plcc-codegen` is LLVM (inkwell → the LLVM C API). ST →
    wasm32 for the simulator and ST → Thumb-2 for the Opta both go through it.
 2. **Linking.** For the simulator, the relocatable wasm object must become a
-   module (`wasm-ld` today). For the Opta, the object is linked into the whole
-   Arduino firmware (mbed OS core, ArduinoModbus, …) with arm-none-eabi-gcc via
-   `arduino-cli` — hundreds of megabytes of toolchain and several minutes per
-   build, not something to run in a tab.
+   module (`wasm-ld` today). For the Opta this is solved: the object becomes a
+   program image (`@plcc/plc-image`, below) for a runtime flashed once, instead
+   of being linked into the whole Arduino firmware with arm-none-eabi-gcc via
+   `arduino-cli` per download.
 
 The feasibility spike below looked at both.
 
@@ -337,108 +341,60 @@ Not recommended while (a) is viable.
   by the browser-only requirement, but it remains the fallback if (a) proves too
   heavy for low-end machines.
 
-### Linking for the Opta without the Arduino toolchain: a program image
+### Download to the Opta without the Arduino toolchain: program images
 
-Today every download relinks the whole firmware. Real PLC runtimes do not: the
-runtime (firmware) is installed once, and a download replaces only the
-application, which the runtime loads from a fixed place. plcc's runtime contract
-already has the shape for this — `plcc_app` describes the program completely
-(tasks, image, init, run, retain) — so the firmware can drive a program it was
-not linked with. What plcc would produce is a position-fixed **program image**:
-the object's code and data placed at addresses reserved for programs, with the
-runtime's services reached through a table the firmware publishes.
+Implemented; the format and the loader are [program-image.md](program-image.md).
+The runtime (firmware) is flashed once; each download replaces only the
+program, which the runtime validates and loads from a fixed slot, the way
+real PLC runtimes work:
 
-**Flash and RAM.** On the Opta, reserve the last 4 sectors of the M7 flash
-(0x08180000-0x081FFFFF, 512 KiB) as the program slot, and a RAM window for the
-program's `.data`/`.bss` (e.g. 64 KiB at a fixed AXI-SRAM address the firmware's
-linker script leaves out). The firmware keeps 1.25 MiB (the runtime is ~165 KiB
-today). DfuSe can write the slot alone: the flasher's profile for "program" gets
-`minAddress = 0x08180000`, so a program download cannot touch the firmware, let
-alone the bootloader — and it erases 1-4 sectors instead of 14.
-
-**Image layout** (little-endian, at the slot base):
-
-```c
-#define PLCC_IMAGE_MAGIC 0x42434C50u        /* "PLCB" */
-
-typedef struct plcc_image_header {
-    uint32_t magic;            /* PLCC_IMAGE_MAGIC */
-    uint16_t abi_version;      /* PLCC_ABI_VERSION of plcc_app */
-    uint16_t header_size;      /* sizeof(plcc_image_header_t) */
-    uint32_t image_size;       /* header + text + data load image */
-    uint32_t image_crc32;      /* CRC-32 of bytes [header_size, image_size) */
-    uint32_t runtime_api;      /* version of the runtime API table the image was linked against */
-    uint32_t target;           /* board/CPU/float-ABI id ('OPTA', cortex-m7, softfp) */
-    uint32_t text_addr;        /* where text+rodata execute (in place): slot base + header_size */
-    uint32_t text_size;
-    uint32_t data_load;        /* offset of the .data initial image in the slot */
-    uint32_t data_addr;        /* RAM address .data is copied to */
-    uint32_t data_size;
-    uint32_t bss_addr;         /* RAM address zeroed by the loader */
-    uint32_t bss_size;
-    uint32_t api_slot;         /* RAM address of `const plcc_runtime_api_t *` the loader fills */
-    uint32_t get_app;          /* Thumb address of plcc_get_app() */
-    uint8_t  build_id[16];     /* hash of the sources: "is the program in the PLC the one open in the editor?" */
-    uint32_t header_crc32;     /* CRC-32 of the header up to here */
-} plcc_image_header_t;
+```
+plcc compile (LLVM, wasm in the browser) ─▶ prog.o ─▶ @plcc/plc-image ─▶ prog.img ─▶ @plcc/webdfu ─▶ slot 0x08180000
+                                                      (crates/plcc-image,           (programProfileFromManifest:
+                                                       88 KB wasm)                   only the slot, leave → runtime)
 ```
 
-**Runtime services** are called through one table whose address the loader
-stores in `api_slot`:
+```ts
+import { buildDeviceImage } from "@plcc/plc-image";
+import { DfuseDevice, programProfileFromManifest, touch1200, waitForDfuDevice } from "@plcc/webdfu";
 
-```c
-typedef struct plcc_runtime_api {
-    uint32_t version, count;
-    int64_t (*monotonic_ns)(void);
-    void    (*print)(const char *);
-    void    (*fault)(uint32_t code, const char *where);
-    void   *(*memcpy)(void *, const void *, size_t);
-    void   *(*memset)(void *, int, size_t);
-    /* compiler helpers the Cortex-M code calls: __aeabi_ldivmod, __aeabi_uldivmod,
-       __aeabi_f2lz, ... and, while plcc emits soft-float, __addsf3, __mulsf3, ...;
-       libm: sinf, cosf, powf, ... — appended, never reordered */
-} plcc_runtime_api_t;
+const img = await buildDeviceImage(device, object);   // device: the expanded manifest (loadDevice)
+//   { bytes, address: 0x08180000, size, buildId, header, imports, sections, layout }
+const profile = programProfileFromManifest(device.flash, device.device.name);
+await touch1200(port);
+const dev = await DfuseDevice.open(await waitForDfuDevice(navigator.usb, profile), { profile });
+await dev.flash(img.bytes);                           // erases 1-4 sectors of the slot, starts the runtime
+// then `info` on the console: "program": { "build": img.buildId, ... }
 ```
 
-The image linker turns each call to an undefined symbol into a 16-byte veneer
-(`movw/movt ip, api_slot; ldr ip, [ip]; ldr pc, [ip, #4*k]` — `ip`/r12 is the
-AAPCS intra-procedure scratch register veneers may use). The firmware's loader:
-check magic, CRCs, `abi_version`, `runtime_api` ≤ its own, `target`; copy
-`.data`, zero `.bss`, store the API pointer, call `get_app()->init()`, then run
-`get_app()->tasks` exactly as it runs the linked-in table today. A missing or
-bad image leaves the runtime up (USB console, Modbus) with no program — the
-"no application" state every PLC has.
+- **Memory map** (manifest version 2, `[flash.program]`): runtime
+  0x08040000-0x0817FFFF (1.25 MiB, ~206 KiB used), program slot
+  0x08180000-0x081FFFFF (512 KiB, bank 2 sectors 4-7), the program's
+  `.data`/`.bss` in DTCM 0x20010000-0x2001FFFF (the Arduino core leaves DTCM
+  unused above its vector table).
+- **Image**: 128-byte header (magic, format, ABI, device id + manifest
+  version, layout, sizes, `plcc_get_app`, a 16-byte build id, two CRC-32s),
+  code and constants executed in place, a 16-byte veneer per imported runtime
+  service (`movw/movt ip; ldr ip, [ip]; ldr pc, [ip, #8+4k]` through a table
+  whose address the runtime stores at the start of the window — no runtime
+  address is baked into a program), the `.data` initial values.
+- **Linker** (`crates/plcc-image`, std-only Rust + sha2): every relocation
+  type plcc emits for Cortex-M plus the other Thumb ones defensively; all
+  fixture objects byte-identical to `ld.lld`; images run under QEMU through
+  the runtime's own loader code.
+- **Runtime** (`runtimes/arduino-opta/loader`): USB first, the slot checked
+  (both CRCs, device, versions, layout, ranges) before anything in it runs,
+  every call into the program guarded (plcc_fault, CPU faults, a 500 ms
+  watchdog → STOP with outputs off, USB and Modbus alive), `info`/`prog`/
+  `stop`/`run` on the console. Built and statically verified; **its first
+  flash to hardware is pending** (runtimes/arduino-opta/README.md, "First
+  flash").
+- **Studio** needs `flash.program` (and the `prog`/`stop`/`run` console
+  commands) in its TypeScript manifest loader (`studio/src/devices/manifest.ts`)
+  to load the version-2 Opta manifest.
 
-Codegen changes needed: for an image build, keep `plcc_fault` external (as for
-wasm), and drop `.ARM.exidx` (mark functions `nounwind` without unwind tables),
-which removes the `__aeabi_unwind_cpp_pr0` reference. Worth doing regardless:
-compile for the actual CPU (`cortex-m7`, `+fp-armv8d16sp`, softfp ABI to match
-the Arduino core) — today plcc targets a generic ARMv7E-M without an FPU, so
-every REAL operation is a library call (`__addsf3`, `__mulsf3`, ...).
-
-### The image linker is small: a spike that matches lld byte for byte
-
-The objects plcc emits for Cortex-M are simple. Across all 19 programs in
-`tests/fixtures/{programs,codegen}` plus `chaser_io.st`, at `-O0` and `-O2`, the
-only relocation types are `R_ARM_ABS32`, `R_ARM_THM_CALL`, `R_ARM_THM_JUMP24`,
-`R_ARM_THM_MOVW_ABS_NC`, `R_ARM_THM_MOVT_ABS`, `R_ARM_NONE` and `R_ARM_PREL31`
-(the last only in `.ARM.exidx`, which an image drops); sections are `.text`,
-`.rodata`, `.rodata.str1.1`, `.bss` (`.data` appears with initialized globals).
-Undefined symbols: `plcc_monotonic_ns`, `plcc_print`, `__aeabi_unwind_cpp_pr0`,
-soft-float helpers and libm.
-
-A ~250-line std-only Rust prototype (`spikes/browser-codegen/minild`) parses the
-ELF32 object, lays text/rodata out at a fixed flash address and data/bss at a
-fixed RAM address, resolves imports to given addresses and applies those
-relocations. For all 38 objects its flat image is **byte-identical** to
-`ld.lld -O0` with an equivalent linker script. It builds for `wasm32-wasip1`
-(140 KB) and gives the same output under Node's WASI. A production version —
-the header, CRCs, veneers, `.data`/COMMON handling, defensive support for
-`R_ARM_THM_JUMP19/JUMP11/PC8/REL32`, errors instead of panics, tests against
-`ld.lld` in CI and on the Unicorn/QEMU emulator — is roughly **3-5 days**. The
-firmware side (reserved slot and RAM window in the linker script, loader, API
-table, "no program" state, program-slot DFU profile) is another **3-5 days**,
-plus hardware bring-up.
+The remaining codegen change worth making: drop `.ARM.exidx` at the source
+(`nounwind`, no unwind tables); the image linker discards it today.
 
 ## Recommendation
 
@@ -452,13 +408,12 @@ plus hardware bring-up.
    `wasm-encoder`, ~3-4 days) turns the compiler's wasm32 object into the module
    `@plcc/plc-wasm` already runs. (Until then the studio could fall back to
    plcc's native `plcc compile` + `wasm-ld` for development.)
-3. **Opta:** adopt the program-image model — firmware (the plcc runtime) flashed
-   once, programs downloaded into a fixed 512 KiB slot through the same WebUSB
-   DFU path with a `minAddress` of the slot, linked by the image linker
-   (~3-5 days) against a runtime API table; firmware loader and linker script
-   ~3-5 days plus bring-up. This also makes downloads seconds instead of an
-   Arduino build, and gives the "which program is in the PLC" build id online
-   mode needs.
+3. **Opta:** program images — done (above and program-image.md): the image
+   linker and `@plcc/plc-image`, the slot profile in `@plcc/webdfu`, the
+   loader runtime. Left: the first flash of the loader runtime with someone at
+   the bench, then studio's Download button (manifest loader support for
+   `flash.program`, `buildDeviceImage`, `programProfileFromManifest`, the build
+   id compared with `info`).
 4. Not (b): a second backend would double the compiler and let the simulator
    drift from the PLC.
 5. While there: compile Cortex-M code for the real CPU (cortex-m7 + FPU,
@@ -471,8 +426,9 @@ plus hardware bring-up.
 cd packages/plcc-wasm && npm install && npm run build && npm test
 cd packages/plc-wasm  && npm install && npm test      # fixtures: npm run fixtures (plcc + wasm-ld)
 cd packages/webdfu    && npm install && npm test
+cd packages/plc-image && npm install && npm test      # builds pkg/plcc_image.wasm (cargo, wasm32) if missing
 ```
 
-All three packages are plain TypeScript ES modules with no framework and no
+All four packages are plain TypeScript ES modules with no framework and no
 runtime dependencies; `main`/`types` point at `src/index.ts` for a Vite build to
 consume directly.

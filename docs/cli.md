@@ -37,6 +37,11 @@ plcc compile plant.st -o plant.o --device arduino-opta --emit-header plant.h
 plcc device list
 plcc device check my-board.toml
 
+# A program image for the device's program slot (the runtime is flashed once;
+# see docs/program-image.md), and the loader's checks on an image
+plcc image plant.o --device arduino-opta -o plant.img --map
+plcc image --info plant.img --device arduino-opta
+
 # Any input printed as canonical Structured Text (ladder rungs as the ST they
 # lower to, one `(* rung N *)` group per rung)
 plcc convert plant.L5X --to st -o plant.st --prelude

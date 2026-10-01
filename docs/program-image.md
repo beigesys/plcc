@@ -189,7 +189,7 @@ Data imports are not supported (there are none in plcc output).
 Input: one relocatable ELF32 little-endian ARM object, as `plcc compile`
 writes for a Cortex-M target (EABI version 5; a hard-float object is refused
 for a soft-float device). Output: the image above. The linker is std-only Rust
-with no LLVM (it builds for `wasm32-unknown-unknown`), ~1 000 lines.
+with no LLVM (it builds for `wasm32-unknown-unknown`), ~1 800 lines with the service list and unit tests.
 
 - Sections: allocatable `PROGBITS` that are executable → text, read-only →
   text after the code, writable → `.data`; `NOBITS` → `.bss`; `COMMON`
@@ -236,12 +236,30 @@ with no LLVM (it builds for `wasm32-unknown-unknown`), ~1 000 lines.
 - `plcc_get_app` must be defined (in text), else the object is not a plcc
   program.
 
-`crates/plcc-image/tests` check the output against `ld.lld` with an
-equivalent linker script (same bytes for text and `.data`, for every fixture
-program and the assembly relocation tests), check the header and CRCs, and run
-images on `qemu-arm -cpu cortex-m7` through a harness that uses the runtime's
-own `plcc_image.c` checks and service table (skipped where qemu or the ARM
-toolchain is missing).
+Tests (`crates/plcc-image/tests/link.rs`, `crates/plcc-cli/tests/image.rs`,
+`packages/plc-image`):
+
+- every relocation type, from hand-written assembly, byte-identical to
+  `ld.lld` with an equivalent linker script; all 44 fixture objects (22
+  programs at `-O0` and `-O2`) byte-identical to `ld.lld` in text and `.data`;
+- objects it must refuse (each error above), every loader check provoked one
+  at a time, truncation and byte-flip sweeps without a panic, the Rust and C
+  service lists compared, the WebAssembly build byte-identical to the native
+  one;
+- images **run** under `qemu-arm -cpu cortex-m7` in a harness built from the
+  runtime's own `plcc_image.c` and service table (newlib/libgcc as on the
+  board): 64-bit division, libm, conversions, `PRINT`, a division-by-zero
+  fault with its source location, TON timing, a GCC-compiled object with
+  `.data` and COMMON, corrupt images refused, every fixture for 30 scans;
+- the runtime's fault guard runs bare-metal on `qemu-system-arm -M
+  mps2-an500` (Cortex-M7) set up like the Opta (vectors in RAM at
+  0x20000000, thread mode on the PSP, a 10 ms tick): a UsageFault, a
+  BusFault, an endless loop and `plcc_fault` each stop the task with outputs
+  off and the program runnable again; a fault outside the program goes to the
+  original handler.
+
+The emulator tests are skipped where qemu or `arm-none-eabi-gcc` is missing;
+the `ld.lld` comparisons fall back to committed golden files.
 
 ```bash
 plcc compile prog.st -o prog.o --device arduino-opta
@@ -262,7 +280,10 @@ loader of this format must do:
    range, ABI, `services` ≤ its table, slot and RAM window equal its own,
    every range inside the slot / window (in 64-bit arithmetic), `get_app`
    Thumb code inside text, `flags` = 0, body CRC. Only an image that passes
-   all of them is ever jumped into.
+   all of them is ever jumped into. The Opta reads the slot inside the fault
+   guard: an interrupted download can leave a half-programmed flash word,
+   whose ECC error is a bus fault on read, and that must be "no program", not
+   a crash at boot.
 3. **Prepare**: zero the RAM window, copy `.data`, store the service table's
    address at `services_slot`.
 4. **Call `get_app()`** (guarded, see below) and validate the descriptor:
