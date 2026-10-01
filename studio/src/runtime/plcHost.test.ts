@@ -13,15 +13,17 @@ import { gunzipSync } from 'node:zlib'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { compile } from '@plcc/plcc-compiler-wasm'
 import { catalogEntry } from '@/devices/catalog'
-import { demoProject, flatten, parseRung, type Project } from '@/model'
-import { simulatorRequest } from '@/state/simulate'
+import { demoProject, flatten, parseRung, toLadderJson, type Project } from '@/model'
+import * as wasm from '@plcc/plcc-wasm'
+import { parseSite, simulatorRequest } from '@/state/simulate'
 import type { LoopClock } from './loop'
 import type { FromWorker, Snapshot } from './messages'
 import { SimWorker } from './simWorker'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const gz = join(here, '../../../packages/plcc-compiler-wasm/dist/plcc-compiler.wasm.gz')
-const built = existsSync(gz)
+const frontEnd = join(here, '../../../packages/plcc-wasm/pkg/plcc_wasm_bg.wasm')
+const built = existsSync(gz) && existsSync(frontEnd)
 const OPTA = catalogEntry('arduino-opta')!.device
 
 function fakeClock() {
@@ -119,15 +121,28 @@ describe.skipIf(!built)('simulator: plcc\'s own build', () => {
     await w.handle({ type: 'stop' })
   })
 
-  it('reports a fault with its site', async () => {
+  it('reports a fault with its site, which plcc maps back to the element', async () => {
     const p = demoProject()
-    p.globals.push({ name: 'Zero', data_type: 'DINT', section: 'global' }, { name: 'Out', data_type: 'DINT', section: 'global' })
+    p.globals.push(
+      { name: 'Zero', data_type: 'DINT', section: 'global' },
+      { name: 'Out', data_type: 'DINT', section: 'global' },
+      { name: 'Arr', data_type: 'DINT[4]', section: 'global' },
+      { name: 'Idx', data_type: 'DINT', section: 'global', initial: '7' },
+    )
+    // Logix integer division by zero is not a fault (it yields Source A) ...
     p.pous[0].routines[0].rungs.push({ id: 9000, ...parseRung('CPT(Out,100/Zero);') })
+    // ... an index out of range is (a major fault on Logix, plcc fault 2).
+    const rung = { id: 9001, ...parseRung('MOV(Arr[Idx],Out);') }
+    p.pous[0].routines[0].rungs.push(rung)
     const { advance, last } = await start(p)
     advance(100)
     const s = last()
-    // Logix integer division by zero is not a fault (it yields Source A);
-    // the program keeps running.
-    expect(s.fault).toBeNull()
+    expect(s.fault?.code).toBe(2)
+    expect(s.stats.running).toBe(false)
+    expect(s.image.Q[0]).toBe(0) // outputs off
+    const site = parseSite(s.fault!.where)!
+    await wasm.load(readFileSync(frontEnd))
+    const at = await wasm.locateLadder(toLadderJson(p), site.line, site.col)
+    expect(at).toMatchObject({ pou: 'MainProgram', routine: 'MainRoutine', rung: 9001, element: rung.elements[0].id })
   })
 })
