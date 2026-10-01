@@ -1,0 +1,18 @@
+[package]
+name = "plcc-image"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sha2 = "0.11.0"
+
+[dev-dependencies]
+plcc-device = { path = "../plcc-device" }
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[features]
+# The C ABI of the WebAssembly build (packages/plc-image).
+wasm-abi = []

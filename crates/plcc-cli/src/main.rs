@@ -2,6 +2,7 @@
 
 mod convert;
 mod device;
+mod image;
 
 use clap::{Parser, Subcommand};
 use miette::{IntoDiagnostic, NamedSource, Result};
@@ -131,6 +132,30 @@ enum Commands {
     Device {
         #[command(subcommand)]
         command: DeviceCommand,
+    },
+    /// Link a compiled object into a program image for a device's program
+    /// slot (docs/program-image.md), or check an image with --info
+    Image {
+        /// The object from `plcc compile --device <id>` (or, with --info, an image)
+        input: PathBuf,
+        /// Device manifest (file or catalog id) with a [flash.program] slot
+        #[arg(long)]
+        device: String,
+        /// Output image
+        #[arg(short, long, required_unless_present = "info")]
+        output: Option<PathBuf>,
+        /// Build id for the header: 32 hex digits (default: from the object's SHA-256)
+        #[arg(long, value_name = "HEX")]
+        build_id: Option<String>,
+        /// Print the image map (sections, veneers, entry point)
+        #[arg(long)]
+        map: bool,
+        /// Print the link report as JSON
+        #[arg(long)]
+        json: bool,
+        /// INPUT is an image: print its header and check it as the device's runtime would
+        #[arg(long)]
+        info: bool,
     },
     /// Compile and JIT-run ST programs, optionally with Modbus TCP for SCADA
     Sim {
@@ -759,6 +784,9 @@ fn main() -> Result<()> {
             DeviceCommand::Check { files, json } => device::check(&files, json),
             DeviceCommand::List => device::list(),
         },
+        Commands::Image { input, device, output, build_id, map, json, info } => {
+            image::run(&input, &device, output.as_deref(), build_id.as_deref(), map, json, info)
+        }
         Commands::Compile {
             inputs,
             output,
