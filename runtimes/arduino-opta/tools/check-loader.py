@@ -110,18 +110,32 @@ check(usb is not None and setup is not None and usb < setup,
 
 callers_prepare = [f for f in funcs if "plcc_image_prepare" in calls(f)]
 check(len(callers_prepare) == 1, f"plcc_image_prepare is called from one function only ({callers_prepare})")
+# The slot is read only inside a guarded call (an ECC error on a half-written
+# flash word is a bus fault): plcc_image_check is called from call_check only,
+# which check_slot passes to plcc_guard_call.
+callers_check = sorted(f for f in funcs if "plcc_image_check" in calls(f))
+check(callers_check == ["call_check"], f"plcc_image_check is called only from call_check ({callers_check})")
+call_check = syms.get("call_check")
+
+
+def literals(fn):
+    return [int(m.group(1), 16) for l in funcs.get(fn, []) if (m := re.search(r":\s+[0-9a-f ]+\s+\.word\s+0x([0-9a-f]+)", l))]
+
+
+check(call_check is not None and (call_check | 1) in literals("check_slot") and "plcc_guard_call" in calls("check_slot"),
+      "check_slot runs call_check through plcc_guard_call")
 for f in callers_prepare:
     seq = calls(f)
-    i_check = first(seq, lambda c: c == "plcc_image_check")
+    i_check = first(seq, lambda c: c == "check_slot")
     i_prep = first(seq, lambda c: c == "plcc_image_prepare")
     check(i_check is not None and i_prep is not None and i_check < i_prep,
-          f"{f}: plcc_image_check is called before plcc_image_prepare")
+          f"{f}: check_slot (the guarded plcc_image_check) is called before plcc_image_prepare")
     # The result is tested right after the call.
     body = funcs[f]
-    k = next(i for i, l in enumerate(body) if re.search(r"\bbl\s+\S+ <plcc_image_check>", l))
+    k = next(i for i, l in enumerate(body) if re.search(r"\bbl\s+\S+ <check_slot>", l))
     nxt = " ".join(body[k + 1:k + 4])
     check(re.search(r"\bcbz\s+r0|\bcbnz\s+r0|\bcmp\s+r0, #0", nxt) is not None,
-          f"{f}: the result of plcc_image_check is tested ({' '.join(body[k + 1].split()[1:3])})")
+          f"{f}: the result of check_slot is tested before prepare")
     i_guard = first(seq, lambda c: c == "plcc_guard_call")
     check(i_guard is not None and i_prep < i_guard, f"{f}: get_app is called through plcc_guard_call after prepare")
 

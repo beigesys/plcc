@@ -167,6 +167,22 @@ static void image_to_modbus() {
 }
 
 // ── The program ─────────────────────────────────────────────────────────
+// Reading the slot is guarded too: an interrupted download can leave a
+// half-programmed STM32H7 flash word, whose ECC error is a bus fault on read.
+static int check_ok;
+static bool slot_unreadable;
+static const char *check_why;
+static void call_check(uint32_t) { check_ok = plcc_image_check(&expect, &check_why); }
+static bool check_slot(const char **why) {
+  slot_unreadable = plcc_guard_call(call_check, 0) != 0;
+  if (slot_unreadable) {
+    *why = "flash read error in the program slot: download a program again";
+    return false;
+  }
+  *why = check_why;
+  return check_ok;
+}
+
 // Every call into program code is one of these, run by plcc_guard_call.
 static plcc_get_app_fn get_app;
 static const plcc_app_t *got_app;
@@ -222,7 +238,7 @@ static bool start_program() {
     state = ST_EMPTY;
     return false;
   }
-  if (!plcc_image_check(&expect, &slot_why)) {
+  if (!check_slot(&slot_why)) {
     state = ST_EMPTY;
     return false;
   }
@@ -375,13 +391,14 @@ static void cmd_info() {
 // prog: the slot's header, checked now, as one line of JSON.
 static void cmd_prog() {
   const char *why = "";
-  bool ok = plcc_image_check(&expect, &why);
+  bool ok = check_slot(&why);
   const plcc_image_header_t *h = (const plcc_image_header_t *)(uintptr_t)expect.slot_addr;
   Serial.print("{\"valid\":");
   Serial.print(ok ? "true" : "false");
   Serial.print(",\"why\":");
   print_json_string(why);
-  if (h->magic == PLCC_IMAGE_MAGIC) {
+  // Header fields only from a slot that could be read (and has a header).
+  if (!slot_unreadable && h->magic == PLCC_IMAGE_MAGIC) {
     char id[sizeof h->target_id + 1];
     memcpy(id, h->target_id, sizeof h->target_id);
     id[sizeof h->target_id] = 0;
@@ -493,8 +510,7 @@ void setup() {
   watchdog.attach(&plcc_guard_tick, std::chrono::milliseconds(PLCC_GUARD_TICK_MS));
 
   if (digitalRead(BTN_USER) == LOW) {
-    // Safe start: the program is checked but not run until `run`.
-    plcc_image_check(&expect, &slot_why);
+    // Safe start: the program is not run until `run`.
     state = ST_EMPTY;
     slot_why = "USER button held at boot: program not started (send `run`)";
   } else {
