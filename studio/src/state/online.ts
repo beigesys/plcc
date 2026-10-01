@@ -7,7 +7,9 @@
 import { Simulator } from '@/engine'
 import type { Device } from '@/devices/manifest'
 import type { Project } from '@/model'
-import { FakeConsoleTransport, OnlineSession, WebSerialTransport, identifyDevice, isWebSerialSupported, matchCatalog, type Detection } from '@/serial'
+import {
+  FakeConsoleTransport, OnlineSession, WebSerialTransport, identifyDevice, isWebSerialSupported, matchCatalog, type Detection, type TrafficEntry,
+} from '@/serial'
 import { useLive, valuesFromImage } from './live'
 
 let session: OnlineSession | null = null
@@ -27,12 +29,15 @@ class DemoDevice {
 
   constructor(project: Project, device: Device) {
     this.transport = new FakeConsoleTransport(device)
+    // A program-image runtime: the demo has "downloaded" the project.
+    if (this.transport.program) this.transport.loadProgram({ build: '0'.repeat(32), size: 0, crc: '00000000', version: device.device.version })
     this.sim = new Simulator(project, device)
     this.timer = setInterval(() => this.step(), 20)
   }
 
   private step() {
     const t = this.transport
+    if (t.program && t.program.state !== 'run') return
     const img = this.sim.image
     img.I.set(t.I.subarray(0, img.I.length))
     img.M.set(t.M.subarray(0, img.M.length))
@@ -107,6 +112,9 @@ export async function connectOnline(project: Project, device: Device, kind: 'web
   }
   session = new OnlineSession(transport, device, { pollMs: 100 })
   session.subscribe(schedule)
+  serialLog.length = 0
+  session.onTraffic(logTraffic)
+  logTraffic({ dir: 'event', text: `connecting (${kind === 'fake' ? 'demo device' : `WebSerial, ${device.console.baud} baud`})`, at: Date.now() })
   useLive.setState({
     source: 'online',
     values: {},
@@ -147,6 +155,36 @@ export function setOnlineProject(p: Project) {
   projectRef = p
   demo?.setProject(p)
   schedule()
+}
+
+/** Program-image runtimes: stop or run the program in the slot. */
+export async function onlineProgram(cmd: 'run' | 'stop'): Promise<string> {
+  if (!session) throw new Error('not connected')
+  return cmd === 'run' ? session.runProgram() : session.stopProgram()
+}
+
+export function onlineHasProgram(): boolean {
+  return !!session && session.hasProgramCommands
+}
+
+// ---------------------------------------------------------------- serial log
+
+/** The last lines over the console (newest last), for the debug log. */
+export const serialLog: TrafficEntry[] = []
+const LOG_MAX = 2000
+let logListeners: (() => void)[] = []
+
+function logTraffic(e: TrafficEntry) {
+  serialLog.push(e)
+  if (serialLog.length > LOG_MAX) serialLog.splice(0, serialLog.length - LOG_MAX)
+  for (const l of logListeners) l()
+}
+
+export function subscribeSerialLog(cb: () => void): () => void {
+  logListeners.push(cb)
+  return () => {
+    logListeners = logListeners.filter((x) => x !== cb)
+  }
 }
 
 export function onlineCanWrite(address: string): boolean {

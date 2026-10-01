@@ -1,6 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // SerialTransport over the WebSerial API (Chrome / Edge, secure context).
+//
+// The wire format is the one the plcc runtimes' console reads
+// (runtimes/arduino-opta/loader/loader.ino, `console()`): 115200 8N1, each
+// command ends in a single "\n" — never "\r\n": the runtime ends a line at
+// either character, so "\r\n" would be a second, empty command answered with
+// `? commands: ...`, which the session would take as the reply to the next
+// command. Replies end in "\r\n" (Serial.println); the "\r" is dropped. DTR
+// is asserted after opening: the Arduino core's USB serial only sends while
+// the host holds DTR (a 1200-baud open with DTR dropped is the bootloader
+// touch, webdfu's touch1200, never this transport).
 
 import { Listeners } from './transport'
 import type { SerialTransport } from './transport'
@@ -42,7 +52,12 @@ export class WebSerialTransport implements SerialTransport {
       throw new Error('WebSerial is not available; use Chrome or Edge over https or localhost')
     }
     const port = this.opts.port ?? (await navigator.serial.requestPort({ filters: this.opts.filters ?? [] }))
-    await port.open({ baudRate: this.opts.baudRate ?? 115200 })
+    await port.open({ baudRate: this.opts.baudRate ?? 115200, dataBits: 8, stopBits: 1, parity: 'none', flowControl: 'none' })
+    try {
+      await port.setSignals({ dataTerminalReady: true, requestToSend: true })
+    } catch {
+      // Some platforms do not support it; the OS asserts DTR on open there.
+    }
     this.port = port
     this.open_ = true
     this.closing = false

@@ -4,12 +4,18 @@ import { catalogEntry } from '@/devices/catalog'
 import { parseAddress } from '@/model'
 import type { Address } from '@/model'
 import {
-  FakeOptaTransport, OnlineSession, bitForceWrite, checkIdentity, formatImgLine, formatInfoLine, identifyDevice, matchCatalog, mwCommand,
+  FakeOptaTransport, OnlineSession, bitForceWrite, checkIdentity, describeProgram, formatImgLine, formatInfoLine, identifyDevice, matchCatalog, mwCommand,
   parseFaultLine, parseImgLine, parseInfoLine, parseMwAck,
 } from '@/serial'
 
 const ARDUINO_OPTA = catalogEntry('arduino-opta')!.device
 const SIMULATOR = catalogEntry('simulator')!.device
+/** The Opta as manifest version 1 described it: the linked runtime, no program commands. */
+const OPTA_V1 = {
+  ...ARDUINO_OPTA,
+  device: { ...ARDUINO_OPTA.device, version: 1 },
+  console: { ...ARDUINO_OPTA.console!, commands: ['info', 'img', 'mw'] as ('info' | 'img' | 'mw')[] },
+}
 
 const addr = (s: string): Address => {
   const a = parseAddress(s)
@@ -201,8 +207,8 @@ describe('info: which device is on the port', () => {
 
   it('formats and parses the runtime info line', () => {
     const line = formatInfoLine(ARDUINO_OPTA)
-    expect(line).toBe('{"device":"arduino-opta","manifest":1,"runtime":"plcc-arduino","abi":1,"image":{"I":18,"Q":1,"M":64}}')
-    expect(parseInfoLine(line)).toEqual({ device: 'arduino-opta', manifest: 1, runtime: 'plcc-arduino', abi: 1, image: { I: 18, Q: 1, M: 64 } })
+    expect(line).toBe('{"device":"arduino-opta","manifest":2,"runtime":"plcc-arduino","abi":1,"image":{"I":18,"Q":1,"M":64}}')
+    expect(parseInfoLine(line)).toEqual({ device: 'arduino-opta', manifest: 2, runtime: 'plcc-arduino', abi: 1, image: { I: 18, Q: 1, M: 64 } })
     expect(parseInfoLine('I: 0  Q: 0  M: 0')).toBeUndefined()
     expect(parseInfoLine('{"device":"x"}')).toBeUndefined()
     expect(parseInfoLine('{nope')).toBeUndefined()
@@ -292,21 +298,69 @@ const HW_HELP = '? commands: info | img | mw <n> <value>'
 
 describe('the real runtime', () => {
   it('prints exactly what the fake console prints', () => {
-    expect(formatInfoLine(ARDUINO_OPTA)).toBe(HW_INFO)
+    expect(formatInfoLine(OPTA_V1)).toBe(HW_INFO)
     const f = parseImgLine(HW_IMG)!
     expect(formatImgLine(f)).toBe(HW_IMG)
-    expect(new FakeOptaTransport()['handle']('bogus')).toBe(HW_HELP)
+    expect(new FakeOptaTransport(OPTA_V1)['handle']('bogus')).toBe(HW_HELP)
+    // The program-image runtime (runtimes/arduino-opta/loader/loader.ino).
+    expect(new FakeOptaTransport()['handle']('bogus')).toBe('? commands: info | img | mw <n> <value> | prog | stop | run')
   })
 
   it('decodes a recorded info and img against the catalog manifest', () => {
     const det = matchCatalog(parseInfoLine(HW_INFO)!)
     expect(det.entry?.id).toBe('arduino-opta')
-    expect(det.check).toEqual({ mismatch: [], notes: [] })
+    // Recorded from the linked runtime of manifest version 1: same image, an older manifest.
+    expect(det.check?.mismatch).toEqual([])
+    expect(det.check?.notes.join(' ')).toMatch(/built for manifest version 1; the project has version 2/)
     const f = parseImgLine(HW_IMG)!
     expect([f.I.length, f.Q.length, f.M.length]).toEqual([18, 1, 64])
     // chaser_io.st: chase on (%MX0.0), period 1000 ms (%MW1), relay 2 and the LED lit.
     expect(f.M[0] & 1).toBe(1)
     expect(f.M[2] | (f.M[3] << 8)).toBe(1000)
     expect(f.Q[0]).toBe(0x12)
+  })
+})
+
+describe('program-image runtimes: program state, stop and run', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('parses the program state from info, as the loader prints it', () => {
+    const empty = parseInfoLine('{"device":"arduino-opta","manifest":2,"runtime":"plcc-arduino","abi":1,"image":{"I":18,"Q":1,"M":64},"state":"empty","program":null,"reason":"empty slot"}')!
+    expect(empty.program).toEqual({ state: 'empty', image: null, reason: 'empty slot' })
+    expect(describeProgram(empty.program!)).toBe('no program (empty slot)')
+    const fault = parseInfoLine(
+      '{"device":"arduino-opta","manifest":2,"runtime":"plcc-arduino","abi":1,"image":{"I":18,"Q":1,"M":64},"state":"fault","program":{"build":"59f1e2d3c4b5a6978877665544332211","size":1632,"crc":"1a2b3c4d","version":2},"fault":{"code":1,"where":"project.json:45:24: lx__P_Main","pc":"0x8180123"}}',
+    )!
+    expect(fault.program?.image?.size).toBe(1632)
+    expect(fault.program?.fault).toEqual({ code: 1, where: 'project.json:45:24: lx__P_Main', pc: '0x8180123' })
+    expect(describeProgram(fault.program!)).toBe('program faulted: division by zero at project.json:45:24: lx__P_Main')
+  })
+
+  it('stops and runs the program over the console, re-reading info', async () => {
+    vi.useFakeTimers()
+    const fake = new FakeOptaTransport()
+    fake.loadProgram({ build: 'ab'.repeat(16), size: 1024, crc: '01020304', version: 2 })
+    const session = new OnlineSession(fake, ARDUINO_OPTA)
+    await session.connect()
+    await vi.advanceTimersByTimeAsync(5)
+    expect(session.hasProgramCommands).toBe(true)
+    expect(session.identity?.program?.state).toBe('run')
+    const stop = session.stopProgram()
+    await vi.advanceTimersByTimeAsync(5)
+    expect(await stop).toBe('ok stop')
+    expect(session.identity?.program?.state).toBe('stop')
+    const run = session.runProgram()
+    await vi.advanceTimersByTimeAsync(5)
+    expect(await run).toBe('ok run')
+    expect(session.identity?.program?.state).toBe('run')
+    // An empty slot cannot run.
+    fake.program = { state: 'empty', image: null, reason: 'empty slot' }
+    const bad = session.runProgram()
+    const caught = bad.catch((e: Error) => e.message)
+    await vi.advanceTimersByTimeAsync(5)
+    expect(await caught).toBe('empty slot')
+    await session.disconnect()
   })
 })

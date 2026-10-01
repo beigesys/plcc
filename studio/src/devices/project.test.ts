@@ -10,9 +10,14 @@ import { loadManifest } from './manifest'
 const opta = catalogEntry('arduino-opta')!
 const sim = catalogEntry('simulator')!
 
-/** The Opta manifest with the relays moved one bit up and a new version. */
+const OPTA_VERSION = opta.device.device.version
+
+/** The Opta manifest with the relays moved one bit up and the next version. */
 function optaV2(): string {
-  return opta.text.replace('version = 1', 'version = 2').replace('address = "%QX0.{n-1}"', 'address = "%QX0.{n}"').replace('address = "%QX0.4"', 'address = "%QX0.6"')
+  return opta.text
+    .replace(`version = ${OPTA_VERSION}`, `version = ${OPTA_VERSION + 1}`)
+    .replace('address = "%QX0.{n-1}"', 'address = "%QX0.{n}"')
+    .replace('address = "%QX0.4"', 'address = "%QX0.6"')
 }
 
 describe('project devices', () => {
@@ -43,7 +48,7 @@ describe('project devices', () => {
     expect(p.devices.map((d) => d.manifest)).toEqual(['devices/simulator.toml', 'devices/arduino-opta.toml', 'devices/arduino-opta.toml'])
     expect(Object.keys(p.deviceFiles).sort()).toEqual(['devices/arduino-opta.toml', 'devices/simulator.toml'])
     // A different manifest under an id the project already has is not added silently.
-    expect(() => addDevice(p, optaV2())).toThrow(/already has devices\/arduino-opta.toml \(version 1\)/)
+    expect(() => addDevice(p, optaV2())).toThrow(new RegExp(`already has devices/arduino-opta.toml \\(version ${OPTA_VERSION}\\)`))
     expect(() => addDevice(p, 'not toml [')).toThrow(/invalid TOML/)
     p = removeDevice(p, 'Arduino Opta')
     expect(p.deviceFiles['devices/arduino-opta.toml']).toBeDefined()
@@ -82,8 +87,12 @@ describe('project devices', () => {
     const newer = buildCatalog({ 'arduino-opta.toml': optaV2(), 'simulator.toml': sim.text }, {})
     const u = catalogUpdates(p, newer)
     expect(u).toHaveLength(1)
-    expect(u[0]).toMatchObject({ path: 'devices/arduino-opta.toml', current: { device: { version: 1 } }, latest: { device: { device: { version: 2 } } } })
-    const older = buildCatalog({ 'arduino-opta.toml': opta.text.replace('version = 1', 'version = 1') }, {})
+    expect(u[0]).toMatchObject({
+      path: 'devices/arduino-opta.toml',
+      current: { device: { version: OPTA_VERSION } },
+      latest: { device: { device: { version: OPTA_VERSION + 1 } } },
+    })
+    const older = buildCatalog({ 'arduino-opta.toml': opta.text }, {})
     expect(catalogUpdates({ ...p, deviceFiles: { 'devices/arduino-opta.toml': optaV2() } }, older)).toEqual([])
   })
 
@@ -98,8 +107,8 @@ describe('project devices', () => {
     ])
     const real = lineDiff(opta.text, optaV2()).filter((x) => x.op !== ' ')
     expect(real.map((x) => x.op + x.text)).toEqual([
-      '-version = 1',
-      '+version = 2',
+      `-version = ${OPTA_VERSION}`,
+      `+version = ${OPTA_VERSION + 1}`,
       '-address = "%QX0.{n-1}"',
       '+address = "%QX0.{n}"',
       '-address = "%QX0.4"',

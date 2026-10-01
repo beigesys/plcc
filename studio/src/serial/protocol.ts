@@ -22,6 +22,43 @@ export interface DeviceIdentity {
   runtime: string
   abi: number
   image: { I: number; Q: number; M: number }
+  /** Program-image runtimes (docs/device-manifest.md, "Console protocol"). */
+  program?: ProgramStatus
+}
+
+/** What a program-image runtime reports about its program in `info`. */
+export interface ProgramStatus {
+  state: 'run' | 'stop' | 'fault' | 'empty'
+  /** The image in the slot, or null with `reason`. */
+  image: { build: string; size: number; crc: string; version: number } | null
+  reason?: string
+  fault?: { code: number; where: string; pc?: string }
+}
+
+function parseProgram(o: Record<string, unknown>): ProgramStatus | undefined {
+  const state = o.state
+  if (state !== 'run' && state !== 'stop' && state !== 'fault' && state !== 'empty') return undefined
+  const out: ProgramStatus = { state, image: null }
+  const p = o.program as Record<string, unknown> | null | undefined
+  if (p && typeof p === 'object' && typeof p.build === 'string' && typeof p.size === 'number') {
+    out.image = { build: p.build, size: p.size, crc: typeof p.crc === 'string' ? p.crc : '', version: typeof p.version === 'number' ? p.version : 0 }
+  }
+  if (typeof o.reason === 'string') out.reason = o.reason
+  const f = o.fault as Record<string, unknown> | undefined
+  if (f && typeof f === 'object' && typeof f.code === 'number') {
+    out.fault = { code: f.code, where: typeof f.where === 'string' ? f.where : '', ...(typeof f.pc === 'string' ? { pc: f.pc } : {}) }
+  }
+  return out
+}
+
+/** The program state in words: running, stopped, no program, or the fault. */
+export function describeProgram(p: ProgramStatus): string {
+  if (p.state === 'run') return 'program running'
+  if (p.state === 'stop') return 'program stopped'
+  if (p.state === 'empty') return `no program${p.reason ? ` (${p.reason})` : ''}`
+  const f = p.fault
+  const what = f ? (f.code === 1 ? 'division by zero' : f.code === 2 ? 'array bounds' : f.code === 65537 ? 'CPU fault' : f.code === 65538 ? 'watchdog' : `code ${f.code}`) : ''
+  return `program faulted${f ? `: ${what}${f.where ? ` at ${f.where}` : ''}` : ''}`
 }
 
 /** Parses an `info` reply; undefined for any other line. */
@@ -45,19 +82,29 @@ export function parseInfoLine(line: string): DeviceIdentity | undefined {
   const Q = num(img?.Q)
   const M = num(img?.M)
   if (manifest === undefined || abi === undefined || I === undefined || Q === undefined || M === undefined) return undefined
-  return { device: o.device, manifest, runtime: o.runtime, abi, image: { I, Q, M } }
+  const id: DeviceIdentity = { device: o.device, manifest, runtime: o.runtime, abi, image: { I, Q, M } }
+  const program = parseProgram(o)
+  if (program) id.program = program
+  return id
 }
 
-/** The `info` line a runtime built for `device` prints. */
-export function formatInfoLine(d: Pick<Device, 'device' | 'target'>): string {
+/** The `info` line a runtime built for `device` prints (a program-image runtime adds its program). */
+export function formatInfoLine(d: Pick<Device, 'device' | 'target'>, program?: ProgramStatus): string {
   const { I, Q, M } = d.target.image
-  return JSON.stringify({
+  const o: Record<string, unknown> = {
     device: d.device.id,
     manifest: d.device.version,
     runtime: d.target.runtime.kind,
     abi: d.target.runtime.abi,
     image: { I, Q, M },
-  })
+  }
+  if (program) {
+    o.state = program.state
+    o.program = program.image
+    if (!program.image) o.reason = program.reason ?? 'empty slot'
+    if (program.state === 'fault' && program.fault) o.fault = { code: program.fault.code, where: program.fault.where, pc: program.fault.pc ?? '0x0' }
+  }
+  return JSON.stringify(o)
 }
 
 export interface IdentityCheck {

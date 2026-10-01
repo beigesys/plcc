@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 import { useState } from 'react'
-import { AlertTriangle, Plug, PlugZap, Unplug } from 'lucide-react'
+import { AlertTriangle, Play, Plug, PlugZap, ScrollText, Square, Unplug } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { primaryDevice } from '@/devices/project'
 import { useEditor } from '@/state/editor'
 import { useLive } from '@/state/live'
-import { connectOnline, disconnectOnline, onlineSupported } from '@/state/online'
+import { connectOnline, disconnectOnline, onlineHasProgram, onlineProgram, onlineSupported } from '@/state/online'
+import { describeProgram } from '@/serial'
+import { SerialLog } from './SerialLog'
 import { IoMappingView } from './IoMappingView'
 import { RoutineView } from './RoutineView'
 import { TagsView } from './TagsView'
@@ -15,7 +17,19 @@ function OnlineBanner() {
   const online = useLive((s) => s.online)
   const project = useEditor((s) => s.project)
   const [busy, setBusy] = useState(false)
+  const [log, setLog] = useState(false)
   const device = primaryDevice(project)
+  const program = online.identity?.program
+  const programCmd = async (cmd: 'run' | 'stop') => {
+    setBusy(true)
+    try {
+      await onlineProgram(cmd)
+    } catch (e) {
+      useEditor.getState().notify(`${cmd}: ${e instanceof Error ? e.message : String(e)}`, 'fault')
+    } finally {
+      setBusy(false)
+    }
+  }
   const connected = online.state === 'online' || online.state === 'error'
   const connect = async (kind: 'webserial' | 'fake') => {
     setBusy(true)
@@ -65,9 +79,32 @@ function OnlineBanner() {
             {online.fault && ` — ${online.fault}`}
           </span>
           <span className="text-text-muted">Tags without an address show no value online.</span>
-          <Button size="sm" variant="outline" className="ml-auto" onClick={() => void disconnectOnline()}>
-            <Unplug /> Disconnect
-          </Button>
+          {program && (
+            <span
+              data-testid="program-state"
+              className={`rounded-control px-1.5 ${program.state === 'fault' ? 'bg-fault/15 text-fault' : program.state === 'run' ? 'text-power-text' : 'bg-alarm-bg text-alarm'}`}
+            >
+              {describeProgram(program)}
+            </span>
+          )}
+          <span className="ml-auto flex gap-2">
+            {onlineHasProgram() && (
+              <>
+                <Button size="sm" variant="outline" disabled={busy || program?.state === 'run'} onClick={() => void programCmd('run')} title="Cold-start the program in the device's program slot (also leaves a fault)">
+                  <Play /> Run
+                </Button>
+                <Button size="sm" variant="outline" disabled={busy || program?.state !== 'run'} onClick={() => void programCmd('stop')} title="Stop the program: outputs off">
+                  <Square /> Stop
+                </Button>
+              </>
+            )}
+            <Button size="sm" variant={log ? 'secondary' : 'ghost'} aria-pressed={log} onClick={() => setLog(!log)}>
+              <ScrollText /> Serial log
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => void disconnectOnline()}>
+              <Unplug /> Disconnect
+            </Button>
+          </span>
           {(online.mismatch?.length ?? 0) > 0 && (
             <ul role="alert" className="w-full space-y-0.5 text-alarm" aria-label="Device mismatch">
               {online.mismatch?.map((m) => (
@@ -82,6 +119,7 @@ function OnlineBanner() {
               {online.notes?.map((m) => <li key={m}>{m}</li>)}
             </ul>
           )}
+          {log && <SerialLog />}
         </>
       )}
     </div>

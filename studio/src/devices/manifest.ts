@@ -17,7 +17,8 @@ export const SCHEMA_VERSION = 1
 
 export type PointDir = 'in' | 'out' | 'mem'
 export type PointKind = 'digital' | 'analog' | 'register'
-export type ConsoleCommand = 'info' | 'img' | 'mw'
+export type ConsoleCommand = 'info' | 'img' | 'mw' | 'prog' | 'stop' | 'run'
+const CONSOLE_COMMANDS: readonly ConsoleCommand[] = ['info', 'img', 'mw', 'prog', 'stop', 'run']
 
 export interface IoPoint {
   /** Stable id within the manifest. */
@@ -77,7 +78,21 @@ export interface Flash {
   reboot: 'none' | '1200-baud-touch'
   runtime_usb?: UsbId[]
   protected?: { start: number; size: number; reason?: string }[]
+  /** The program slot (docs/program-image.md): programs downloaded on their own. */
+  program?: ProgramSlot
 }
+
+/** `[flash.program]`: where program images go, and the RAM they get. */
+export interface ProgramSlot {
+  format: number
+  address: number
+  max_size: number
+  ram: { start: number; size: number }
+  services: number
+}
+
+/** The program image format plcc writes. */
+export const PROGRAM_IMAGE_FORMAT = 1
 
 export interface Console {
   transport: 'webserial'
@@ -380,6 +395,7 @@ class Checker {
 }
 
 const U32 = 0xffffffff
+const hex8 = (n: number) => n.toString(16).toUpperCase().padStart(8, '0')
 const TYPES: Record<Address['size'], string[]> = {
   X: ['BOOL'],
   B: ['BYTE', 'SINT', 'USINT', 'CHAR'],
@@ -487,7 +503,7 @@ export function validateManifest(doc: Obj, text?: string): LoadedManifest {
   const f = c.table(doc, 'flash', 'flash', false)
   if (f) {
     const p = 'flash'
-    c.keys(f, p, ['method', 'usb', 'alt', 'layout', 'address', 'max_size', 'leave', 'reboot', 'runtime_usb', 'protected'])
+    c.keys(f, p, ['method', 'usb', 'alt', 'layout', 'address', 'max_size', 'leave', 'reboot', 'runtime_usb', 'protected', 'program'])
     const flash: Flash = {
       method: c.oneOf(f, 'method', p, ['dfuse'] as const),
       usb: c.usbList(f, 'usb', p),
@@ -534,6 +550,39 @@ export function validateManifest(doc: Obj, text?: string): LoadedManifest {
     if (flash.reboot === '1200-baud-touch' && !flash.runtime_usb) {
       c.error('flash.runtime_usb', "`1200-baud-touch` needs the running application's USB ids (`runtime_usb`)")
     }
+    // [flash.program] (crates/plcc-device/src/validate.rs, program_slot)
+    const pg = c.table(f, 'program', 'flash.program', false)
+    if (pg) {
+      const pp = 'flash.program'
+      c.keys(pg, pp, ['format', 'address', 'max_size', 'ram', 'services'])
+      const ram = c.table(pg, 'ram', `${pp}.ram`) ?? {}
+      c.keys(ram, `${pp}.ram`, ['start', 'size'])
+      const slot: ProgramSlot = {
+        format: c.int(pg, 'format', pp, 0, U32),
+        address: c.int(pg, 'address', pp, 0, U32),
+        max_size: c.int(pg, 'max_size', pp, 0, U32),
+        ram: { start: c.int(ram, 'start', `${pp}.ram`, 0, U32), size: c.int(ram, 'size', `${pp}.ram`, 0, U32) },
+        services: c.int(pg, 'services', pp, 0, U32),
+      }
+      if (slot.format !== PROGRAM_IMAGE_FORMAT) c.error(`${pp}.format`, `program image format ${slot.format} is not one plcc writes (${PROGRAM_IMAGE_FORMAT})`)
+      if (slot.max_size < 256) c.error(`${pp}.max_size`, 'must be at least 256 bytes (the image header is 128)')
+      const pend = slot.address + slot.max_size
+      if (pend > 2 ** 32) c.error(`${pp}.max_size`, `0x${slot.address.toString(16).toUpperCase()} + 0x${slot.max_size.toString(16).toUpperCase()} runs past the 32-bit address space`)
+      if (slot.address % 32 !== 0) c.error(`${pp}.address`, 'must be 32-byte aligned (a flash word)')
+      if (flash.address < pend && slot.address < end) {
+        c.error(`${pp}.address`, `the program slot 0x${hex8(slot.address)}..0x${hex8(pend)} overlaps the application (runtime) area 0x${hex8(flash.address)}..0x${hex8(end)}`)
+      }
+      for (const r of flash.protected ?? []) {
+        if (slot.address < r.start + r.size && r.start < pend) {
+          c.error(`${pp}.address`, `the program slot 0x${hex8(slot.address)}..0x${hex8(pend)} overlaps protected region 0x${hex8(r.start)}..0x${hex8(r.start + r.size)}${r.reason ? ` (${r.reason})` : ''}`)
+        }
+      }
+      if (slot.ram.size < 64) c.error(`${pp}.ram.size`, 'must be at least 64 bytes')
+      if (slot.ram.start + slot.ram.size > 2 ** 32) c.error(`${pp}.ram.size`, 'runs past the 32-bit address space')
+      if (slot.ram.start % 8 !== 0) c.error(`${pp}.ram.start`, 'must be 8-byte aligned')
+      if (slot.services < 3) c.error(`${pp}.services`, 'a runtime provides at least plcc_monotonic_ns, plcc_print and plcc_fault (3 services)')
+      flash.program = slot
+    }
     out.flash = flash
   }
 
@@ -543,10 +592,10 @@ export function validateManifest(doc: Obj, text?: string): LoadedManifest {
     const p = 'console'
     c.keys(co, p, ['transport', 'baud', 'commands', 'img_format', 'img_m_bytes'])
     const cmds: ConsoleCommand[] = []
-    if (!Array.isArray(co.commands)) c.error('console.commands', 'must be an array of `info`, `img`, `mw`')
+    if (!Array.isArray(co.commands)) c.error('console.commands', `must be an array of ${CONSOLE_COMMANDS.map((x) => `\`${x}\``).join(', ')}`)
     else {
       co.commands.forEach((x, i) => {
-        if (x !== 'info' && x !== 'img' && x !== 'mw') c.error(`console.commands[${i}]`, `${JSON.stringify(x)}: expected \`info\`, \`img\` or \`mw\``)
+        if (!(CONSOLE_COMMANDS as readonly unknown[]).includes(x)) c.error(`console.commands[${i}]`, `${JSON.stringify(x)}: expected one of ${CONSOLE_COMMANDS.map((y) => `\`${y}\``).join(', ')}`)
         else if (cmds.includes(x)) c.error(`console.commands[${i}]`, `\`${x}\` is listed twice`)
         else cmds.push(x)
       })

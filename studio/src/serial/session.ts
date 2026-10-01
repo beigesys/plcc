@@ -19,19 +19,29 @@ export type SessionState = 'disconnected' | 'connecting' | 'online' | 'error'
 export interface SessionOptions {
   /** Poll period for `img`, ms. */
   pollMs?: number
+  /** How often a program-image runtime's `info` is re-read (program state). */
+  infoEveryMs?: number
   /** A command with no answer after this long is a miss, ms. */
   timeoutMs?: number
   /** Consecutive missed polls before the state becomes 'error'. */
   maxMisses?: number
 }
 
-type Expect = 'img' | 'mw' | 'info'
+type Expect = 'img' | 'mw' | 'info' | 'ack'
 
 interface Command {
   text: string
   expect: Expect
   resolve: (line: string) => void
   reject: (err: Error) => void
+}
+
+/** One line over the console, for the serial log. */
+export interface TrafficEntry {
+  dir: 'tx' | 'rx' | 'event'
+  text: string
+  /** ms since the epoch */
+  at: number
 }
 
 export class OnlineSession {
@@ -58,9 +68,12 @@ export class OnlineSession {
   private readonly timeoutMs: number
   private readonly maxMisses: number
   private listeners = new Set<(s: OnlineSession) => void>()
+  private trafficListeners = new Set<(e: TrafficEntry) => void>()
   private queue: Command[] = []
   private current?: { cmd: Command; timer: ReturnType<typeof setTimeout> }
   private pollTimer?: ReturnType<typeof setInterval>
+  private infoTimer?: ReturnType<typeof setInterval>
+  private readonly infoEveryMs: number
   private unsubs: (() => void)[] = []
 
   constructor(transport: SerialTransport, device: Device, opts: SessionOptions = {}) {
@@ -68,6 +81,7 @@ export class OnlineSession {
     this.device = device
     this.image = new ProcessImage(device.target.image)
     this.pollMs = opts.pollMs ?? 100
+    this.infoEveryMs = opts.infoEveryMs ?? 1000
     this.timeoutMs = opts.timeoutMs ?? 1000
     this.maxMisses = opts.maxMisses ?? 3
   }
@@ -75,6 +89,18 @@ export class OnlineSession {
   subscribe(listener: (s: OnlineSession) => void): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
+  }
+
+  /** Every line sent and received (and connection events), for a debug log. */
+  onTraffic(cb: (e: TrafficEntry) => void): () => void {
+    this.trafficListeners.add(cb)
+    return () => this.trafficListeners.delete(cb)
+  }
+
+  private traffic(dir: TrafficEntry['dir'], text: string) {
+    if (!this.trafficListeners.size) return
+    const e = { dir, text, at: Date.now() }
+    for (const cb of this.trafficListeners) cb(e)
   }
 
   private notify(): void {
@@ -111,6 +137,38 @@ export class OnlineSession {
     }
     this.pollTimer = setInterval(() => this.poll(), this.pollMs)
     this.poll()
+    // A program-image runtime's program can stop or fault: re-read `info` now and then.
+    if (this.hasProgramCommands && this.device.console?.commands.includes('info')) {
+      this.infoTimer = setInterval(() => {
+        if (!this.queue.some((c) => c.expect === 'info') && this.current?.cmd.expect !== 'info') this.identify().catch(() => {})
+      }, this.infoEveryMs)
+    }
+  }
+
+  /** Whether the runtime loads program images (`stop` / `run` / `prog`). */
+  get hasProgramCommands(): boolean {
+    const c = this.device.console?.commands ?? []
+    return c.includes('stop') && c.includes('run')
+  }
+
+  /** Stops the program (outputs off), then re-reads `info`. */
+  async stopProgram(): Promise<string> {
+    return this.programCommand('stop')
+  }
+
+  /** Cold-starts the program in the slot (also leaves a fault), then re-reads `info`. */
+  async runProgram(): Promise<string> {
+    return this.programCommand('run')
+  }
+
+  private async programCommand(cmd: 'stop' | 'run'): Promise<string> {
+    this.requireOpen()
+    if (!this.device.console?.commands.includes(cmd)) throw new Error(`${this.device.device.name}'s console has no \`${cmd}\` command (see its manifest)`)
+    const reply = await this.send(cmd, 'ack')
+    if (reply.startsWith('error:')) throw new Error(reply.slice(6).trim())
+    if (cmd === 'run') this.fault = undefined
+    await this.identify()
+    return reply
   }
 
   /** Sends `info` and compares the answer with the manifest. */
@@ -147,6 +205,8 @@ export class OnlineSession {
   private teardown(reason: string): void {
     if (this.pollTimer !== undefined) clearInterval(this.pollTimer)
     this.pollTimer = undefined
+    if (this.infoTimer !== undefined) clearInterval(this.infoTimer)
+    this.infoTimer = undefined
     for (const u of this.unsubs) u()
     this.unsubs = []
     if (this.current) {
@@ -160,6 +220,7 @@ export class OnlineSession {
 
   private onTransportClose(reason?: string): void {
     if (this.state === 'disconnected') return
+    this.traffic('event', `closed: ${reason ?? 'connection closed'}`)
     this.teardown(reason ?? 'connection closed')
     this.setState('disconnected', reason ?? 'connection closed')
   }
@@ -186,6 +247,7 @@ export class OnlineSession {
     if (!cmd) return
     const timer = setTimeout(() => this.onTimeout(), this.timeoutMs)
     this.current = { cmd, timer }
+    this.traffic('tx', cmd.text)
     this.transport.writeLine(cmd.text).catch((e: unknown) => {
       this.finish(undefined, e instanceof Error ? e : new Error(String(e)))
     })
@@ -204,7 +266,8 @@ export class OnlineSession {
   private onTimeout(): void {
     const cur = this.current
     if (!cur) return
-    if (cur.cmd.expect === 'img') {
+    this.traffic('event', `no answer to "${cur.cmd.text}" within ${this.timeoutMs} ms`)
+    if (cur.cmd.expect === 'img' || cur.cmd.expect === 'info') {
       this.misses++
       if (this.misses >= this.maxMisses) this.setState('error', 'device not responding')
       else this.notify()
@@ -213,6 +276,7 @@ export class OnlineSession {
   }
 
   private onLine(line: string): void {
+    this.traffic('rx', line)
     if (this.current?.cmd.expect === 'info' && parseInfoLine(line)) {
       this.finish(line)
       return
@@ -226,6 +290,10 @@ export class OnlineSession {
     const ack = parseMwAck(line)
     if (ack) {
       if (this.current?.cmd.expect === 'mw') this.finish(line)
+      return
+    }
+    if (this.current?.cmd.expect === 'ack' && (line.startsWith('ok ') || line.startsWith('error:'))) {
+      this.finish(line.trim())
       return
     }
     const fault = parseFaultLine(line)

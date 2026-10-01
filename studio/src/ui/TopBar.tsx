@@ -9,6 +9,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { resolveDevice } from '@/devices/project'
 import { useEditor, type Mode } from '@/state/editor'
 import { useLive } from '@/state/live'
+import { describeProgram } from '@/serial'
 import { exportRoutine } from '@/state/convert'
 import { downloadZip } from '@/state/persistence'
 import { THEMES } from '@/state/theme'
@@ -61,6 +62,12 @@ function DeviceChip() {
     const s = online.state
     state = s === 'online' ? (online.fault ? 'fault' : 'power') : s === 'error' ? 'alarm' : 'idle'
     text = online.fault ? 'PLC STOP' : s === 'online' ? (online.transport === 'fake' ? 'online (demo)' : 'online') : s
+    const prog = online.identity?.program
+    if (s === 'online' && prog && !online.fault) {
+      text = describeProgram(prog).replace(/^program /, '')
+      if (prog.state === 'fault') state = 'fault'
+      else if (prog.state !== 'run') state = 'alarm'
+    }
     if (s === 'online' && online.mismatch?.length) {
       state = 'alarm'
       text = 'wrong device?'

@@ -11,6 +11,7 @@ import { formatValue, simSend, useLive } from '@/state/live'
 import { demoSetInput, isDemoDevice, onlineCanWrite, onlineForceBit, onlineWriteWord } from '@/state/online'
 import { useProblems } from '@/state/problems'
 import { WithCommandMenu } from './CommandMenu'
+import { describeProgram } from '@/serial'
 import { pointState, readImage } from './io'
 import { StateDot } from './StateDot'
 import { useDraft } from './useDraft'
@@ -240,6 +241,7 @@ function DevicePanel() {
   const device = project.devices[0]
   const profile = primaryDevice(project)
   const [showAll, setShowAll] = useState(false)
+  const program = useLive((s) => s.online.identity?.program)
   const points = profile.io.filter((p) => showAll || p.kind !== 'register')
   const title = mode === 'simulate' ? 'Virtual I/O' : `${device?.name ?? profile.device.name} I/O`
   return (
@@ -253,6 +255,12 @@ function DevicePanel() {
     >
       {mode === 'simulate' && <p className="mb-1 text-[11px] text-text-muted">Simulator: toggle inputs and drag analog values.</p>}
       {mode === 'offline' && <p className="mb-1 text-[11px] text-text-muted">States appear in Simulate and Online.</p>}
+      {mode === 'online' && program && (
+        <p data-testid="inspector-program" className={`mb-1 text-dense ${program.state === 'fault' ? 'text-fault' : program.state === 'run' ? 'text-text' : 'text-alarm'}`}>
+          {describeProgram(program)}
+          {program.image ? <span className="text-text-muted"> · build {program.image.build.slice(0, 8)}, {program.image.size} bytes</span> : null}
+        </p>
+      )}
       <ul className="text-dense">
         {points.map((p) => (
           <IoPointRow key={p.id} p={p} />
