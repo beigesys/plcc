@@ -216,13 +216,26 @@ starting with `PLC STOP:`.
 | `info` | `{"device":"arduino-opta","manifest":1,"runtime":"plcc-arduino","abi":1,"image":{"I":18,"Q":1,"M":64}}` | One line of JSON: the device id and manifest version the runtime was built for, `target.runtime.kind`, `target.runtime.abi`, and the image sizes. A client compares it with the project's manifest. |
 | `img` | `I: 1 0 0 0 D2 7 ...  Q: 11  M: 1 0 ...` | `hex-areas`: `I:`, `Q:`, `M:` each followed by the area's bytes in upper-case hex without zero padding, separated by single spaces; two spaces before `Q:` and `M:`. `M` holds the first `img_m_bytes` bytes. |
 | `mw <n> <value>` | `ok %MW<n> := <value>` | Write `%MWn` (bytes 2n, 2n+1, little-endian). `value` is taken modulo 2^16. |
+| `prog` | `{"valid":true,"why":"ok","format":1,"target":"arduino-opta","version":2,"abi":1,"services":1,"size":1632,"text":1476,"data":0,"bss":168,"build":"59f1…","header_crc":"…","body_crc":"…"}` | Program-image runtimes: the header of the image in the program slot, checked now ([program-image.md](program-image.md)); `{"valid":false,"why":"empty slot"}` for an erased slot. |
+| `stop` | `ok stop` | Stop the program: outputs off, tasks halted. |
+| `run` | `ok run` or `error: <why>` | Cold-start the program in the slot (check, RAM window cleared, `.data` copied, `init`). Also leaves a fault. |
 | anything else | `? commands: ...` | |
+
+A program-image runtime's `info` also reports its state and program:
+`"state"` is `run`, `stop`, `fault` or `empty`; `"program"` is
+`{"build":"<32 hex>","size":<bytes>,"crc":"<body CRC-32>","version":<manifest version>}`
+or `null` with a `"reason"` (`"empty slot"`, `"body CRC mismatch"`, …); in
+`fault`, `"fault":{"code":<n>,"where":"<site>","pc":"0x…"}` (codes: 1 division
+by zero, 2 array bounds, 65537 CPU fault, 65538 watchdog).
 
 ### The Opta runtime
 
-The generic Opta runtime (`~/opta_plcc/runtime/runtime.ino`, built by
-`~/opta_plcc/build.sh`, which compiles with `--device arduino-opta`) implements
-manifest version 1 of `arduino-opta`. On the hardware:
+Two runtimes live in `runtimes/arduino-opta` (README.md there). The
+program-image runtime (`loader/`, `build-loader.sh`) implements manifest
+version 2: it is flashed once and runs programs downloaded into the program
+slot. The linked runtime (`runtime/runtime.ino`, `build.sh <program.st>`,
+which compiles with `--device arduino-opta` and links the program into the
+firmware) implements manifest version 1. On the hardware, the linked runtime:
 
 ```
 > info

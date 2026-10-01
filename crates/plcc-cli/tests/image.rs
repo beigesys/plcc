@@ -343,6 +343,67 @@ fn emulated_loader_refuses_bad_images() {
     assert_eq!(out.lines().filter(|l| l.starts_with("scan ")).count(), 5, "{out}");
 }
 
+/// The runtime's fault guard (runtimes/arduino-opta/loader/plcc_guard.c) on
+/// QEMU's Cortex-M7 board, set up as the Opta runs it (vectors in RAM at
+/// 0x20000000, thread mode on the PSP, a 10 ms tick): a UsageFault, the
+/// watchdog, a BusFault and plcc_fault each stop the task, turn the outputs
+/// off and leave the program runnable; a fault outside the program goes to the
+/// original handler.
+#[test]
+fn emulated_guard_contains_faults() {
+    let (Some(cc), Some(qemu)) = (tool("PLCC_ARM_CC", "arm-none-eabi-gcc"), tool("PLCC_QEMU_SYSTEM_ARM", "qemu-system-arm")) else {
+        eprintln!("skipped: arm-none-eabi-gcc or qemu-system-arm not found");
+        return;
+    };
+    let dir = tmp();
+    let elf = dir.join("guard_test.elf");
+    let o = Command::new("sh")
+        .arg(repo("runtimes/arduino-opta/loader/emu/build-guard.sh"))
+        .arg(&elf)
+        .env("CC", &cc)
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", text(&o));
+    let obj = dir.join("guard_prog.o");
+    let st = Command::new(&cc)
+        .args(["-mcpu=cortex-m7", "-mthumb", "-mfloat-abi=softfp", "-mfpu=fpv5-d16", "-O1", "-fno-builtin", "-c"])
+        .arg(repo("crates/plcc-cli/tests/data/image/guard_prog.c"))
+        .arg("-o")
+        .arg(&obj)
+        .status()
+        .unwrap();
+    assert!(st.success());
+    let img = dir.join("guard.img");
+    let manifest = repo("crates/plcc-cli/tests/data/image/guard-test.toml");
+    let o = plcc(&["image", obj.to_str().unwrap(), "--device", manifest.to_str().unwrap(), "-o", img.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", text(&o));
+    let o = Command::new(qemu)
+        .args(["-M", "mps2-an500", "-nographic", "-semihosting-config", "enable=on,target=native", "-kernel"])
+        .arg(&elf)
+        .arg("-device")
+        .arg(format!("loader,file={},addr=0x00100000", img.display()))
+        .output()
+        .unwrap();
+    // Semihosting output goes to stdout or stderr depending on QEMU's chardev setup.
+    let out = text(&o);
+    assert!(o.status.success(), "{out}");
+    let want = [
+        "started",
+        "run 0 ok m0=101",
+        "run 1 fault code=65537 exc=3 pc_in_text=1 off=1 where=HardFault",
+        "run 0 ok m0=102",
+        "run 2 fault code=65538 exc=0 pc_in_text=1 off=1 where=watchdog: a scan ran longer than 500 ms",
+        "run 0 ok m0=103",
+        "run 3 fault code=65537 exc=3 pc_in_text=1 off=1 where=HardFault",
+        "run 0 ok m0=104",
+        "run 4 fault code=1 exc=0 pc_in_text=0 off=1 where=guard_prog.c:61: task 4",
+        "run 0 ok m0=105",
+        "chained off=1",
+    ];
+    let got: Vec<&str> = out.lines().map(str::trim_end).collect();
+    assert_eq!(got, want, "{out}");
+}
+
 /// Every fixture program runs 30 scans in the emulator without a fault or a
 /// rejection (programs that divide by zero on purpose are not fixtures).
 #[test]

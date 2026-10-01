@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: MPL-2.0
+# Test device for tests/image.rs (emulated_guard_contains_faults): the Opta's
+# CPU and RAM window, with the program slot in the SSRAM of QEMU's mps2-an500
+# board (Cortex-M7), where the bare-metal guard test runs.
+
+[device]
+id = "guard-test"
+name = "Guard test (QEMU mps2-an500)"
+vendor = "plcc"
+version = 1
+schema = 1
+
+[target]
+triple = "thumbv7em-none-eabi"
+cpu = "cortex-m7"
+features = ["+fp-armv8d16"]
+float_abi = "softfp"
+image = { I = 18, Q = 1, M = 64 }
+
+[target.runtime]
+kind = "plcc-guard-test"
+abi = 1
+
+[flash]
+method = "dfuse"
+usb = [{ vid = 0x1209, pid = 0x0001 }]
+address = 0x00000000
+max_size = 0x100000
+
+[flash.program]
+format = 1
+address = 0x00100000
+max_size = 0x80000
+ram = { start = 0x20010000, size = 0x10000 }
+services = 185
