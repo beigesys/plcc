@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: CC0-1.0
 # Arduino Opta running the plcc generic runtime (opta_plcc/runtime/runtime.ino).
 # Device manifest format: docs/device-manifest.md in the plcc repository.
 

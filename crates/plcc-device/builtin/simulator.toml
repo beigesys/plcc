@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: CC0-1.0
 # plcc studio's in-browser simulator: virtual I/O, no hardware.
 # Device manifest format: docs/device-manifest.md in the plcc repository.
 
