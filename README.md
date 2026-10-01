@@ -1,350 +1,108 @@
 # plcc
 
-IEC 61131-3 Structured Text compiler written in Rust. Compiles ST to native code via LLVM for any target: x86_64, ARM, RISC-V, WebAssembly.
+Write PLC programs in ladder or Structured Text, and run them on open hardware.
 
-**[Open plcc studio](https://beigesys.github.io/plcc/)**, the ladder editor, in Chrome or Edge.
-Edit rungs, simulate them in the browser, and watch a connected PLC live over
-USB. Projects stay in your browser. Source: [`studio/`](studio/).
+plcc is an open-source compiler for IEC 61131-3, the standard language family of
+industrial controllers. It turns ladder logic and Structured Text into native
+machine code for whatever chip you have, and reads the project files engineers
+already use: Rockwell Studio 5000, Beckhoff TwinCAT, CODESYS, and OpenPLC.
 
-## Quick Start
+**[Open plcc studio →](https://beigesys.github.io/plcc/)** the ladder editor, in Chrome or Edge.
 
-```bash
-# Parse and check (the same type check `compile` runs first; warnings do not
-# stop a build, errors do — `compile --no-typecheck` skips it)
-plcc parse program.st --dump-ast
-plcc check program.st
-plcc check main.st motor.st utils.st
+![plcc studio simulating a motor seal-in rung, a run timer and a high-level alarm](studio/docs/screenshots/simulate.png)
 
-# Compile to LLVM IR
-plcc compile program.st -o program.ll
+## What you can do
 
-# Compile to native object
-plcc compile program.st -o program.o --target thumbv7em-unknown-none-eabi
+- **Edit ladder in the browser.** Draw rungs or type them (`XIC Start XIO Stop OTE Motor`),
+  simulate them, and watch a real PLC live over USB. Nothing to install; projects stay in
+  your browser.
+- **Bring existing programs.** Rockwell `.L5X`, Beckhoff TwinCAT projects, and PLCopen XML
+  (exported by CODESYS, OpenPLC and others) compile as they are.
+- **Translate between them.** Ladder to Structured Text and back, IEC ladder to Rockwell
+  ladder and back, with a warning wherever two vendors' instructions behave differently.
+- **Run it on real hardware.** Native code for ARM, x86, RISC-V or WebAssembly. Each board is
+  described by a small [device manifest](https://github.com/beigesys/plcc-devices); the
+  Arduino Opta is the first.
 
-# Optimized (LLVM default<O2> pipeline; -O0 .. -O3, default -O0)
-plcc compile -O2 program.st -o program.o
+## How it fits together
 
-# Multi-file compilation
-plcc compile main.st motor.st utils.st -o system.o
+```mermaid
+flowchart LR
+    subgraph Sources
+        studio["plcc studio<br/>(ladder editor)"]
+        st["Structured Text<br/>.st"]
+        l5x["Rockwell<br/>.L5X"]
+        tc["Beckhoff TwinCAT<br/>.plcproj"]
+        xml["PLCopen XML<br/>CODESYS, OpenPLC"]
+    end
 
-# Ladder / FBD / ST from a PLCopen XML project (mixes with .st files)
-plcc compile plant.xml utils.st -o plant.o
+    plcc{{"plcc<br/>check · translate · compile"}}
 
-# A Beckhoff TwinCAT 3 PLC project (.plcproj, or its directory)
-plcc compile MyPlc/MyPlc.plcproj -o plc.o
+    subgraph Runs on
+        opta["Arduino Opta<br/>and other ARM PLCs"]
+        linux["Linux PLCs<br/>and PCs"]
+        sim["Browser<br/>simulator"]
+    end
 
-# A Rockwell Studio 5000 project exported as L5X, I/O bound to %I/%Q
-plcc compile plant.L5X --io-map plant_io.toml -o plant.o --target thumbv7em-none-eabi
-
-# For a device from the catalog (target, CPU/FPU flags, process-image sizes)
-plcc compile plant.st -o plant.o --device arduino-opta --emit-header plant.h
-plcc device list
-plcc device check my-board.toml
-
-# Any input printed as canonical Structured Text (ladder rungs as the ST they
-# lower to, one `(* rung N *)` group per rung)
-plcc convert plant.L5X --to st -o plant.st --prelude
+    studio --> plcc
+    st --> plcc
+    l5x --> plcc
+    tc --> plcc
+    xml --> plcc
+    plcc --> opta
+    plcc --> linux
+    plcc --> sim
+    manifest[("device manifest<br/>I/O, flashing, console")] -.-> plcc
 ```
 
-Ladder Diagram and FBD come in as PLCopen XML (IEC 61131-10) and lower to the
-same AST as ST; see [docs/ladder.md](docs/ladder.md). TwinCAT 3 projects
-(`.plcproj`, `.TcPOU`, `.TcDUT`, `.TcGVL`, `.TcIO`, `.TcTTO`) compile with their
-ST bodies, tasks and CODESYS extensions; see [docs/twincat.md](docs/twincat.md).
-Rockwell Logix 5000 projects (`.L5X`: ladder and Logix ST routines, UDTs,
-Add-On Instructions, tasks) compile with Logix semantics; see
-[docs/l5x.md](docs/l5x.md).
+A compiled program doesn't know which board it runs on. It reads inputs and writes
+outputs through a standard process image (`%I`, `%Q`, `%M`), and a small runtime
+written once per board connects that image to the real terminals.
 
-## What It Compiles
+## Try it
 
-```iec
-FUNCTION_BLOCK PID
-VAR_INPUT
-    setpoint : REAL;
-    measured : REAL;
-    kp : REAL := 1.0;
-    ki : REAL := 0.1;
-    kd : REAL := 0.05;
-    dt : REAL := 0.01;
-END_VAR
-VAR_OUTPUT
-    output : REAL;
-END_VAR
-VAR
-    err : REAL;
-    prev_err : REAL := 0.0;
-    integral : REAL := 0.0;
-END_VAR
-    err := setpoint - measured;
-    integral := integral + err * dt;
-    output := kp * err + ki * integral + kd * (err - prev_err) / dt;
-    output := LIMIT(-100.0, output, 100.0);
-    prev_err := err;
-END_FUNCTION_BLOCK
+1. Open **[plcc studio](https://beigesys.github.io/plcc/)**, pick **Simulate**, and flip
+   the virtual StartPB input.
+2. Or compile from the command line:
+   ```bash
+   plcc compile motor.st -o motor.o --device arduino-opta
+   ```
+   Building plcc and every other command: [docs/development.md](docs/development.md) and
+   [docs/cli.md](docs/cli.md).
 
-PROGRAM Main
-VAR
-    pid : PID;
-    sensor : REAL;
-    target : REAL := 50.0;
-    control : REAL;
-END_VAR
-    pid(setpoint := target, measured := sensor, kp := 2.0);
-    control := pid.output;
-END_PROGRAM
-```
+## Status
 
-This compiles to two native functions:
+plcc is young and moving fast. What has been shown to work:
 
-- `main_init(state: *mut u8)` -- applies variable initializers
-- `main_scan(state: *mut u8)` -- executes one scan cycle
+- **The compiler:** the full Structured Text language, about 1,000 automated tests, and the
+  559-file OSCAT library compiling as one program.
+- **Real hardware:** ST, PLCopen ladder and Rockwell ladder programs have each run on an
+  Arduino Opta, switching its relays and talking Modbus RTU.
+- **Real projects:** 71% of public hand-made L5X exports compile, and every public TwinCAT
+  project tested parses (most of the rest need Beckhoff's own libraries).
 
-and, for every module, a program-independent runtime contract: a statically
-allocated instance of each program, the `%I`/`%Q`/`%M` process image, a task
-table, and `plcc_init()` / `plcc_run_task(i)`. A runtime written once against
-that contract runs any program -- see [Integration](#integration).
+Still experimental: the studio's online connection to real hardware, flashing from the
+browser, compiling inside the browser, and **plcrt**, our own bare-metal runtime.
+Known gaps are listed in [docs/known-issues.md](docs/known-issues.md).
 
-## Architecture
+## Learn more
 
-```
-plcc/
-├── crates/
-│   ├── plcc-st/           Lexer (logos) + recursive-descent parser + AST
-│   ├── plcc-plcopen/      PLCopen XML reader: LD/FBD/ST bodies lowered to the ST AST
-│   ├── plcc-twincat/      TwinCAT 3 reader: .plcproj, .TcPOU/.TcDUT/.TcGVL/.TcIO/.TcTTO
-│   ├── plcc-l5x/          Rockwell L5X reader: ladder + Logix ST lowered to the ST AST, Logix prelude
-│   ├── plcc-ladder/       Dialect-neutral ladder model (JSON), rung text, IEC ↔ Logix translation
-│   ├── plcc-hir/          Type checker, name resolution, IEC type hierarchy
-│   ├── plcc-codegen/      LLVM codegen via inkwell
-│   ├── plcc-stdlib/       IEC standard FBs as bundled ST source (TON, CTU, ...)
-│   ├── plcc-runtime/      Runtime contract: host clock, FB traits, function specs
-│   ├── plcc-hal/          Hardware Abstraction Layer for platform integration
-│   └── plcc-cli/          CLI binary
-└── tests/
-    ├── fixtures/          ST test files by language feature
-    └── external/          OSCAT, RuSTy corpora (gitignored)
-```
-
-## Language Support
-
-Complete IEC 61131-3:2013 (3rd edition) Structured Text:
-
-| Feature | Status |
-|---------|--------|
-| PROGRAM, FUNCTION, FUNCTION_BLOCK | Full |
-| CLASS, METHOD, EXTENDS, THIS^, SUPER^ (OOP) | Full — methods are late-bound for every call through a variable of a known FB/CLASS type (an inherited method is compiled per derived POU); `SUPER^()` runs the base body |
-| INTERFACE | Full — `itf := inst`, late-bound `itf.M(..)` (inputs, outputs, in-outs), `itf = 0` / `itf <> 0`, interface-typed FB inputs, FUNCTION parameters and arrays, EXTENDS between interfaces, IMPLEMENTS inherited from a base; no `__QUERYINTERFACE` yet |
-| PROPERTY (GET/SET), ACTION, FB_init, VAR_STAT, AND_THEN / OR_ELSE, REFERENCE TO (CODESYS / TwinCAT) | Full — see [docs/twincat.md](docs/twincat.md) |
-| TwinCAT 3 projects (`.plcproj`, `.TcPOU`, `.TcDUT`, `.TcGVL`, `.TcIO`, `.TcTTO` tasks) | ST bodies, with diagnostics at the line in the TwinCAT file; LD/FBD/CFC/SFC bodies and Beckhoff libraries (Tc2_System, ...) are reported, not compiled. of 61 open-source projects, all parse, 5 compile and 44 more stop only at Beckhoff libraries ([docs/twincat.md](docs/twincat.md)) |
-| VAR, VAR_INPUT, VAR_OUTPUT, VAR_IN_OUT (by reference), VAR_TEMP, VAR_GLOBAL | Full |
-| VAR CONSTANT, VAR RETAIN | Full |
-| All elementary types (BOOL through LREAL, STRING, WSTRING, TIME, DATE) | Full — every TIME/date type is i64 nanoseconds (since 1970-01-01 for DATE and DT, since midnight for TOD); converted to/from numbers in CODESYS units (see Standard Library) |
-| ARRAY (1D, multi-dimensional, negative and non-zero lower bounds) | Full |
-| ARRAY aggregate initializers (`[10, 20, 30]`, `[3(0)]`) | Full |
-| STRUCT (incl. field default initializers and `(a := 1, b := 2)` structure initializers), ENUM (bare, `E#V` and `E.V` enumerators), UNION, subranges, alias types | Full |
-| IF/ELSIF/ELSE, CASE, FOR/TO/BY, WHILE, REPEAT/UNTIL | Full |
-| EXIT, CONTINUE, RETURN | Full |
-| CONFIGURATION, RESOURCE, TASK, program instances (`PROGRAM p WITH t : Main (in := g, out => h)`) | Full -- compiled to a task table; INTERVAL, PRIORITY, SINGLE |
-| Direct representation (%I, %Q, %M), `AT` | Full -- CODESYS addressing (`%IW1` = bytes 2..3), bit/byte/word/dword/lword, in declarations and statements; partial `%I*` / VAR_CONFIG not yet |
-| Typed literals (INT#5, REAL#3.14) | Full |
-| Exponentiation `**` / EXPT | Full — per IEC Table 23/29 the result is ANY_REAL even for integer operands: an integer base converts to REAL (8/16-bit) or LREAL (32/64-bit, and bare literals), so `2 ** -1` is 0.5, `0 ** 0` is 1.0, `0 ** -1` is +inf; the result is converted back (rounded) when it is assigned to an integer variable (exact up to 2**53), and the type checker warns about that REAL-into-integer conversion, as CODESYS does |
-| POINTER TO, dereference (^), ADR, SIZEOF | Full — `pt^` as a value and a target, `pt^[i]`, `pt^.f`; CODESYS byte-addressed pointer arithmetic (`pt := pt + 1`) |
-| Pragmas, block/line comments | Full — `(* *)` nests, `/* */`, `//` |
-| Ladder model (`plcc-ladder`, `plcc convert --to ladder-json\|plcopen\|l5x`) | One series/parallel ladder model (JSON, stable element ids) for PLCopen LD and Rockwell RLL; readers for both, PLCopen XML writer with automatic layout, L5X writer with tags derived from use; the L5X compiler lowers RLL through it; round trips tested — see [docs/ladder-translation.md](docs/ladder-translation.md) |
-| IEC LD ↔ Logix RLL (`plcc convert --to l5x` / `--to plcopen`, `--dialect`) | Element-by-element translation with a mapping table (TIMER/COUNTER ↔ TON/TOF/RTO/CTU/CTD instances, ms ↔ TIME, one-shots with their storage bits, compares, math, CPT/CMP with Logix precedence); a warning names every element whose behaviour differs; what has no counterpart is reported NOT TRANSLATED. Translated programs are JIT-checked against the originals |
-| ST → ladder (`plcc convert x.st --to plcopen`) | Boolean assignments as contacts and coils, set/reset coils, compare boxes, FB calls as boxes, math/MOVE boxes; everything else in ST boxes; exact (JIT-checked on the fixtures and a generated corpus) |
-| ST emitter (`plcc convert --to st`) | Any AST (ST, PLCopen, L5X, TwinCAT) printed as canonical ST (`plcc_st::print_unit`); parse → print → parse gives the same AST on every fixture and all 559 OSCAT files. Source comments are not kept (the parser drops them); ladder rungs print with `(* rung N *)` comments |
-| Rockwell Logix 5000 (`.L5X`) | Ladder (RLL) and ST routines, UDTs, AOIs, controller/program/module tags with initial data, aliases, tasks, JSR/SBR/RET; 100+ instruction mnemonics with Logix rung-condition, prescan, status-flag and fault semantics; FBD/SFC routines and motion/PID instructions not yet — see docs/l5x.md |
-| CODESYS extensions | Bit access `x.3` / `x.%X3`, `S=` / `R=`, `REFERENCE TO` / `REF=` / `__ISVALIDREF`, calling a PROGRAM from another POU, the CODESYS parameter names of SR/RS/CTU/CTD/CTUD, `VAR_INST` — see docs/codesys-compatibility.md; not yet: PROPERTY, `ARRAY[*]` (docs/known-issues.md) |
-
-## Standard Library
-
-**150+ functions** callable from ST code:
-
-| Category | Functions |
-|----------|-----------|
-| Math | ABS, SQRT, SIN, COS, TAN, ASIN, ACOS, ATAN, ATAN2, EXP, LN, LOG, EXPT |
-| Rounding | TRUNC, FLOOR, CEIL, ROUND |
-| Selection | MIN, MAX (extensible), LIMIT, SEL, MUX, MOVE |
-| Operators as functions | ADD, MUL (extensible), SUB, DIV, GT, GE, EQ, LE, LT (extensible, monotonic), NE |
-| Bit ops | SHL, SHR, ROL, ROR |
-| Memory | ADR, SIZEOF |
-| String | LEN, CONCAT (2 or more inputs), LEFT, RIGHT, MID, INSERT, DELETE, FIND, REPLACE, and `=` `<>` `<` `<=` `>` `>=` on STRING — usable anywhere in an expression, nested, with literal arguments; results are truncated to the destination's length. WSTRING values are supported in declarations and assignments only |
-| Time | ADD_TIME, SUB_TIME, MUL_TIME, DIV_TIME (and the L- variants), ADD_TOD_TIME, ADD_DT_TIME, SUB_DATE_DATE, SUB_TOD_TIME, SUB_TOD_TOD, SUB_DT_TIME, SUB_DT_DT, CONCAT_DATE_TOD, CONCAT_DATE, CONCAT_TOD, CONCAT_DT, DAY_OF_WEEK, CODESYS `TIME()`; operators `DT - DT`, `DT + TIME`, `TOD + TIME`, `DATE - DATE` |
-| STRING conversions | `<int/bit/BOOL>_TO_STRING`, `STRING_TO_<int/BOOL>`, `REAL_TO_STRING`, `LREAL_TO_STRING`, `STRING_TO_REAL`, `STRING_TO_LREAL`, `TIME_TO_STRING`, `LTIME_TO_STRING`, `DATE_TO_STRING`, `TOD_TO_STRING`, `DT_TO_STRING` (the REAL and TIME/date ones are written in ST and compiled in only when used) |
-| Type conversion | `<SRC>_TO_<DST>` between every pair of non-string elementary types (BOOL, bit strings, integers, REAL/LREAL, TIME/LTIME, DATE/TOD/DT and their L- forms, CHAR/WCHAR), and the overloaded `TO_<DST>`. REAL → integer rounds (halves away from zero) and saturates. TIME and TOD convert as milliseconds, DATE and DT as seconds since 1970-01-01, LTIME/LTOD/LDATE/LDT as nanoseconds (CODESYS units) |
-
-**10 standard function blocks**, per IEC 61131-3 section 2.5.2:
-
-SR, RS, R_TRIG, F_TRIG, CTU, CTD, CTUD, TON, TOF, TP
-
-plus **RTO**, a retentive on-delay timer (IN, R, PT → Q, ET) that is not IEC
-standard: the IEC counterpart of the Logix RTO instruction, used when ladder is
-translated from Logix (docs/ladder-translation.md).
-
-These are written in ST (`crates/plcc-stdlib/st/`), embedded in the compiler with
-`include_str!`, and compiled into your module alongside your own POUs. There is no
-runtime library to link and no ABI boundary — LLVM optimizes across the whole
-program. Control it with `--stdlib`:
-
-```
-plcc compile prog.st -o prog.o                  # bundled-st (default)
-plcc compile prog.st -o prog.o --stdlib none    # no prelude at all
-```
-
-A POU you define yourself supersedes the bundled one of the same name; the
-bundled declaration is dropped.
-
-`RTC` is not provided: it needs a wall clock, and the runtime contract
-deliberately defines only a monotonic one.
-
-The timers read time through the external `plcc_monotonic_ns()` symbol, so
-elapsed time is real time and does not drift with scan period. Host and
-simulator builds get an implementation from `plcc-runtime`; bare-metal
-integrators supply their own. See [docs/runtime-symbols.md](docs/runtime-symbols.md).
-
-Instantiating a function block that is not in scope is a **compile error** naming
-the type — never a silently empty `scan()`.
-
-## Cross-Compilation Targets
-
-Any LLVM target triple. Tested:
-
-- `x86_64-unknown-linux-gnu` -- desktop/server
-- `aarch64-unknown-linux-gnu` -- ARM64 (RPi, server)
-- `armv7-unknown-none-eabi` -- bare-metal ARM Cortex-A
-- `thumbv7em-unknown-none-eabi` -- ARM Cortex-M4/M7 (PLC-class MCU)
-- `wasm32-unknown-unknown` -- WebAssembly
-- `riscv32-unknown-none-elf` -- RISC-V
-
-## Hardware Abstraction Layer
-
-The `plcc-hal` crate provides traits for PLC platform integrators:
-
-```rust
-use plcc_hal::*;
-
-struct MyPlatform { /* your hardware */ }
-
-impl Platform for MyPlatform {
-    type Image = MyProcessImage;    // %I/%Q/%M memory-mapped I/O
-    type Clk = MyRtc;              // monotonic + wall clock
-    type Scheduler = MyTaskRunner;  // cyclic task execution
-    type Retain = MyFlashStorage;   // RETAIN variable persistence
-    type Dog = MyWatchdog;          // safety watchdog
-    type Diag = MyDiagnostics;      // error reporting
-    // ...
-}
-```
-
-**HAL traits:**
-
-| Trait | Purpose |
-|-------|---------|
-| `ProcessImage` | %I/%Q/%M I/O image with coherent update/commit |
-| `Clock` | Monotonic time, wall clock, per-scan elapsed time |
-| `TaskScheduler` | Cyclic and event-triggered tasks with priority |
-| `IoDriver` | Fieldbus abstraction (EtherCAT, Modbus, PROFINET, CANopen) |
-| `RetainStorage` | Persistent variables across power cycles |
-| `Watchdog` | Safety monitoring with configurable timeout |
-| `DiagnosticSink` | Structured error/warning reporting |
-| `VariableAccess` | HMI/OPC UA read/write interface |
-
-A `LinuxSimulator` reference implementation is included for development and testing.
-
-## Integration
-
-Every compiled module exports the same runtime contract, so one runtime runs any
-program -- no per-program structs or I/O glue:
-
-```bash
-plcc compile plc.st -o plc.o --target thumbv7em-none-eabihf \
-    --emit-header plc.h --emit-symbols plc.json
-```
-
-```c
-#include "plc.h"            // image sizes, task table, layouts checked by _Static_assert
-
-plcc_init();                // every program instance, statically allocated
-while (running) {
-    read_field_inputs(plcc_image_i, PLCC_IMAGE_I_SIZE);    // latch %I
-    for (uint32_t t = 0; t < PLCC_TASK_COUNT; t++)
-        if (task_is_due(&plcc_tasks[t], now()))           // INTERVAL / SINGLE / PRIORITY
-            plcc_run_task(t);
-    write_field_outputs(plcc_image_q, PLCC_IMAGE_Q_SIZE); // flush %Q
-}
-```
-
-- `AT %IX0.3`, `%QW1`, `%MD4` variables *are* bytes of `plcc_image_i/q/m`
-  (CODESYS addressing, native byte order); the header lists every binding.
-- A `CONFIGURATION` becomes the task table; without one, every PROGRAM runs in
-  one cyclic `MainTask` (T#20ms, `--task-interval` to change).
-- `plcc_retain_regions[]` points at every RETAIN variable, for persistence.
-- `--emit-symbols` gives every variable's offset for HMI / Modbus mapping.
-- The per-program `main_init(state)` / `main_scan(state)` are still exported.
-
-The full contract, the addressing rules, the scheduling semantics and a complete
-C runtime loop are in [docs/process-image.md](docs/process-image.md). In Rust,
-`plcc_hal::scan::ScanCycle` runs a compiled module on any `plcc_hal::Platform`:
-
-```bash
-cargo run --example linux_sim -p plcc-hal -- plc.st --input 0=1 --scans 10
-```
-
-## Building
-
-Requires Rust 1.75+ and LLVM development headers.
-
-The device catalog in `devices/` is a git submodule
-([beigesys/plcc-devices](https://github.com/beigesys/plcc-devices)). Clone with
-`git clone --recursive`, or run `git submodule update --init` in an existing
-checkout. Without it, plcc falls back to built-in copies of the Opta and
-Simulator manifests.
-
-```bash
-# Install LLVM (Ubuntu/Debian)
-sudo apt install llvm-21-dev
-
-# Build
-cargo build --release
-
-# Run tests
-cargo test
-
-# Run the Linux simulator example
-cargo run --example linux_sim -p plcc-hal
-```
-
-## Test Suite
-
-828 tests across all crates, all passing:
-
-| Suite | Tests | What's Verified |
-|-------|-------|-----------------|
-| Parser (unit + fixtures + comprehensive) | 75 | Every grammar construct, error recovery; all 559 OSCAT files parse, and the whole corpus compiles in one invocation (docs/oscat-conformance.md) |
-| Type checker | 22 | IEC type hierarchy, implicit conversions, negative tests |
-| Runtime (FBs + functions) | 64 | All 11 standard FBs, all math/selection/conversion functions |
-| Codegen (JIT execution) | 156 | Arithmetic, control flow, functions, FB instantiation, arrays, OOP, stdlib, IEC conformance, IR safety, cross-compile, real-world PLC patterns |
-| HAL (simulator + scan cycle) | 17 | Process image, clock, retain, diagnostics; compiled programs run end-to-end through the generic scan cycle (tasks, priorities, SINGLE, RETAIN warm start) |
-
-Real-world PLC patterns verified end-to-end with JIT execution:
-- PID controllers
-- State machines with timed transitions
-- Traffic light sequencing
-- Pump interlock logic
-- Batch counting
-- Moving average filters
-- Conveyor startup sequences
-- Alarm priority encoding
+| | |
+|---|---|
+| [Language support](docs/language.md) | What compiles, the standard library, targets |
+| [Command line](docs/cli.md) | Every `plcc` command and input format |
+| [Running programs](docs/runtime.md) | The runtime contract and hardware abstraction layer |
+| [Ladder](docs/ladder.md) · [Translation](docs/ladder-translation.md) | Ladder formats, IEC ↔ Rockwell mapping |
+| [Rockwell L5X](docs/l5x.md) · [TwinCAT](docs/twincat.md) · [CODESYS](docs/codesys-compatibility.md) | Vendor formats and behaviour |
+| [Device manifests](docs/device-manifest.md) | Describing a board |
+| [Developing plcc](docs/development.md) | Layout, building, tests |
 
 ## License
 
 [Mozilla Public License 2.0](LICENSE), with a
-[compiler output exception](LICENSE-EXCEPTION).
+[compiler output exception](LICENSE-EXCEPTION): programs you compile with plcc carry no
+license obligation, and you can link the runtime into a proprietary product. Improvements
+to plcc's own files come back under the MPL. Device manifests are
+[CC0](https://github.com/beigesys/plcc-devices/blob/main/LICENSE).
 
-Use plcc in whatever you build and ship whatever you like — compiling your ST
-program places no license obligation on it, and linking the runtime into a
-proprietary product is expressly permitted. MPL reciprocity is file-level: if
-you improve plcc itself, those files come back under the MPL.
-
-Contributions are accepted under the same terms, signed off under the
-[DCO](CONTRIBUTING.md). No CLA.
+Contributions are welcome, signed off under the [DCO](CONTRIBUTING.md). No CLA.
