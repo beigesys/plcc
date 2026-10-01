@@ -21,7 +21,7 @@ export function suggest(tags: Tag[], text: string, limit = 8): Suggestion[] {
   const dot = t.indexOf('.')
   if (dot > 0) {
     const base = tags.find((x) => x.name.toLowerCase() === t.slice(0, dot).toLowerCase())
-    const members = base ? MEMBERS[base.type.toUpperCase()] : undefined
+    const members = base ? MEMBERS[base.data_type.toUpperCase()] : undefined
     if (!base || !members) return []
     const m = t.slice(dot + 1).toUpperCase()
     return members.filter((x) => x.startsWith(m)).map((x) => ({ value: `${base.name}.${x}`, detail: x === 'ACC' || x === 'PRE' ? 'DINT' : 'BOOL' }))
@@ -37,7 +37,7 @@ export function suggest(tags: Tag[], text: string, limit = 8): Suggestion[] {
     .sort((a, b) => a.score - b.score || a.tag.name.localeCompare(b.tag.name))
   return scored.slice(0, limit).map(({ tag }) => ({
     value: tag.name,
-    detail: `${tag.type}${tag.address ? ` ${tag.address}` : ''}`,
+    detail: `${tag.data_type}${tag.address ? ` ${tag.address}` : ''}`,
   }))
 }
 

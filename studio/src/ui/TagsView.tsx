@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Plus, Search, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { addressTypeMismatch, defaultInitial, renameTag, tagReferenceCount, type Tag } from '@/model'
+import { addressTypeMismatch, newTag, renameTag, tagReferenceCount, type Tag } from '@/model'
 import { useEditor } from '@/state/editor'
 import { formatValue, useLive } from '@/state/live'
+import { useProblems } from '@/state/problems'
+import { WithCommandMenu } from './CommandMenu'
 import { useDraft } from './useDraft'
 
 export const TAG_TYPES = [
@@ -16,8 +18,8 @@ export const TAG_TYPES = [
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 function CellInput({
-  value, label, mono, invalid, onCommit,
-}: { value: string; label: string; mono?: boolean; invalid?: boolean; onCommit(v: string): boolean | void }) {
+  value, label, mono, invalid, dataName, onCommit,
+}: { value: string; label: string; mono?: boolean; invalid?: boolean; dataName?: string; onCommit(v: string): boolean | void }) {
   const [v, setV] = useDraft(value)
   const commit = () => {
     if (v === value) return
@@ -26,6 +28,7 @@ function CellInput({
   return (
     <input
       aria-label={label}
+      data-tag-name={dataName}
       value={v}
       spellCheck={false}
       aria-invalid={invalid}
@@ -65,7 +68,16 @@ export function TypeSelect({ value, label, onChange }: { value: string; label: s
 
 export function updateTag(name: string, patch: Partial<Tag>) {
   const s = useEditor.getState()
-  s.commit((p) => ({ ...p, tags: p.tags.map((t) => (t.name === name ? { ...t, ...patch } : t)) }))
+  s.commit((p) => ({
+    ...p,
+    globals: p.globals.map((t) => {
+      if (t.name !== name) return t
+      const next: Tag = { ...t, ...patch }
+      // Optional fields are left out, not empty (as plcc writes them).
+      for (const k of ['initial', 'address', 'comment'] as const) if (next[k] === undefined || next[k] === '') delete next[k]
+      return next
+    }),
+  }))
 }
 
 export function tagWarnings(tags: Tag[]): Map<string, string> {
@@ -73,7 +85,7 @@ export function tagWarnings(tags: Tag[]): Map<string, string> {
   const byAddr = new Map<string, string[]>()
   for (const t of tags) {
     if (!t.address) continue
-    const w = addressTypeMismatch(t.address, t.type)
+    const w = addressTypeMismatch(t.address, t.data_type)
     if (w) out.set(t.name, w)
     const k = t.address.toUpperCase()
     byAddr.set(k, [...(byAddr.get(k) ?? []), t.name])
@@ -85,23 +97,50 @@ export function tagWarnings(tags: Tag[]): Map<string, string> {
 }
 
 export function TagsView() {
-  const tags = useEditor((s) => s.project.tags)
+  const tags = useEditor((s) => s.project.globals)
   const mode = useEditor((s) => s.mode)
   const values = useLive((s) => s.values)
   const [filter, setFilter] = useState('')
   const [newName, setNewName] = useState('')
   const [newType, setNewType] = useState('BOOL')
   const [error, setError] = useState('')
-  const warnings = useMemo(() => tagWarnings(tags), [tags])
+  const problems = useProblems((s) => s.problems)
+  const focus = useEditor((s) => s.focus)
+  const [highlight, setHighlight] = useState<string | null>(null)
+  const warnings = useMemo(() => {
+    const w = tagWarnings(tags)
+    for (const p of problems) if (p.place.kind === 'tag' && !w.has(p.place.tag)) w.set(p.place.tag, p.message)
+    return w
+  }, [tags, problems])
   const shown = tags.filter(
-    (t) => !filter || `${t.name} ${t.type} ${t.address ?? ''} ${t.comment}`.toLowerCase().includes(filter.toLowerCase()),
+    (t) => !filter || `${t.name} ${t.data_type} ${t.address ?? ''} ${t.comment ?? ''}`.toLowerCase().includes(filter.toLowerCase()),
   )
+
+  // "Go to tag" / "Rename…" from a context menu or the palette.
+  useEffect(() => {
+    if (focus?.kind !== 'tag') return
+    const tag = focus.tag
+    const rename = focus.rename
+    useEditor.getState().setFocus(null)
+    requestAnimationFrame(() => {
+      setFilter('')
+      setHighlight(tag)
+    })
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const input = document.querySelector<HTMLInputElement>(`[data-tag-name="${CSS.escape(tag.toLowerCase())}"]`)
+      input?.scrollIntoView({ block: 'center' })
+      if (rename) {
+        input?.focus()
+        input?.select()
+      }
+    }))
+  }, [focus])
 
   const add = () => {
     const n = newName.trim()
     if (!NAME.test(n)) return setError('Tag names use letters, digits and _, not starting with a digit')
     if (tags.some((t) => t.name.toLowerCase() === n.toLowerCase())) return setError(`${n} exists`)
-    useEditor.getState().commit((p) => ({ ...p, tags: [...p.tags, { name: n, type: newType, initial: defaultInitial(newType), comment: '' }] }))
+    useEditor.getState().commit((p) => ({ ...p, globals: [...p.globals, newTag(n, newType)] }))
     setNewName('')
     setError('')
   }
@@ -123,7 +162,7 @@ export function TagsView() {
   const remove = (name: string) => {
     const s = useEditor.getState()
     const refs = tagReferenceCount(s.project, name)
-    s.commit((p) => ({ ...p, tags: p.tags.filter((t) => t.name !== name) }))
+    s.commit((p) => ({ ...p, globals: p.globals.filter((t) => t.name !== name) }))
     if (refs) s.notify(`Deleted ${name}; ${refs} instruction${refs > 1 ? 's' : ''} still use it (Ctrl+Z to undo)`, 'alarm')
   }
 
@@ -191,15 +230,16 @@ export function TagsView() {
             {shown.map((t) => {
               const w = warnings.get(t.name)
               return (
-                <TableRow key={t.name}>
+                <WithCommandMenu key={t.name} target={{ kind: 'tag', tag: t.name }} label={`Tag ${t.name}`}>
+                <TableRow data-tag-row={t.name} className={highlight === t.name ? 'bg-select-bg' : undefined}>
                   <TableCell>
-                    <CellInput value={t.name} label={`${t.name} name`} mono onCommit={(v) => rename(t.name, v.trim())} />
+                    <CellInput value={t.name} label={`${t.name} name`} mono dataName={t.name.toLowerCase()} onCommit={(v) => rename(t.name, v.trim())} />
                   </TableCell>
                   <TableCell>
-                    <TypeSelect value={t.type} label={`${t.name} type`} onChange={(v) => updateTag(t.name, { type: v, initial: defaultInitial(v) })} />
+                    <TypeSelect value={t.data_type} label={`${t.name} type`} onChange={(v) => updateTag(t.name, { data_type: v, initial: undefined })} />
                   </TableCell>
                   <TableCell>
-                    <CellInput value={t.initial} label={`${t.name} initial value`} mono onCommit={(v) => updateTag(t.name, { initial: v.trim() })} />
+                    <CellInput value={t.initial ?? ''} label={`${t.name} initial value`} mono onCommit={(v) => updateTag(t.name, { initial: v.trim() })} />
                   </TableCell>
                   <TableCell>
                     <CellInput
@@ -212,7 +252,7 @@ export function TagsView() {
                     {w && <p className="px-1.5 text-[11px] text-alarm">{w}</p>}
                   </TableCell>
                   <TableCell>
-                    <CellInput value={t.comment} label={`${t.name} comment`} onCommit={(v) => updateTag(t.name, { comment: v })} />
+                    <CellInput value={t.comment ?? ''} label={`${t.name} comment`} onCommit={(v) => updateTag(t.name, { comment: v })} />
                   </TableCell>
                   <TableCell className="text-mono">
                     <LiveValue tag={t} values={values} />
@@ -223,6 +263,7 @@ export function TagsView() {
                     </Button>
                   </TableCell>
                 </TableRow>
+                </WithCommandMenu>
               )
             })}
           </TableBody>
@@ -237,5 +278,5 @@ function LiveValue({ tag, values }: { tag: Tag; values: Record<string, unknown> 
   const v = values[tag.name.toLowerCase()] as Parameters<typeof formatValue>[0]
   if (v === undefined) return <span className="text-text-muted">—</span>
   if (typeof v === 'boolean') return <span className={v ? 'text-power-text' : 'text-text-muted'}>{v ? '1' : '0'}</span>
-  return <span>{formatValue(v, tag.type)}</span>
+  return <span>{formatValue(v, tag.data_type)}</span>
 }

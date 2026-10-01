@@ -32,7 +32,7 @@ export interface SimStats {
 export interface Snapshot {
   type: 'snapshot'
   /** Full trace as [element id, bits] with in=1, out=2, active=4. */
-  trace: [string, number][]
+  trace: [number, number][]
   /** Changed tag values only (lower-case tag name). */
   values: Record<string, TagValue>
   /** Tags that disappeared. */

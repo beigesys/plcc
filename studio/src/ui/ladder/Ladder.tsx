@@ -6,15 +6,21 @@
 
 import { memo, type DragEvent, type ReactNode } from 'react'
 import type { ElementTrace, Trace } from '@/engine'
-import { BOX_SPECS, type Box, type Coil, type Contact, type Instruction, type StBox, type Series } from '@/model'
+import { boxSpec, isUnassigned, type Block, type Coil, type Contact, type Element, type Id, type StBox } from '@/model'
 import type { Scalar } from '@/runtime/messages'
 import { G, type PlacedNode, type PlacedSeries, type RungLayout } from './layout'
 
 export const PALETTE_MIME = 'application/x-plcc-instruction'
 
+/** A problem to mark on an element: a compiler diagnostic or a runtime error. */
+export interface Mark {
+  severity: 'error' | 'warning'
+  message: string
+}
+
 export interface LadderProps {
-  body: Series
-  /** Precomputed layout of `body` (the caller may need node positions too). */
+  elements: Element[]
+  /** Precomputed layout of `elements` (the caller may need node positions too). */
   layout: RungLayout
   trace: Trace | null
   /** Rails and wires show power (Simulate / Online). */
@@ -22,13 +28,14 @@ export interface LadderProps {
   read?: (ref: string) => Scalar | undefined
   /** Address to show under a contact/coil tag, e.g. %QX0.0. */
   addressOf?: (tag: string) => string | undefined
-  errors?: Record<string, string>
-  selectedId: string | null
-  dropTarget?: string | null
-  onSelect(id: string | null): void
-  onActivate(id: string): void
-  onDragTarget?(id: string | null): void
-  onDropInstruction?(afterId: string | null, mnemonic: string): void
+  /** Problems by element id. */
+  marks?: Map<Id, Mark>
+  selectedId: Id | null
+  dropTarget?: Id | null
+  onSelect(id: Id | null): void
+  onActivate(id: Id): void
+  onDragTarget?(id: Id | null): void
+  onDropInstruction?(afterId: Id | null, mnemonic: string): void
 }
 
 const PIN_ROOM = 26
@@ -47,7 +54,7 @@ function Line({ x1, y1, x2, y2, on, w = 2 }: { x1: number; y1: number; x2: numbe
 }
 
 interface Ctx extends LadderProps {
-  tr(id: string): ElementTrace | undefined
+  tr(id: Id): ElementTrace | undefined
 }
 
 function ContactGlyph({ n, el, t, ctx }: { n: PlacedNode; el: Contact; t?: ElementTrace; ctx: Ctx }) {
@@ -56,8 +63,8 @@ function ContactGlyph({ n, el, t, ctx }: { n: PlacedNode; el: Contact; t?: Eleme
   const gap = 12
   const bh = 26
   const on = ctx.live && t?.active
-  const addr = el.tag ? ctx.addressOf?.(el.tag) : undefined
-  const mark = el.kind === 'rise' ? 'P' : el.kind === 'fall' ? 'N' : ''
+  const addr = isUnassigned(el.operand) ? undefined : ctx.addressOf?.(el.operand)
+  const mark = el.kind === 'rising' ? 'P' : el.kind === 'falling' ? 'N' : ''
   return (
     <>
       <Line x1={n.x} y1={y} x2={cx - gap} y2={y} on={ctx.live && t?.in} />
@@ -72,7 +79,7 @@ function ContactGlyph({ n, el, t, ctx }: { n: PlacedNode; el: Contact; t?: Eleme
           {mark}
         </text>
       )}
-      <TagLabel n={n} tag={el.tag} addr={addr} ctx={ctx} />
+      <TagLabel n={n} tag={el.operand} addr={addr} ctx={ctx} />
     </>
   )
 }
@@ -82,8 +89,8 @@ function CoilGlyph({ n, el, t, ctx }: { n: PlacedNode; el: Coil; t?: ElementTrac
   const y = n.wy
   const r = 14
   const on = ctx.live && t?.active
-  const addr = el.tag ? ctx.addressOf?.(el.tag) : undefined
-  const mark = { normal: '', negated: '/', set: 'L', reset: 'U', rise: 'P', fall: 'N' }[el.kind]
+  const addr = isUnassigned(el.operand) ? undefined : ctx.addressOf?.(el.operand)
+  const mark = { normal: '', negated: '/', set: 'L', reset: 'U', rising: 'P', falling: 'N' }[el.kind]
   return (
     <>
       <Line x1={n.x} y1={y} x2={cx - r + 3} y2={y} on={ctx.live && t?.in} />
@@ -95,25 +102,42 @@ function CoilGlyph({ n, el, t, ctx }: { n: PlacedNode; el: Coil; t?: ElementTrac
           {mark}
         </text>
       )}
-      <TagLabel n={n} tag={el.tag} addr={addr} ctx={ctx} />
+      <TagLabel n={n} tag={el.operand} addr={addr} ctx={ctx} />
+    </>
+  )
+}
+
+/** JMP / RET: a labelled arrow to the right rail. */
+function FlowGlyph({ n, text, t, ctx }: { n: PlacedNode; text: string; t?: ElementTrace; ctx: Ctx }) {
+  const cx = n.x + n.w / 2
+  const y = n.wy
+  const on = ctx.live && t?.active
+  return (
+    <>
+      <Line x1={n.x} y1={y} x2={cx - 16} y2={y} on={ctx.live && t?.in} />
+      <Line x1={cx + 16} y1={y} x2={n.x + n.w} y2={y} on={ctx.live && t?.out} />
+      <path d={`M ${cx - 16} ${y - 10} L ${cx + 8} ${y - 10} L ${cx + 16} ${y} L ${cx + 8} ${y + 10} L ${cx - 16} ${y + 10} Z`} fill="var(--surface-2)" stroke={wire(on)} strokeWidth={1.5} />
+      <text x={cx - 2} y={y + 4} textAnchor="middle" className="ld-mark" fill="var(--text)">
+        {text}
+      </text>
     </>
   )
 }
 
 function TagLabel({ n, tag, addr, ctx }: { n: PlacedNode; tag: string; addr?: string; ctx: Ctx }) {
   const cx = n.x + n.w / 2
-  const unknown = !tag
+  const unknown = isUnassigned(tag)
   return (
     <>
       <text x={cx} y={n.wy - 20} textAnchor="middle" className="ld-tag" fill={unknown ? ALARM : 'var(--text)'}>
-        {clip(tag || '?', 13)}
+        {clip(unknown ? '?' : tag, 13)}
       </text>
       {addr && (
         <text x={cx} y={n.wy + 28} textAnchor="middle" className="ld-addr" fill="var(--text-muted)">
           {addr}
         </text>
       )}
-      {!addr && ctx.live && tag && ctx.read && <ValueText x={cx} y={n.wy + 28} v={ctx.read(tag)} />}
+      {!addr && ctx.live && !unknown && ctx.read && <ValueText x={cx} y={n.wy + 28} v={ctx.read(tag)} />}
     </>
   )
 }
@@ -132,17 +156,19 @@ function clip(s: string, n: number) {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s
 }
 
-function BoxGlyph({ n, el, t, ctx }: { n: PlacedNode; el: Box; t?: ElementTrace; ctx: Ctx }) {
-  const spec = BOX_SPECS[el.instr]
+function BoxGlyph({ n, el, t, ctx }: { n: PlacedNode; el: Block; t?: ElementTrace; ctx: Ctx }) {
+  const spec = boxSpec(el)
   const bx = n.x + 10
   // Status pins (EN, DN) sit to the right of the box, inside the node.
   const bw = n.w - 20 - (spec.outputs ? PIN_ROOM : 0)
   const by = n.y + G.boxTop
-  const bh = G.boxHeader + spec.operands.length * G.boxRow + 10
+  const rows = Math.max(1, el.pins.length)
+  const bh = G.boxHeader + rows * G.boxRow + 10
   const y = n.wy
   const on = ctx.live && t?.active
-  const hasError = !!ctx.errors?.[el.id]
-  const structTag = el.operands[spec.operands[0]?.key ?? ''] ?? ''
+  const mark = ctx.marks?.get(el.id)
+  const structTag = spec.outputs ? (el.pins[0]?.value ?? '') : ''
+  const isTimerOrCounter = spec.group === 'Timers' || spec.group === 'Counters'
   return (
     <>
       <Line x1={n.x} y1={y} x2={bx} y2={y} on={ctx.live && t?.in} />
@@ -155,34 +181,35 @@ function BoxGlyph({ n, el, t, ctx }: { n: PlacedNode; el: Box; t?: ElementTrace;
         rx={6}
         className="ld-box"
         fill="var(--surface-2)"
-        stroke={hasError ? FAULT : on ? POWER : IDLE}
+        stroke={mark ? (mark.severity === 'error' ? FAULT : ALARM) : on ? POWER : IDLE}
         strokeWidth={1.5}
       />
       <text x={bx + 10} y={by + 16} className="ld-instr" fill="var(--text)">
-        {el.instr}
+        {el.name}
       </text>
       <text x={bx + bw - 8} y={by + 16} textAnchor="end" className="ld-title" fill="var(--text-muted)">
         {clip(spec.title, 18)}
       </text>
       <line x1={bx} y1={by + G.boxHeader} x2={bx + bw} y2={by + G.boxHeader} stroke="var(--border)" strokeWidth={1} />
-      {spec.operands.map((o, i) => {
+      {el.pins.map((p, i) => {
         const ry = by + G.boxHeader + 14 + i * G.boxRow
-        const text = el.operands[o.key] || '?'
-        const isStructOp = i === 0 && (spec.group === 'Timers' || spec.group === 'Counters')
+        const text = isUnassigned(p.value) ? '?' : (p.value ?? '?')
+        const label = spec.pins[i]?.label ?? p.name
+        const isStructOp = i === 0 && isTimerOrCounter
+        const isAccum = isTimerOrCounter && i === 2
         let live: Scalar | undefined
         if (ctx.live && ctx.read) {
-          if (isStructOp) live = undefined
-          else if (o.key === 'preset' && structTag) live = undefined
-          else if (o.key === 'accum' && structTag) live = ctx.read(`${structTag}.ACC`)
+          if (isStructOp || (isTimerOrCounter && i === 1)) live = undefined
+          else if (isAccum && structTag) live = ctx.read(`${structTag}.ACC`)
           else if (/^[A-Za-z_]/.test(text)) live = ctx.read(text)
         }
         return (
-          <g key={o.key}>
+          <g key={i}>
             <text x={bx + 10} y={ry} className="ld-oplabel" fill="var(--text-muted)">
-              {o.label}
+              {clip(label, 12)}
             </text>
-            <text x={bx + bw - 8} y={ry} textAnchor="end" className="ld-op" fill={el.operands[o.key] ? 'var(--text)' : ALARM}>
-              {o.key === 'accum' && live !== undefined ? (
+            <text x={bx + bw - 8} y={ry} textAnchor="end" className="ld-op" fill={isUnassigned(p.value) ? ALARM : 'var(--text)'}>
+              {isAccum && live !== undefined ? (
                 fmt(live)
               ) : (
                 <>
@@ -221,11 +248,22 @@ function StGlyph({ n, el, t, ctx }: { n: PlacedNode; el: StBox; t?: ElementTrace
   const by = n.y + G.boxTop
   const lines = el.code.split('\n').slice(0, 6)
   const bh = G.boxHeader + Math.max(1, lines.length) * G.stLine + 10
+  const mark = ctx.marks?.get(el.id)
   return (
     <>
       <Line x1={n.x} y1={n.wy} x2={bx} y2={n.wy} on={ctx.live && t?.in} />
       <Line x1={bx + bw} y1={n.wy} x2={n.x + n.w} y2={n.wy} on={ctx.live && t?.out} />
-      <rect x={bx} y={by} width={bw} height={bh} rx={6} fill="var(--surface-2)" stroke={IDLE} strokeWidth={1.5} strokeDasharray="4 3" />
+      <rect
+        x={bx}
+        y={by}
+        width={bw}
+        height={bh}
+        rx={6}
+        fill="var(--surface-2)"
+        stroke={mark ? (mark.severity === 'error' ? FAULT : ALARM) : IDLE}
+        strokeWidth={1.5}
+        strokeDasharray="4 3"
+      />
       <text x={bx + 10} y={by + 16} className="ld-instr" fill="var(--text)">
         ST
       </text>
@@ -246,18 +284,22 @@ function NodeView({ n, ctx }: { n: PlacedNode; ctx: Ctx }) {
   const t = ctx.tr(el.id)
   const selected = ctx.selectedId === el.id
   const isDrop = ctx.dropTarget === el.id
-  const error = ctx.errors?.[el.id]
+  const mark = ctx.marks?.get(el.id)
   let glyph: ReactNode = null
   if (el.type === 'contact') glyph = <ContactGlyph n={n} el={el} t={t} ctx={ctx} />
   else if (el.type === 'coil') glyph = <CoilGlyph n={n} el={el} t={t} ctx={ctx} />
-  else if (el.type === 'box') glyph = <BoxGlyph n={n} el={el} t={t} ctx={ctx} />
+  else if (el.type === 'block') glyph = <BoxGlyph n={n} el={el} t={t} ctx={ctx} />
   else if (el.type === 'st') glyph = <StGlyph n={n} el={el} t={t} ctx={ctx} />
-  else if (el.type === 'parallel') return <ParallelView n={n} ctx={ctx} t={t} />
+  else if (el.type === 'jump') glyph = <FlowGlyph n={n} text={`JMP ${clip(el.label, 6)}`} t={t} ctx={ctx} />
+  else if (el.type === 'return') glyph = <FlowGlyph n={n} text="RET" t={t} ctx={ctx} />
+  else if (el.type === 'branch') return <BranchView n={n} ctx={ctx} t={t} />
 
   const drag = dragHandlers(ctx, el.id)
+  const ring = mark ? (mark.severity === 'error' ? FAULT : ALARM) : undefined
   return (
     <g
       data-element-id={el.id}
+      data-mark={mark?.severity}
       onClick={(e) => {
         e.stopPropagation()
         ctx.onSelect(el.id)
@@ -266,6 +308,7 @@ function NodeView({ n, ctx }: { n: PlacedNode; ctx: Ctx }) {
         e.stopPropagation()
         ctx.onActivate(el.id)
       }}
+      onContextMenu={() => ctx.onSelect(el.id)}
       {...drag}
       className="ld-node"
     >
@@ -276,17 +319,25 @@ function NodeView({ n, ctx }: { n: PlacedNode; ctx: Ctx }) {
         height={n.h - 2}
         rx={6}
         fill={selected ? 'var(--select-bg)' : 'transparent'}
-        stroke={selected ? 'var(--focus-ring)' : isDrop ? 'var(--text-muted)' : 'transparent'}
-        strokeDasharray={isDrop && !selected ? '4 3' : undefined}
-        strokeWidth={1.25}
+        stroke={selected ? 'var(--focus-ring)' : ring ?? (isDrop ? 'var(--text-muted)' : 'transparent')}
+        strokeDasharray={(isDrop || ring) && !selected ? '4 3' : undefined}
+        strokeWidth={ring ? 1.5 : 1.25}
       />
       {glyph}
-      {error && <title>{error}</title>}
+      {mark && (
+        <g aria-hidden>
+          <circle cx={n.x + n.w - 9} cy={n.y + 9} r={6} fill={ring} />
+          <text x={n.x + n.w - 9} y={n.y + 12.5} textAnchor="middle" className="ld-mark" fill="var(--bg)" style={{ fontSize: 10 }}>
+            !
+          </text>
+        </g>
+      )}
+      {mark && <title>{mark.message}</title>}
     </g>
   )
 }
 
-function dragHandlers(ctx: Ctx, id: string | null) {
+function dragHandlers(ctx: Ctx, id: Id | null) {
   if (!ctx.onDropInstruction) return {}
   return {
     onDragOver: (e: DragEvent) => {
@@ -317,10 +368,10 @@ function seriesOut(s: PlacedSeries, ctx: Ctx, inp: boolean | undefined): boolean
   return last ? ctx.tr(last.el.id)?.out : inp
 }
 
-function ParallelView({ n, ctx, t }: { n: PlacedNode; ctx: Ctx; t?: ElementTrace }) {
-  const branches = n.branches ?? []
-  const first = branches[0]
-  const last = branches[branches.length - 1]
+function BranchView({ n, ctx, t }: { n: PlacedNode; ctx: Ctx; t?: ElementTrace }) {
+  const legs = n.legs ?? []
+  const first = legs[0]
+  const last = legs[legs.length - 1]
   if (!first || !last) return null
   const lx = n.x + 4
   const rx = n.x + n.w - 4
@@ -342,18 +393,19 @@ function ParallelView({ n, ctx, t }: { n: PlacedNode; ctx: Ctx; t?: ElementTrace
           e.stopPropagation()
           ctx.onSelect(n.el.id)
         }}
+        onContextMenu={() => ctx.onSelect(n.el.id)}
       />
       <Line x1={n.x} y1={first.wy} x2={lx} y2={first.wy} on={live && t?.in} />
       <Line x1={lx} y1={first.wy} x2={lx} y2={last.wy} on={live && t?.in} />
       <Line x1={rx} y1={first.wy} x2={n.x + n.w} y2={first.wy} on={live && t?.out} />
-      {branches.map((b, i) => {
+      {legs.map((b, i) => {
         const out = seriesOut(b, ctx, t?.in)
-        const next = branches[i + 1]
+        const next = legs[i + 1]
         return (
           <g key={i}>
             <Line x1={lx} y1={b.wy} x2={b.x} y2={b.wy} on={live && t?.in} />
             <Line x1={seriesEnd(b)} y1={b.wy} x2={rx} y2={b.wy} on={live && out} />
-            {next && <Line x1={rx} y1={b.wy} x2={rx} y2={next.wy} on={live && branchesOut(branches, i + 1, ctx, t?.in)} />}
+            {next && <Line x1={rx} y1={b.wy} x2={rx} y2={next.wy} on={live && legsOut(legs, i + 1, ctx, t?.in)} />}
             {b.nodes.map((c) => (
               <NodeView key={c.el.id} n={c} ctx={ctx} />
             ))}
@@ -364,8 +416,8 @@ function ParallelView({ n, ctx, t }: { n: PlacedNode; ctx: Ctx; t?: ElementTrace
   )
 }
 
-/** A right-leg segment above branch j carries power if any branch at or below j does. */
-function branchesOut(bs: PlacedSeries[], j: number, ctx: Ctx, inp: boolean | undefined): boolean {
+/** A right-side segment above leg j carries power if any leg at or below j does. */
+function legsOut(bs: PlacedSeries[], j: number, ctx: Ctx, inp: boolean | undefined): boolean {
   for (let i = j; i < bs.length; i++) if (seriesOut(bs[i], ctx, inp)) return true
   return false
 }
@@ -379,7 +431,7 @@ function LadderImpl(props: LadderProps) {
   const outFirst = layout.outputs.nodes[0]
   const railTop = 2
   const railBottom = layout.height - 2
-  const empty = props.body.items.length === 0
+  const empty = props.elements.length === 0
   return (
     <svg
       width={layout.width}
@@ -422,17 +474,22 @@ function LadderImpl(props: LadderProps) {
 
 export const Ladder = memo(LadderImpl)
 
-export function describeElement(el: Instruction): string {
+export function describeElement(el: Element): string {
+  const op = (s: string) => (isUnassigned(s) ? 'unassigned' : s)
   switch (el.type) {
     case 'contact':
-      return `${{ no: 'Normally open contact', nc: 'Normally closed contact', rise: 'Rising-edge contact', fall: 'Falling-edge contact' }[el.kind]} ${el.tag || 'unassigned'}`
+      return `${{ no: 'Normally open contact', nc: 'Normally closed contact', rising: 'Rising-edge contact', falling: 'Falling-edge contact' }[el.kind]} ${op(el.operand)}`
     case 'coil':
-      return `${{ normal: 'Coil', negated: 'Negated coil', set: 'Latch coil', reset: 'Unlatch coil', rise: 'Rising-edge coil', fall: 'Falling-edge coil' }[el.kind]} ${el.tag || 'unassigned'}`
-    case 'box':
-      return `${el.instr} ${Object.values(el.operands).filter(Boolean).join(', ')}`
+      return `${{ normal: 'Coil', negated: 'Negated coil', set: 'Latch coil', reset: 'Unlatch coil', rising: 'Rising-edge coil', falling: 'Falling-edge coil' }[el.kind]} ${op(el.operand)}`
+    case 'block':
+      return `${el.name} ${el.pins.map((p) => p.value ?? '?').join(', ')}`
     case 'st':
       return 'Structured Text box'
-    case 'parallel':
-      return `Branch with ${el.branches.length} legs`
+    case 'branch':
+      return `Branch with ${el.legs.length} legs`
+    case 'jump':
+      return `Jump to ${el.label}`
+    case 'return':
+      return 'Return'
   }
 }

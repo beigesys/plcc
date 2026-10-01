@@ -5,6 +5,9 @@ import { useEditor } from '@/state/editor'
 import { startSimulator, stopSimulator, simSend } from '@/state/live'
 import { disconnectOnline, setOnlineProject } from '@/state/online'
 import { initPersistence } from '@/state/persistence'
+import { runCheck, scheduleCheck } from '@/state/problems'
+import { DialogHost } from '@/ui/Dialogs'
+import { ProblemsPanel } from '@/ui/ProblemsPanel'
 import { CommandPalette } from '@/ui/CommandPalette'
 import { Inspector } from '@/ui/Inspector'
 import { LeftNav } from '@/ui/LeftNav'
@@ -33,7 +36,7 @@ export function App() {
   useEffect(() => {
     if (mode !== 'simulate') return
     const { project } = useEditor.getState()
-    startSimulator(project, primaryDevice(project), project.tasks[0]?.intervalMs ?? 10)
+    startSimulator(project, primaryDevice(project), project.tasks[0]?.interval_ms ?? 10)
     let timer: ReturnType<typeof setTimeout> | undefined
     let prev = project
     const unsub = useEditor.subscribe((s) => {
@@ -42,7 +45,7 @@ export function App() {
       clearTimeout(timer)
       timer = setTimeout(() => {
         simSend({ type: 'project', project: s.project })
-        simSend({ type: 'period', periodMs: s.project.tasks[0]?.intervalMs ?? 10 })
+        simSend({ type: 'period', periodMs: s.project.tasks[0]?.interval_ms ?? 10 })
       }, 80)
     })
     return () => {
@@ -51,6 +54,17 @@ export function App() {
       stopSimulator()
     }
   }, [mode, projectId, deviceText])
+
+  // plcc checks the project after edits settle (in a worker).
+  useEffect(() => {
+    void runCheck(useEditor.getState().project)
+    let prev = useEditor.getState().project
+    return useEditor.subscribe((s) => {
+      if (s.project === prev) return
+      prev = s.project
+      scheduleCheck(s.project)
+    })
+  }, [projectId])
 
   useEffect(() => {
     if (mode !== 'online') return
@@ -85,16 +99,18 @@ export function App() {
   }, [])
 
   return (
-    <div className="grid h-full min-w-[1100px] grid-rows-[52px_minmax(0,1fr)_30px] bg-bg text-text">
+    <div className="grid h-full min-w-[1100px] grid-rows-[52px_minmax(0,1fr)_auto_30px] bg-bg text-text">
       <TopBar />
       <div className="grid min-h-0 grid-cols-[232px_minmax(0,1fr)_300px]">
         <LeftNav />
         <MainView />
         <Inspector />
       </div>
+      <ProblemsPanel />
       <StatusBar />
       <CommandPalette />
       <ProjectsDialog />
+      <DialogHost />
     </div>
   )
 }

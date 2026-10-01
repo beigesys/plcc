@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// Projects on a FileStore: `<root>/<id>/project.toml`, `tags.toml`,
-// `routines/*`. The id is a directory name and never changes; the display
-// name lives in project.toml.
+// Projects on a FileStore: `<root>/<id>/project.toml`, `project.json` (the
+// plcc-ladder model), `devices/*`. The id is a directory name and never
+// changes; the display name lives in project.toml.
 
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import type { Project } from '@/model'
 import type { FileStore } from './fs'
-import { ProjectFormatError, projectFromFiles, projectNeedsMigration, projectToFiles } from './serialize'
+import { loadProjectFiles, ProjectFormatError, projectFromFiles, projectNeedsMigration, projectToFiles } from './serialize'
+import { reserveProjectIds } from '@/model'
 
 export interface ProjectSummary {
   id: string
@@ -76,24 +77,32 @@ export class ProjectRepo {
   }
 
   async load(id: string): Promise<Project> {
+    return (await this.loadWithNotes(id)).project
+  }
+
+  /** Loads a project; one in an older format is migrated and saved, with what changed. */
+  async loadWithNotes(id: string): Promise<{ project: Project; migrated?: { notes: string[] } }> {
     const files = await this.readAll(this.dir(id))
     if (Object.keys(files).length === 0) throw new Error(`project "${id}" not found`)
-    const project = projectFromFiles(files)
-    // Projects saved before device manifests get their devices/ folder now.
-    if (projectNeedsMigration(files)) await this.save(id, project)
-    return project
+    const loaded = loadProjectFiles(files)
+    reserveProjectIds(loaded.project)
+    if (projectNeedsMigration(files)) await this.save(id, loaded.project)
+    return loaded
   }
 
   async save(id: string, project: Project): Promise<void> {
     const dir = this.dir(id)
     const files = projectToFiles(project)
     for (const [path, text] of Object.entries(files)) await this.store.writeText(`${dir}/${path}`, text)
-    for (const sub of ['routines', 'devices']) {
+    for (const sub of ['devices']) {
       for (const e of await this.store.list(`${dir}/${sub}`)) {
         const rel = `${sub}/${e.name}`
         if (!(rel in files)) await this.store.remove(`${dir}/${rel}`)
       }
     }
+    // Format 1 files, replaced by project.json.
+    await this.store.remove(`${dir}/routines`)
+    await this.store.remove(`${dir}/tags.toml`)
   }
 
   async exists(id: string): Promise<boolean> {
@@ -146,7 +155,9 @@ export class ProjectRepo {
     const strip = tops.size === 1 && !tops.has('') && !paths.includes('project.toml') ? `${[...tops][0]}/` : ''
     const files: Record<string, string> = {}
     for (const p of paths) files[p.startsWith(strip) ? p.slice(strip.length) : p] = strFromU8(raw[p])
-    return projectFromFiles(files)
+    const p = projectFromFiles(files)
+    reserveProjectIds(p)
+    return p
   }
 
   async importZip(bytes: Uint8Array): Promise<string> {

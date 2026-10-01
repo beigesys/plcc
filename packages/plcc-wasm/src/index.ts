@@ -7,7 +7,7 @@
 import init, * as raw from "../pkg/plcc_wasm.js";
 
 export type Severity = "error" | "warning" | "advice";
-export type Stage = "parse" | "plcopen" | "l5x" | "twincat" | "io-map" | "input" | "typecheck" | "convert";
+export type Stage = "parse" | "plcopen" | "l5x" | "twincat" | "io-map" | "input" | "typecheck" | "convert" | "codegen";
 
 /** 1-based line; `col` is 1-based in UTF-16 code units; `utf16` is a JS string index. */
 export interface Position {
@@ -35,6 +35,24 @@ export interface Diagnostic {
   /** The primary range (first label). */
   span: Label | null;
   labels: Label[];
+  /**
+   * For a ladder model input (`.json`): where in the model. `span` is then a
+   * range in the rung's text or in the ST box's code.
+   */
+  ladder?: LadderRef;
+}
+
+/** A place in a ladder model (plcc-ladder ids). */
+export interface LadderRef {
+  pou?: string;
+  routine?: string;
+  rung?: number;
+  /** The innermost element (an ST box for a problem in its code). */
+  element?: number;
+  /** Operand (pin) index of the element. */
+  operand?: number;
+  /** A variable (tag) the diagnostic is about. */
+  tag?: string;
 }
 
 export interface ImageTag {
@@ -337,6 +355,17 @@ export async function builtinDevices(): Promise<{ file: string; text: string }[]
 export async function deviceSchema(): Promise<unknown> {
   await (ready ?? load());
   return JSON.parse(raw.device_schema());
+}
+
+/**
+ * Where a fault site `file:line:col` of a program compiled from a ladder
+ * model is in the model (`model` is the model's JSON; line and column are
+ * the site's), or null when it is not inside a rung or ST box.
+ */
+export async function locateLadder(model: string, line: number, col: number): Promise<LadderRef | null> {
+  await (ready ?? load());
+  const r = raw.locate_ladder(model, line, col);
+  return r == null ? null : (JSON.parse(r) as LadderRef);
 }
 
 export async function version(): Promise<string> {

@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 import { describe, expect, it } from 'vitest'
 import {
-  ProcessImage, addressTypeMismatch, createMissingTags, flatten, insertAfter, parseAddress, parseQuickEntry,
+  ProcessImage, addressTypeMismatch, createMissingTags, flatten, insertAfter, newTag, parseAddress, parseQuickEntry,
   parseRung, parseRungs, printRung, reconcileIds, removeElement, wrapInBranch, RungTextError,
 } from '@/model'
-import type { Contact, Series } from '@/model'
+import type { Block, Contact, Element } from '@/model'
 
+// Canonical Logix rung text: what plcc's rll::write produces and Studio 5000 exports.
 const ROUND_TRIP = [
   '[XIC(StartPB) ,XIC(Motor) ]XIO(StopPB)OTE(Motor);',
   'XIC(Motor)TON(RunTimer,5000,0);',
@@ -15,10 +16,11 @@ const ROUND_TRIP = [
   'XIC(Go)ONS(GoOns)CTU(Parts,10,0);',
   'XIC(A)[XIC(B)[XIC(C) ,XIO(D) ] ,XIC(E) , ]OTE(F);',
   '[OTE(A) ,OTE(B) ];',
-  'XICR(A)XICF(B)OTEN(C)OTER(D)OTEF(E);',
   'CPT(Out,(A+B)*2)MOV(5,X)EQU(A,B)NEQ(A,B)GEQ(A,B)LES(A,B)LEQ(A,B);',
-  'ADD(A,1,A)SUB(A,1,A)MUL(A,2,A)DIV(A,2,A)RES(RunTimer)JSR(Sub);',
+  'ADD(A,1,A)SUB(A,1,A)MUL(A,2,A)DIV(A,2,A)RES(RunTimer)JSR(Sub,0);',
   'XIC(T.DN)OSR(S,O)TOF(T2,100,0)RTO(T3,100,0)CTD(C,5,0);',
+  'LBL(Top)XIC(a)JMP(Top)RET();',
+  'NOP()MSG(Msg1)COP(Src[0],Dst[0],10);',
   'ST("x := x + 1; (* a, b *)");',
   ';',
 ]
@@ -28,32 +30,41 @@ describe('rung text', () => {
     expect(printRung(parseRung(text))).toBe(text)
   })
 
-  it('accepts whitespace, lower case and a missing semicolon', () => {
-    expect(printRung(parseRung(' [ xic(A) , xic( B ) ] ote(C) '))).toBe('[XIC(A) ,XIC(B) ]OTE(C);')
+  it('accepts whitespace and a missing semicolon; instruction names keep their spelling', () => {
+    expect(printRung(parseRung(' [ XIC(A) , XIC( B ) ] OTE(C) '))).toBe('[XIC(A) ,XIC(B) ]OTE(C);')
+    // plcc reads only the exact upper-case spelling as a contact.
+    expect(parseRung('xic(A);').elements[0].type).toBe('block')
   })
 
   it('builds the expected tree for the seal-in rung', () => {
-    const body = parseRung('[XIC(StartPB) ,XIC(Motor) ]XIO(StopPB)OTE(Motor);')
-    expect(body.items.map((e) => e.type)).toEqual(['parallel', 'contact', 'coil'])
-    const par = body.items[0]
-    if (par.type !== 'parallel') throw new Error('not parallel')
-    expect(par.branches.map((b) => (b.items[0] as Contact).tag)).toEqual(['StartPB', 'Motor'])
+    const r = parseRung('[XIC(StartPB) ,XIC(Motor) ]XIO(StopPB)OTE(Motor);')
+    expect(r.elements.map((e) => e.type)).toEqual(['branch', 'contact', 'coil'])
+    const br = r.elements[0]
+    if (br.type !== 'branch') throw new Error('not a branch')
+    expect(br.legs.map((l) => (l[0] as Contact).operand)).toEqual(['StartPB', 'Motor'])
   })
 
-  it('maps ? to an empty operand and back', () => {
-    const body = parseRung('XIC(?)TON(?,1000,0);')
-    expect((body.items[0] as Contact).tag).toBe('')
-    expect(printRung(body)).toBe('XIC(?)TON(?,1000,0);')
+  it('names block pins from plcc catalog', () => {
+    const r = parseRung('TON(T1,500,0)ADD(a,b,c)JSR(Sub,1,x,y)FOO(p,q);')
+    const names = (i: number) => (r.elements[i] as Block).pins.map((p) => p.name)
+    expect(names(0)).toEqual(['Timer', 'Preset', 'Accum'])
+    expect(names(1)).toEqual(['Source A', 'Source B', 'Dest'])
+    expect(names(2)).toEqual(['Routine Name', 'Input Count', 'Parameter 1', 'Parameter 2'])
+    expect(names(3)).toEqual(['Operand 1', 'Operand 2'])
+  })
+
+  it('keeps ? as the operand text, as plcc does', () => {
+    const r = parseRung('XIC(?)TON(?,1000,0);')
+    expect((r.elements[0] as Contact).operand).toBe('?')
+    expect(printRung(r)).toBe('XIC(?)TON(?,1000,0);')
   })
 
   it('reports errors with a position', () => {
     expect(() => parseRung('XIC(A')).toThrow(RungTextError)
-    expect(() => parseRung('FOO(A)')).toThrow(/unknown instruction FOO/)
-    expect(() => parseRung('TON(A,1)')).toThrow(/takes 3 operands/)
-    expect(() => parseRung('[XIC(A) ,XIC(B)')).toThrow(/expected '\]'/)
+    expect(() => parseRung('[XIC(A) ,XIC(B)')).toThrow(/unterminated branch|expected/)
     expect(() => parseRung('XIC(A)]')).toThrow(/unexpected/)
     try {
-      parseRung('XIC(A)BAD(B)')
+      parseRung('XIC(A)9BAD(B)')
     } catch (e) {
       expect((e as RungTextError).offset).toBe(6)
     }
@@ -80,61 +91,60 @@ describe('quick entry', () => {
   })
   it('falls back to rung text', () => {
     expect(printRung(parseQuickEntry('XIC(A)OTE(B)'))).toBe('XIC(A)OTE(B);')
+    expect(() => parseQuickEntry('FROB A')).toThrow(/unknown instruction/)
   })
 })
 
 describe('tree operations', () => {
-  const seal = () => parseRung('[XIC(StartPB) ,XIC(Motor) ]XIO(StopPB)OTE(Motor);')
+  const seal = () => parseRung('[XIC(StartPB) ,XIC(Motor) ]XIO(StopPB)OTE(Motor);').elements
+  const text = (elements: Element[]) => printRung({ elements })
 
   it('flattens depth first', () => {
-    expect(flatten(seal()).map((e) => e.type)).toEqual(['parallel', 'contact', 'contact', 'contact', 'coil'])
+    expect(flatten(seal()).map((e) => e.type)).toEqual(['branch', 'contact', 'contact', 'contact', 'coil'])
   })
 
   it('inserts inputs before trailing outputs when there is no anchor', () => {
-    const b = insertAfter(seal(), null, { type: 'contact', id: 'x', kind: 'no', tag: 'Ok' })
-    expect(printRung(b)).toBe('[XIC(StartPB) ,XIC(Motor) ]XIO(StopPB)XIC(Ok)OTE(Motor);')
+    const b = insertAfter(seal(), null, { type: 'contact', id: 999, kind: 'no', operand: 'Ok' })
+    expect(text(b)).toBe('[XIC(StartPB) ,XIC(Motor) ]XIO(StopPB)XIC(Ok)OTE(Motor);')
   })
 
   it('inserts after an anchor inside a branch', () => {
     const s = seal()
     const motorContact = flatten(s)[2]
-    const b = insertAfter(s, motorContact.id, { type: 'contact', id: 'x', kind: 'nc', tag: 'Fault' })
-    expect(printRung(b)).toBe('[XIC(StartPB) ,XIC(Motor)XIO(Fault) ]XIO(StopPB)OTE(Motor);')
+    const b = insertAfter(s, motorContact.id, { type: 'contact', id: 999, kind: 'nc', operand: 'Fault' })
+    expect(text(b)).toBe('[XIC(StartPB) ,XIC(Motor)XIO(Fault) ]XIO(StopPB)OTE(Motor);')
   })
 
-  it('collapses a parallel left with one branch after delete', () => {
+  it('collapses a branch left with one leg after delete', () => {
     const s = seal()
-    const b = removeElement(s, flatten(s)[2].id)
-    expect(printRung(b)).toBe('XIC(StartPB)XIO(StopPB)OTE(Motor);')
+    expect(text(removeElement(s, flatten(s)[2].id))).toBe('XIC(StartPB)XIO(StopPB)OTE(Motor);')
   })
 
-  it('wraps an element in a branch and adds branches', () => {
-    const s = parseRung('XIC(A)OTE(B);')
-    const { body, parallelId } = wrapInBranch(s, flatten(s)[0].id)
-    expect(printRung(body)).toBe('[XIC(A) , ]OTE(B);')
-    expect(printRung(wrapInBranch(body, parallelId).body)).toBe('[XIC(A) , , ]OTE(B);')
+  it('wraps an element in a branch and adds legs', () => {
+    const s = parseRung('XIC(A)OTE(B);').elements
+    const { elements, branchId } = wrapInBranch(s, flatten(s)[0].id)
+    expect(text(elements)).toBe('[XIC(A) , ]OTE(B);')
+    expect(text(wrapInBranch(elements, branchId).elements)).toBe('[XIC(A) , , ]OTE(B);')
   })
 
   it('keeps ids across a text edit where the shape matches', () => {
     const s = seal()
-    const edited = reconcileIds(s, parseRung('[XIC(StartPB) ,XIC(Motor) ]XIO(StopPB)XIO(Fault)OTE(Motor);'))
-    const a = flatten(s)
-    const b = flatten(edited)
-    expect(b.slice(0, 4).map((e) => e.id)).toEqual(a.slice(0, 4).map((e) => e.id))
+    const edited = reconcileIds(s, parseRung('[XIC(StartPB) ,XIC(Motor) ]XIO(StopPB)XIO(Fault)OTE(Motor);').elements)
+    expect(flatten(edited).slice(0, 4).map((e) => e.id)).toEqual(flatten(s).slice(0, 4).map((e) => e.id))
   })
 
   it('does not mutate its input', () => {
     const s = seal()
     const before = JSON.stringify(s)
     removeElement(s, flatten(s)[1].id)
-    insertAfter(s, null, { type: 'coil', id: 'y', kind: 'normal', tag: 'Z' })
+    insertAfter(s, null, { type: 'coil', id: 998, kind: 'normal', operand: 'Z' })
     expect(JSON.stringify(s)).toBe(before)
   })
 
   it('creates missing tags with inferred types', () => {
-    const body: Series = parseRung('XIC(Go)XIC(RunTimer.DN)TON(RunTimer,5000,0)CTU(Count,3,0)ADD(A,1,Sum)OTE(Lamp);')
-    const { created } = createMissingTags([{ name: 'go', type: 'BOOL', initial: 'FALSE', comment: '' }], body)
-    expect(created.map((t) => [t.name, t.type])).toEqual([
+    const r = parseRung('XIC(Go)XIC(RunTimer.DN)TON(RunTimer,5000,0)CTU(Count,3,0)ADD(A,1,Sum)OTE(Lamp);')
+    const { created } = createMissingTags([newTag('go', 'BOOL')], r.elements)
+    expect(created.map((t) => [t.name, t.data_type])).toEqual([
       ['RunTimer', 'TIMER'], ['Count', 'COUNTER'], ['A', 'DINT'], ['Sum', 'DINT'], ['Lamp', 'BOOL'],
     ])
   })

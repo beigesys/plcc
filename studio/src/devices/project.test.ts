@@ -61,7 +61,7 @@ describe('project devices', () => {
     expect(r.report.warnings.join('\n')).toMatch(/Motor: terminal R1 is not on Simulator; %QX0.0 is DO0/)
     expect(r.report.warnings.join('\n')).toMatch(/High: terminal LED is not on Simulator/)
     // Addresses are kept, never dropped.
-    expect(r.project.tags.map((t) => t.address)).toEqual(p.tags.map((t) => t.address))
+    expect(r.project.globals.map((t) => t.address)).toEqual(p.globals.map((t) => t.address))
   })
 
   it('moves tags to the new address of the same terminal', () => {
@@ -71,7 +71,7 @@ describe('project devices', () => {
       { tag: 'Motor', from: '%QX0.0', to: '%QX0.1', terminal: 'R1' },
       { tag: 'High', from: '%QX0.4', to: '%QX0.6', terminal: 'LED' },
     ])
-    expect(r.project.tags.find((t) => t.name === 'Motor')?.address).toBe('%QX0.1')
+    expect(r.project.globals.find((t) => t.name === 'Motor')?.address).toBe('%QX0.1')
     expect(r.project.deviceFiles['devices/arduino-opta.toml']).toBe(optaV2())
     expect(() => updateManifestFile(p, 'devices/arduino-opta.toml', sim.text)).toThrow(/is simulator, not devices\/arduino-opta.toml/)
   })
@@ -110,7 +110,7 @@ describe('project devices', () => {
   it('remaps only points whose direction and size match', () => {
     const from = loadManifest(opta.text).device!
     const to = loadManifest(opta.text.replace('type = "INT"\naddress = "%IW{n}"', 'type = "BOOL"\naddress = "%IX1.{n-1}"').replace('kind = "analog"', 'kind = "digital"').replace('range = [0, 4095]\neng = [0.0, 10.877]\nunits = "V"\n', '')).device!
-    const { tags, report } = remapTags([{ name: 'Level', type: 'INT', initial: '0', address: '%IW2', comment: '' }], from, to)
+    const { tags, report } = remapTags([{ name: 'Level', data_type: 'INT', section: 'global', address: '%IW2' }], from, to)
     // I2 exists on both, but only as a bit on `to`: a word tag must not land on a bit.
     expect(tags[0].address).toBe('%IW2')
     expect(report.warnings[0]).toMatch(/Level: terminal I2 is not on Arduino Opta/)

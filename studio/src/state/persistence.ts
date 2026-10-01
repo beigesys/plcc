@@ -81,9 +81,18 @@ export async function listProjects(): Promise<ProjectSummary[]> {
 
 export async function openById(id: string) {
   await autosaver?.flush()
-  const project = await need().load(id)
+  const { project, migrated } = await need().loadWithNotes(id)
   useEditor.getState().openProject(id, project)
   remember(id)
+  if (migrated) {
+    const n = migrated.notes.length
+    useEditor
+      .getState()
+      .notify(
+        `${project.name} was saved by an older studio and is now in plcc's ladder model${n ? `: ${migrated.notes.join('; ')}` : ''}`,
+        n ? 'alarm' : 'info',
+      )
+  }
 }
 
 export async function createProject(name: string, from?: Project): Promise<string> {

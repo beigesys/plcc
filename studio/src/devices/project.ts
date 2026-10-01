@@ -181,8 +181,8 @@ export function changeDevice(project: Project, name: string, text: string): { pr
   const before = resolveDevice(project, name).device
   const placed = placeManifest(removeDevice(project, name), text)
   const devices = project.devices.map((d) => (d === ref ? { name: d.name, manifest: placed.path } : d))
-  const { tags, report } = remapTags(project.tags, before, placed.device)
-  return { project: { ...placed.project, devices, tags }, report }
+  const { tags, report } = remapTags(project.globals, before, placed.device)
+  return { project: { ...placed.project, devices, globals: tags }, report }
 }
 
 /** Replaces a project manifest file with a newer text (a catalog update), remapping tags. */
@@ -191,8 +191,8 @@ export function updateManifestFile(project: Project, path: string, text: string)
   const next = requireDevice(text)
   const old = oldText !== undefined ? loadCached(oldText).device : undefined
   if (devicePath(next.device.id) !== path) throw new Error(`the new manifest is ${next.device.id}, not ${path}`)
-  const { tags, report } = old ? remapTags(project.tags, old, next) : { tags: project.tags, report: { moved: [], warnings: [] } }
-  return { project: { ...project, deviceFiles: { ...project.deviceFiles, [path]: text }, tags }, report }
+  const { tags, report } = old ? remapTags(project.globals, old, next) : { tags: project.globals, report: { moved: [], warnings: [] } }
+  return { project: { ...project, deviceFiles: { ...project.deviceFiles, [path]: text }, globals: tags }, report }
 }
 
 export interface ManifestUpdate {

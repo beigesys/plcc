@@ -5,19 +5,29 @@ import { useEditor } from '@/state/editor'
 import { useDraft } from './useDraft'
 
 function updateTask(name: string, patch: Partial<Task>) {
-  useEditor.getState().commit((p) => ({ ...p, tasks: p.tasks.map((t) => (t.name === name ? { ...t, ...patch } : t)) }))
+  useEditor.getState().commit((p) => ({
+    ...p,
+    tasks: p.tasks.map((t) => {
+      if (t.name !== name) return t
+      const next: Task = { ...t, ...patch }
+      if (next.interval_ms === undefined) delete next.interval_ms
+      return next
+    }),
+  }))
 }
 
 function IntervalInput({ task }: { task: Task }) {
-  const [v, setV] = useDraft(String(task.intervalMs))
+  const [v, setV] = useDraft(task.interval_ms === undefined ? '' : String(task.interval_ms))
   const commit = () => {
     const n = Number(v)
-    if (Number.isFinite(n) && n >= 1 && n <= 60000) updateTask(task.name, { intervalMs: Math.round(n) })
-    else setV(String(task.intervalMs))
+    if (v.trim() === '') updateTask(task.name, { interval_ms: undefined })
+    else if (Number.isFinite(n) && n >= 1 && n <= 60000) updateTask(task.name, { interval_ms: Math.round(n) })
+    else setV(task.interval_ms === undefined ? '' : String(task.interval_ms))
   }
   return (
     <input
       aria-label={`${task.name} interval in milliseconds`}
+      placeholder="continuous"
       inputMode="numeric"
       value={v}
       onChange={(e) => setV(e.target.value)}
@@ -30,13 +40,13 @@ function IntervalInput({ task }: { task: Task }) {
 
 export function TasksView() {
   const tasks = useEditor((s) => s.project.tasks)
-  const programs = useEditor((s) => s.project.programs)
+  const programs = useEditor((s) => s.project.pous)
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="border-b border-line bg-surface px-4 py-3">
         <h1 className="text-base font-semibold">Tasks</h1>
         <p className="text-dense text-text-muted">
-          Cyclic tasks and the programs they run. The preview simulator scans at the first task's interval; each program runs its main routine.
+          Periodic tasks (an interval) or continuous ones (empty), and the programs they run; each program runs its first (main) routine. plcc compiles them as Logix tasks, so the simulator and the device scan each at its own interval.
         </p>
       </div>
       <div className="p-4">

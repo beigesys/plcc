@@ -1,10 +1,52 @@
 // SPDX-License-Identifier: MPL-2.0
+//
+// Element ids are numbers unique in a project (plcc-ladder's `Id`). One
+// counter hands them out; opening a project moves it past the project's
+// largest id, so new elements never collide with saved ones.
 
-let counter = 0
+import type { Element, Project } from './types'
 
-/** A short id, unique within a session and very likely across sessions. */
-export function newId(prefix = 'e'): string {
-  counter = (counter + 1) % 0x10000
-  const rand = Math.floor(Math.random() * 0x100000000).toString(36)
-  return `${prefix}${Date.now().toString(36).slice(-5)}${counter.toString(36)}${rand}`
+let next = 0
+
+/** A fresh id. */
+export function newId(): number {
+  next += 1
+  return next
+}
+
+/** Make sure later ids are above `id`. */
+export function reserveId(id: number): void {
+  if (id > next) next = id
+}
+
+function walkIds(items: Element[], f: (id: number) => void): void {
+  for (const e of items) {
+    f(e.id)
+    if (e.type === 'branch') e.legs.forEach((l) => walkIds(l, f))
+    else if (e.type === 'block') for (const p of e.pins) if (p.rung) walkIds(p.rung, f)
+  }
+}
+
+/** The largest id in a project. */
+export function maxId(p: Pick<Project, 'pous'>): number {
+  let m = 0
+  const see = (id: number) => {
+    if (id > m) m = id
+  }
+  for (const pou of p.pous) {
+    see(pou.id)
+    for (const r of pou.routines) {
+      see(r.id)
+      for (const g of r.rungs) {
+        see(g.id)
+        walkIds(g.elements, see)
+      }
+    }
+  }
+  return m
+}
+
+/** Called when a project is opened: new ids go above its own. */
+export function reserveProjectIds(p: Pick<Project, 'pous'>): void {
+  reserveId(maxId(p))
 }

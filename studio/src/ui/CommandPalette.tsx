@@ -4,9 +4,10 @@ import {
   Command, CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandShortcut,
 } from '@/components/ui/command'
 import { PALETTE, parseQuickEntry, printRung } from '@/model'
-import { addRung, addRungFromQuickEntry, deleteSelection, insertInstruction, wrapSelectionInBranch } from '@/state/commands'
+import { addRungFromQuickEntry, insertInstruction } from '@/state/commands'
 import { useEditor, type Mode } from '@/state/editor'
 import { downloadZip } from '@/state/persistence'
+import { COMMANDS, isEnabled, type Target } from '@/state/registry'
 import { THEMES } from '@/state/theme'
 
 /** Command palette (Ctrl+K). Typing instructions (`XIC Start OTE Motor`) offers to add them as a rung. */
@@ -34,6 +35,13 @@ export function CommandPalette() {
   }
   const s = () => useEditor.getState()
   const inRoutine = useEditor((st) => st.view.kind === 'routine')
+  const selection = useEditor((st) => st.selection)
+  const target: Target =
+    selection.rungId == null
+      ? { kind: 'none' }
+      : selection.elementId == null
+        ? { kind: 'rung', rungId: selection.rungId }
+        : { kind: 'element', rungId: selection.rungId, elementId: selection.elementId }
 
   return (
     <CommandDialog
@@ -77,15 +85,12 @@ export function CommandPalette() {
           )}
           {inRoutine && (
             <CommandGroup heading="Edit">
-              <CommandItem value="new rung add" onSelect={() => run(() => addRung())}>
-                New rung <CommandShortcut>N</CommandShortcut>
-              </CommandItem>
-              <CommandItem value="branch parallel wrap" onSelect={() => run(wrapSelectionInBranch)}>
-                Add parallel branch around selection <CommandShortcut>P</CommandShortcut>
-              </CommandItem>
-              <CommandItem value="delete remove selection" onSelect={() => run(deleteSelection)}>
-                Delete selection <CommandShortcut>Del</CommandShortcut>
-              </CommandItem>
+              {/* The selection's commands, from the same registry as the context menus and keys. */}
+              {COMMANDS.filter((c) => c.applies(target) && isEnabled(c, target) && !c.id.startsWith('routine.') && !c.id.startsWith('device.')).map((c) => (
+                <CommandItem key={c.id} value={`${c.group} ${c.title} ${c.id}`} onSelect={() => run(() => c.run(target))}>
+                  {c.title} {c.shortcut && <CommandShortcut>{c.shortcut}</CommandShortcut>}
+                </CommandItem>
+              ))}
               <CommandItem value="undo" onSelect={() => run(() => s().undo())}>
                 Undo <CommandShortcut>Ctrl Z</CommandShortcut>
               </CommandItem>
@@ -95,7 +100,7 @@ export function CommandPalette() {
             </CommandGroup>
           )}
           <CommandGroup heading="Go to">
-            {project.programs.flatMap((p) =>
+            {project.pous.flatMap((p) =>
               p.routines.map((r) => (
                 <CommandItem
                   key={`${p.name}/${r.name}`}

@@ -30,6 +30,6 @@ export function useTrace(routine: Routine | undefined): Trace | null {
 }
 
 export function useTagMap(): Map<string, Tag> {
-  const tags = useEditor((s) => s.project.tags)
+  const tags = useEditor((s) => s.project.globals)
   return useMemo(() => new Map(tags.map((t) => [t.name.toLowerCase(), t])), [tags])
 }

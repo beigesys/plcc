@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { cursorText, useEditor } from '@/state/editor'
 import { useLive } from '@/state/live'
+import { ProblemsButton } from './ProblemsPanel'
 import { StateDot } from './StateDot'
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -155,6 +156,7 @@ export function StatusBar() {
             {notice.text}
           </span>
         )}
+        <ProblemsButton />
         <span className="text-text-muted">{cursor}</span>
         <SaveText />
       </span>

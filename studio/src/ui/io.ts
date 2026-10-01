@@ -19,7 +19,7 @@ export function pointMismatch(point: IoPoint, tag: Tag): string | undefined {
   const a = parseAddress(point.address)
   if (!a) return undefined
   const ok = typesForSize(a.size)
-  if (!ok.includes(tag.type.toUpperCase())) return `${tag.name} is ${tag.type}; ${point.terminal} (${point.address}) needs ${ok.join(' / ')}`
+  if (!ok.includes(tag.data_type.toUpperCase())) return `${tag.name} is ${tag.data_type}; ${point.terminal} (${point.address}) needs ${ok.join(' / ')}`
   return undefined
 }
 

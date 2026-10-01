@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
-import { memo, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowDown, ArrowUp, Copy, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import type { Trace } from '@/engine'
-import { findElement, flatten, printRung, RungTextError, type Instruction, type Rung, type Tag } from '@/model'
+import { findElement, flatten, isUnassigned, printRung, RungTextError, type Element, type Id, type Rung, type Tag } from '@/model'
 import type { Scalar } from '@/runtime/messages'
-import {
-  deleteRung, duplicateRung, insertInstruction, moveRung, setRungComment, setRungText, updateInstruction,
-} from '@/state/commands'
+import { deleteRung, duplicateRung, insertInstruction, moveRung, setRungComment, setRungText, updateInstruction } from '@/state/commands'
 import { useEditor } from '@/state/editor'
-import { Ladder } from './ladder/Ladder'
+import type { Problem } from '@/state/problems'
+import { Ladder, type Mark } from './ladder/Ladder'
 import { allNodes, layoutRung } from './ladder/layout'
 import { OperandEditor } from './OperandEditor'
 import { useDraft } from './useDraft'
@@ -24,15 +23,18 @@ export interface RungCardProps {
   read?: (ref: string) => Scalar | undefined
   tags: Tag[]
   tagMap: Map<string, Tag>
-  errors: Record<string, string>
+  /** Problems by element id (the whole routine's). */
+  marks: Map<Id, Mark>
+  /** plcc's diagnostics for this rung. */
+  problems: Problem[]
   selected: boolean
-  selectedElement: string | null
-  editingElement: string | null
+  selectedElement: Id | null
+  editingElement: Id | null
   onToggleTag?(tag: string): void
 }
 
-function RungTextBar({ rung, index }: { rung: Rung; index: number }) {
-  const printed = printRung(rung.body)
+function RungTextBar({ rung, index, problems }: { rung: Rung; index: number; problems: Problem[] }) {
+  const printed = printRung(rung)
   const [text, setText] = useState(printed)
   const [focused, setFocused] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -92,6 +94,16 @@ function RungTextBar({ rung, index }: { rung: Rung; index: number }) {
           {error}
         </p>
       )}
+      {problems.length > 0 && (
+        <ul className="px-3 pb-1.5 text-dense" aria-label={`Rung ${index} problems`}>
+          {problems.map((p, i) => (
+            <li key={i} className={p.severity === 'error' ? 'text-fault' : p.severity === 'warning' ? 'text-alarm' : 'text-text-muted'}>
+              {p.message}
+              {p.help ? <span className="text-text-muted"> · {p.help}</span> : null}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   )
 }
@@ -100,45 +112,57 @@ function RungCardImpl(p: RungCardProps) {
   const { rung, index } = p
   const select = useEditor((s) => s.select)
   const setEditing = useEditor((s) => s.setEditing)
-  const layout = useMemo(() => layoutRung(rung.body, p.width), [rung.body, p.width])
-  const [drop, setDrop] = useState<string | null>(null)
-  const [comment, setComment] = useDraft(rung.comment)
+  const focus = useEditor((s) => s.focus)
+  const layout = useMemo(() => layoutRung(rung.elements, p.width), [rung.elements, p.width])
+  const [drop, setDrop] = useState<Id | null>(null)
+  const [comment, setComment] = useDraft(rung.comment ?? '')
+  const commentRef = useRef<HTMLInputElement>(null)
 
-  const els = useMemo(() => flatten(rung.body), [rung.body])
-  const ids = new Set(els.map((e) => e.id))
-  const hasFault = Object.keys(p.errors).some((id) => ids.has(id))
-  const unassigned = els.some((e) => (e.type === 'contact' || e.type === 'coil') && !e.tag)
+  useEffect(() => {
+    if (focus?.kind === 'comment' && focus.rungId === rung.id) {
+      commentRef.current?.focus()
+      useEditor.getState().setFocus(null)
+    }
+  }, [focus, rung.id])
 
-  const editingEl = p.editingElement ? findElement(rung.body, p.editingElement) : undefined
+  const els = useMemo(() => flatten(rung.elements), [rung.elements])
+  const rungMarks = els.map((e) => p.marks.get(e.id)).filter((m): m is Mark => !!m)
+  const worst = rungMarks.find((m) => m.severity === 'error') ?? rungMarks[0]
+  const hasError = p.problems.some((x) => x.severity === 'error') || rungMarks.some((m) => m.severity === 'error')
+  const unassigned = els.some((e) => (e.type === 'contact' || e.type === 'coil') && isUnassigned(e.operand))
+
+  const editingEl = p.editingElement != null ? findElement(rung.elements, p.editingElement) : undefined
   const editingNode = editingEl ? allNodes(layout).find((n) => n.el.id === editingEl.id) : undefined
 
-  const onActivate = (id: string) => {
-    const el = findElement(rung.body, id)
-    if (p.live && el?.type === 'contact' && el.tag && p.onToggleTag) {
-      p.onToggleTag(el.tag)
+  const onActivate = (id: Id) => {
+    const el = findElement(rung.elements, id)
+    if (p.live && el?.type === 'contact' && !isUnassigned(el.operand) && p.onToggleTag) {
+      p.onToggleTag(el.operand)
       return
     }
-    if (el && el.type !== 'parallel') setEditing({ rungId: rung.id, elementId: id })
+    if (el && el.type !== 'branch' && el.type !== 'return') setEditing({ rungId: rung.id, elementId: id })
   }
 
   return (
     <article
       aria-label={`Rung ${index}${rung.comment ? `: ${rung.comment}` : ''}`}
       data-rung-id={rung.id}
+      data-has-error={hasError || undefined}
       className={`group/rung relative flex rounded-lg border bg-surface ${
-        hasFault || unassigned ? 'border-alarm-border' : p.selected ? 'border-text-muted' : 'border-line'
+        hasError ? 'border-fault/60' : worst || unassigned ? 'border-alarm-border' : p.selected ? 'border-text-muted' : 'border-line'
       }`}
     >
-      <div className="flex w-12 shrink-0 flex-col items-center border-r border-line py-2">
+      <div data-rung-gutter className="flex w-12 shrink-0 flex-col items-center border-r border-line py-2">
         <button
           type="button"
           onClick={() => select({ rungId: rung.id, elementId: null })}
           aria-label={`Select rung ${index}`}
-          aria-pressed={p.selected && !p.selectedElement}
+          aria-pressed={p.selected && p.selectedElement == null}
           className={`text-mono rounded-control px-1.5 py-0.5 ${p.selected ? 'bg-surface-2 text-text' : 'text-text-muted hover:text-text'}`}
         >
           {String(index).padStart(3, '0')}
         </button>
+        {rung.label && <span className="mt-1 max-w-11 truncate text-[10px] text-text-muted" title={`Label ${rung.label}`}>{rung.label}</span>}
         <div className="mt-auto flex flex-col gap-0.5 opacity-0 transition-opacity group-focus-within/rung:opacity-100 group-hover/rung:opacity-100">
           <Button variant="ghost" size="icon-xs" aria-label={`Move rung ${index} up`} disabled={index === 0} onClick={() => moveRung(rung.id, -1)}>
             <ArrowUp />
@@ -161,42 +185,47 @@ function RungCardImpl(p: RungCardProps) {
           </label>
           <input
             id={`rc-${rung.id}`}
+            ref={commentRef}
             value={comment}
             placeholder="Add a rung comment"
             onChange={(e) => setComment(e.target.value)}
-            onBlur={() => comment !== rung.comment && setRungComment(rung.id, comment)}
+            onBlur={() => comment !== (rung.comment ?? '') && setRungComment(rung.id, comment)}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === 'Escape') (e.target as HTMLInputElement).blur()
             }}
             className="min-w-0 flex-1 bg-transparent text-dense text-text-muted outline-none placeholder:text-text-muted/60 focus:text-text"
           />
-          {hasFault && <span className="rounded-control bg-alarm-bg px-1.5 text-[11px] text-alarm">{Object.entries(p.errors).find(([id]) => ids.has(id))?.[1]}</span>}
-          {!hasFault && unassigned && <span className="rounded-control bg-alarm-bg px-1.5 text-[11px] text-alarm">unassigned operand</span>}
+          {worst && (
+            <span className={`max-w-[50%] truncate rounded-control px-1.5 text-[11px] ${worst.severity === 'error' ? 'bg-fault/15 text-fault' : 'bg-alarm-bg text-alarm'}`} title={worst.message}>
+              {worst.message}
+            </span>
+          )}
+          {!worst && unassigned && <span className="rounded-control bg-alarm-bg px-1.5 text-[11px] text-alarm">unassigned operand</span>}
         </div>
         <div className="relative">
-        <div className="overflow-x-auto px-1 py-1">
-          <Ladder
-            body={rung.body}
-            layout={layout}
-            trace={p.trace}
-            live={p.live}
-            read={p.read}
-            addressOf={(t) => p.tagMap.get(t.toLowerCase())?.address}
-            errors={p.errors}
-            selectedId={p.selected ? p.selectedElement : null}
-            dropTarget={drop}
-            onSelect={(id) => {
-              select({ rungId: rung.id, elementId: id })
-              focusList()
-            }}
-            onActivate={onActivate}
-            onDragTarget={setDrop}
-            onDropInstruction={(afterId, m) => {
-              setDrop(null)
-              insertInstruction(m, { rungId: rung.id, afterId })
-            }}
-          />
-        </div>
+          <div className="overflow-x-auto px-1 py-1">
+            <Ladder
+              elements={rung.elements}
+              layout={layout}
+              trace={p.trace}
+              live={p.live}
+              read={p.read}
+              addressOf={(t) => p.tagMap.get(t.toLowerCase())?.address}
+              marks={p.marks}
+              selectedId={p.selected ? p.selectedElement : null}
+              dropTarget={drop}
+              onSelect={(id) => {
+                select({ rungId: rung.id, elementId: id })
+                focusList()
+              }}
+              onActivate={onActivate}
+              onDragTarget={setDrop}
+              onDropInstruction={(afterId, m) => {
+                setDrop(null)
+                insertInstruction(m, { rungId: rung.id, afterId })
+              }}
+            />
+          </div>
           {editingEl && editingNode && (
             <div
               className="absolute z-30"
@@ -209,7 +238,7 @@ function RungCardImpl(p: RungCardProps) {
                   setEditing(null)
                   focusList()
                 }}
-                onCommit={(next: Instruction) => {
+                onCommit={(next: Element) => {
                   updateInstruction(rung.id, editingEl.id, () => next)
                   setEditing(null)
                   focusList()
@@ -218,7 +247,7 @@ function RungCardImpl(p: RungCardProps) {
             </div>
           )}
         </div>
-        <RungTextBar rung={rung} index={index} />
+        <RungTextBar rung={rung} index={index} problems={p.problems} />
       </div>
     </article>
   )
@@ -228,7 +257,7 @@ function RungCardImpl(p: RungCardProps) {
 export function focusList() {
   requestAnimationFrame(() => {
     const a = document.activeElement as HTMLElement | null
-    if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.closest('[role=dialog]'))) return
+    if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.closest('[role=dialog]') || a.closest('[role=menu]'))) return
     document.getElementById('rung-list')?.focus({ preventScroll: true })
   })
 }

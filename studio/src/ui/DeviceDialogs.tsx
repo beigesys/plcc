@@ -170,8 +170,8 @@ function DetectPane({ name, onDone }: { name: string; onDone(err?: string): void
   )
 }
 
-export function AddDeviceDialog({ open, onOpenChange }: { open: boolean; onOpenChange(o: boolean): void }) {
-  const [tab, setTab] = useState<Tab>('catalog')
+export function AddDeviceDialog({ open, onOpenChange, initialTab = 'catalog' }: { open: boolean; onOpenChange(o: boolean): void; initialTab?: Tab }) {
+  const [tab, setTab] = useState<Tab>(initialTab)
   const [name, setName] = useState('')
   const [error, setError] = useState('')
   const done = (err?: string) => {

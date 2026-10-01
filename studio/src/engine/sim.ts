@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // Preview scan engine: interprets the ladder model with Logix-like semantics.
-// It exists until plcc's wasm32 output can run the real program in the page.
+// The real simulator runs plcc's own wasm32 output (src/runtime/plcHost.ts);
+// this engine runs while the compiler downloads or when compiling fails, and
+// computes power flow from live values (Online, and the compiled simulator).
 //
 // Rung-condition-in starts TRUE. A series is an AND chain, and every
 // instruction executes even when its input is FALSE (OTE writes FALSE, TON
-// resets). A parallel gives each branch the same input and ORs the outputs.
+// resets). A branch gives each leg the same input and ORs the outputs.
 
-import { BOX_SPECS, ProcessImage } from '@/model'
-import type { Box, Element, Program, Project, Routine, Series } from '@/model'
+import { ProcessImage, boxSpec } from '@/model'
+import type { Block, Element, Id, Program, Project, Routine } from '@/model'
 import type { Device } from '@/devices/manifest'
 import { evaluateExpression } from './expr'
 import { TagStore, parseLiteral, toBool, toNumber } from './values'
@@ -23,7 +25,7 @@ export interface ElementTrace {
   active: boolean
 }
 
-export type Trace = Map<string, ElementTrace>
+export type Trace = Map<Id, ElementTrace>
 
 export interface ExecContext {
   read(ref: string): Scalar | undefined
@@ -31,59 +33,60 @@ export interface ExecContext {
   write?: (ref: string, value: Scalar) => boolean
   dtMs: number
   trace: Trace
-  errors: Map<string, string>
+  errors: Map<Id, string>
   /** Hidden per-element memory (edge detectors), keyed by element id. */
-  mem: Map<string, Scalar>
+  mem: Map<Id, Scalar>
   /** Runs a routine by name (JSR). Returns false if there is none. */
   jsr?: (name: string) => boolean
+  /** Set by RET / JMP: the routine stops, or continues at the label. */
+  ret?: boolean
+  jumpTo?: string
 }
 
 const INT32_MAX = 2147483647
 const INT32_MIN = -2147483648
 
-function readBool(ctx: ExecContext, ref: string, id: string): boolean {
+function readBool(ctx: ExecContext, ref: string, id: Id): boolean {
   const v = ctx.read(ref)
   if (v === undefined) {
-    ctx.errors.set(id, ref.trim() ? `unknown tag ${ref}` : 'missing operand')
+    ctx.errors.set(id, ref.trim() && ref.trim() !== '?' ? `unknown tag ${ref}` : 'missing operand')
     return false
   }
   return toBool(v)
 }
 
-function operandNum(ctx: ExecContext, text: string, id: string): number {
+function operandNum(ctx: ExecContext, text: string, id: Id): number {
   const lit = parseLiteral(text)
   if (lit !== undefined) return toNumber(lit)
   const v = ctx.read(text)
   if (v === undefined) {
-    ctx.errors.set(id, text.trim() ? `unknown tag ${text}` : 'missing operand')
+    ctx.errors.set(id, text.trim() && text.trim() !== '?' ? `unknown tag ${text}` : 'missing operand')
     return 0
   }
   return toNumber(v)
 }
 
-function write(ctx: ExecContext, ref: string, value: Scalar, id: string): void {
+function write(ctx: ExecContext, ref: string, value: Scalar, id: Id): void {
   if (!ctx.write) return
   if (!ctx.write(ref, value)) ctx.errors.set(id, ref.trim() ? `cannot write ${ref}` : 'missing operand')
 }
 
-function execSeries(s: Series, pin: boolean, ctx: ExecContext): boolean {
+function execSeries(s: Element[], pin: boolean, ctx: ExecContext): boolean {
   let p = pin
-  for (const e of s.items) p = execElement(e, p, ctx)
+  for (const e of s) p = execElement(e, p, ctx)
   return p
 }
 
 function execElement(e: Element, pin: boolean, ctx: ExecContext): boolean {
   switch (e.type) {
-    case 'series':
-      return execSeries(e, pin, ctx)
-    case 'parallel': {
+    case 'branch': {
       let out = false
-      for (const b of e.branches) out = execSeries(b, pin, ctx) || out
+      for (const b of e.legs) out = execSeries(b, pin, ctx) || out
       ctx.trace.set(e.id, { in: pin, out, active: out })
       return out
     }
     case 'contact': {
-      const v = readBool(ctx, e.tag, e.id)
+      const v = readBool(ctx, e.operand, e.id)
       let pass: boolean
       if (e.kind === 'no') pass = v
       else if (e.kind === 'nc') pass = !v
@@ -91,7 +94,7 @@ function execElement(e: Element, pin: boolean, ctx: ExecContext): boolean {
         // Pure traces have no history: treat the previous value as the current one (no edge).
         const prev = ctx.write ? toBool(ctx.mem.get(e.id) ?? false) : v
         ctx.mem.set(e.id, v)
-        pass = e.kind === 'rise' ? v && !prev : !v && prev
+        pass = e.kind === 'rising' ? v && !prev : !v && prev
       }
       const out = pin && pass
       ctx.trace.set(e.id, { in: pin, out, active: pass })
@@ -100,47 +103,55 @@ function execElement(e: Element, pin: boolean, ctx: ExecContext): boolean {
     case 'coil': {
       switch (e.kind) {
         case 'normal':
-          write(ctx, e.tag, pin, e.id)
+          write(ctx, e.operand, pin, e.id)
           break
         case 'negated':
-          write(ctx, e.tag, !pin, e.id)
+          write(ctx, e.operand, !pin, e.id)
           break
         case 'set':
-          if (pin) write(ctx, e.tag, true, e.id)
+          if (pin) write(ctx, e.operand, true, e.id)
           break
         case 'reset':
-          if (pin) write(ctx, e.tag, false, e.id)
+          if (pin) write(ctx, e.operand, false, e.id)
           break
-        case 'rise':
-        case 'fall': {
+        case 'rising':
+        case 'falling': {
           const prev = toBool(ctx.mem.get(e.id) ?? false)
           ctx.mem.set(e.id, pin)
-          write(ctx, e.tag, e.kind === 'rise' ? pin && !prev : !pin && prev, e.id)
+          write(ctx, e.operand, e.kind === 'rising' ? pin && !prev : !pin && prev, e.id)
           break
         }
       }
-      const active = readBool(ctx, e.tag, e.id)
+      const active = readBool(ctx, e.operand, e.id)
       ctx.trace.set(e.id, { in: pin, out: pin, active })
       return pin
     }
-    case 'box':
-      return execBox(e, pin, ctx)
+    case 'block':
+      return execBlock(e, pin, ctx)
+    case 'jump':
+      if (pin) ctx.jumpTo = e.label
+      ctx.trace.set(e.id, { in: pin, out: pin, active: pin })
+      return pin
+    case 'return':
+      if (pin) ctx.ret = true
+      ctx.trace.set(e.id, { in: pin, out: pin, active: pin })
+      return pin
     case 'st':
-      ctx.errors.set(e.id, 'ST box not simulated')
+      ctx.errors.set(e.id, 'ST box: not run by the preview simulator')
       ctx.trace.set(e.id, { in: pin, out: pin, active: pin })
       return pin
   }
 }
 
-function execBox(b: Box, pin: boolean, ctx: ExecContext): boolean {
-  const op = (k: string) => b.operands[k] ?? ''
-  const num = (k: string) => operandNum(ctx, op(k), b.id)
+function execBlock(b: Block, pin: boolean, ctx: ExecContext): boolean {
+  const op = (i: number) => b.pins[i]?.value ?? ''
+  const num = (i: number) => operandNum(ctx, op(i), b.id)
   const set = (ref: string, v: Scalar) => write(ctx, ref, v, b.id)
   const member = (t: string, m: string) => `${t.trim()}.${m}`
   const bit = (t: string, m: string) => {
     const v = ctx.read(member(t, m))
     if (v === undefined) {
-      ctx.errors.set(b.id, t.trim() ? `unknown tag ${t}` : 'missing operand')
+      ctx.errors.set(b.id, t.trim() && t.trim() !== '?' ? `unknown tag ${t}` : 'missing operand')
       return false
     }
     return toBool(v)
@@ -149,12 +160,13 @@ function execBox(b: Box, pin: boolean, ctx: ExecContext): boolean {
   let out = pin
   let active = pin
 
-  switch (b.instr) {
+  switch (b.name.toUpperCase()) {
     case 'TON':
     case 'TOF':
     case 'RTO': {
-      const t = op('timer')
-      const pre = num('preset')
+      const kind = b.name.toUpperCase()
+      const t = op(0)
+      const pre = num(1)
       const en = bit(t, 'EN')
       let dn = bit(t, 'DN')
       let a = acc(t, 'ACC')
@@ -163,7 +175,7 @@ function execBox(b: Box, pin: boolean, ctx: ExecContext): boolean {
         ctx.trace.set(b.id, { in: pin, out: pin, active: en || dn })
         return pin
       }
-      if (b.instr === 'TOF') {
+      if (kind === 'TOF') {
         if (pin) {
           a = 0
           dn = true
@@ -188,7 +200,7 @@ function execBox(b: Box, pin: boolean, ctx: ExecContext): boolean {
         tt = !dn
       } else {
         tt = false
-        if (b.instr === 'TON') {
+        if (kind === 'TON') {
           a = 0
           dn = false
         }
@@ -203,9 +215,10 @@ function execBox(b: Box, pin: boolean, ctx: ExecContext): boolean {
     }
     case 'CTU':
     case 'CTD': {
-      const c = op('counter')
-      const pre = num('preset')
-      const edgeBit = b.instr === 'CTU' ? 'CU' : 'CD'
+      const up = b.name.toUpperCase() === 'CTU'
+      const c = op(0)
+      const pre = num(1)
+      const edgeBit = up ? 'CU' : 'CD'
       const was = bit(c, edgeBit)
       if (!ctx.write) {
         ctx.trace.set(b.id, { in: pin, out: pin, active: bit(c, 'DN') })
@@ -213,7 +226,7 @@ function execBox(b: Box, pin: boolean, ctx: ExecContext): boolean {
       }
       let a = acc(c, 'ACC')
       if (pin && !was) {
-        if (b.instr === 'CTU') {
+        if (up) {
           if (a >= INT32_MAX) {
             a = INT32_MIN
             set(member(c, 'OV'), true)
@@ -231,9 +244,9 @@ function execBox(b: Box, pin: boolean, ctx: ExecContext): boolean {
       break
     }
     case 'RES': {
-      const t = op('target')
+      const t = op(0)
       if (ctx.read(member(t, 'ACC')) === undefined) {
-        ctx.errors.set(b.id, t.trim() ? `${t} is not a timer or counter` : 'missing operand')
+        ctx.errors.set(b.id, t.trim() && t.trim() !== '?' ? `${t} is not a timer or counter` : 'missing operand')
         break
       }
       if (pin && ctx.write) {
@@ -244,21 +257,22 @@ function execBox(b: Box, pin: boolean, ctx: ExecContext): boolean {
       break
     }
     case 'ONS': {
-      const s = op('storage')
+      const s = op(0)
       const stored = readBool(ctx, s, b.id)
       out = pin && !stored
       if (ctx.write) set(s, pin)
       active = out
       break
     }
-    case 'OSR': {
-      const s = op('storage')
+    case 'OSR':
+    case 'OSF': {
+      const s = op(0)
       const stored = readBool(ctx, s, b.id)
       if (ctx.write) {
-        set(op('output'), pin && !stored)
+        set(op(1), b.name.toUpperCase() === 'OSR' ? pin && !stored : !pin && stored)
         set(s, pin)
       }
-      active = readBool(ctx, op('output'), b.id)
+      active = readBool(ctx, op(1), b.id)
       break
     }
     case 'EQU':
@@ -267,39 +281,48 @@ function execBox(b: Box, pin: boolean, ctx: ExecContext): boolean {
     case 'GEQ':
     case 'LES':
     case 'LEQ': {
-      const a = num('a')
-      const c = num('b')
-      const cmp = {
-        EQU: a === c, NEQ: a !== c, GRT: a > c, GEQ: a >= c, LES: a < c, LEQ: a <= c,
-      }[b.instr]
+      const a = num(0)
+      const c = num(1)
+      const cmp = { EQU: a === c, NEQ: a !== c, GRT: a > c, GEQ: a >= c, LES: a < c, LEQ: a <= c }[b.name.toUpperCase() as 'EQU']
       out = pin && cmp
       active = cmp
+      break
+    }
+    case 'LIM': {
+      const lo = num(0)
+      const t = num(1)
+      const hi = num(2)
+      const inside = lo <= hi ? lo <= t && t <= hi : t >= lo || t <= hi
+      out = pin && inside
+      active = inside
       break
     }
     case 'ADD':
     case 'SUB':
     case 'MUL':
     case 'DIV': {
-      const a = num('a')
-      const c = num('b')
+      const a = num(0)
+      const c = num(1)
       if (pin && ctx.write) {
-        if (b.instr === 'DIV' && c === 0) ctx.errors.set(b.id, 'divide by zero')
-        else {
-          const r = { ADD: a + c, SUB: a - c, MUL: a * c, DIV: a / c }[b.instr]
-          set(op('dest'), r)
-        }
+        const name = b.name.toUpperCase()
+        if (name === 'DIV' && c === 0) ctx.errors.set(b.id, 'divide by zero')
+        else set(op(2), { ADD: a + c, SUB: a - c, MUL: a * c, DIV: a / c }[name as 'ADD'])
       }
       break
     }
     case 'MOV': {
-      const v = num('source')
-      if (pin && ctx.write) set(op('dest'), v)
+      const v = num(0)
+      if (pin && ctx.write) set(op(1), v)
+      break
+    }
+    case 'CLR': {
+      if (pin && ctx.write) set(op(0), 0)
       break
     }
     case 'CPT': {
       if (pin && ctx.write) {
         try {
-          set(op('dest'), evaluateExpression(op('expr'), ctx.read))
+          set(op(0), evaluateExpression(op(1), ctx.read))
         } catch (err) {
           ctx.errors.set(b.id, err instanceof Error ? err.message : String(err))
         }
@@ -307,51 +330,57 @@ function execBox(b: Box, pin: boolean, ctx: ExecContext): boolean {
       break
     }
     case 'JSR': {
-      if (pin && ctx.jsr && !ctx.jsr(op('routine').trim())) {
-        ctx.errors.set(b.id, `JSR: no routine ${op('routine')}`)
-      }
+      if (pin && ctx.jsr && !ctx.jsr(op(0).trim())) ctx.errors.set(b.id, `JSR: no routine ${op(0)}`)
       break
     }
+    case 'NOP':
+      break
+    case 'AFI':
+      out = false
+      active = false
+      break
+    default:
+      ctx.errors.set(b.id, `${b.name} is not run by the preview simulator`)
   }
   ctx.trace.set(b.id, { in: pin, out, active })
   return out
 }
 
 /** Executes one rung and returns its rung-condition-out. Shared by the simulator and pure traces. */
-export function executeRung(body: Series, ctx: ExecContext): boolean {
-  return execSeries(body, true, ctx)
+export function executeRung(elements: Element[], ctx: ExecContext): boolean {
+  return execSeries(elements, true, ctx)
 }
 
 /**
- * Power flow from given values, writing nothing (ONLINE mode). Contacts read
- * the values, coils show their tag, compares are evaluated, timers and
- * counters show their EN/DN (or DN) bits.
+ * Power flow from given values, writing nothing (Online, and the compiled
+ * simulator). Contacts read the values, coils show their tag, compares are
+ * evaluated, timers and counters show their EN/DN (or DN) bits.
  */
 export function traceRoutine(routine: Routine, read: (ref: string) => Scalar | undefined): Trace {
   const ctx: ExecContext = { read, dtMs: 0, trace: new Map(), errors: new Map(), mem: new Map() }
-  for (const r of routine.rungs) executeRung(r.body, ctx)
+  for (const r of routine.rungs) executeRung(r.elements, ctx)
   return ctx.trace
 }
 
 const MAX_JSR_DEPTH = 8
 
-/** True when `b` is an input instruction (it gates power). Used by tests and the UI. */
-export function isConditionBox(b: Box): boolean {
-  return BOX_SPECS[b.instr].role === 'input'
+/** True when `b` is an input instruction (it gates power). */
+export function isConditionBox(b: Block): boolean {
+  return boxSpec(b).role === 'input'
 }
 
 export class Simulator {
   readonly image: ProcessImage
   readonly tags: TagStore
   trace: Trace = new Map()
-  errors = new Map<string, string>()
+  errors = new Map<Id, string>()
   scanCount = 0
   lastScanMs = 0
   /** The last scan ran out of budget and was cut short. */
   overrun = false
   overrunCount = 0
   private project: Project
-  private mem = new Map<string, Scalar>()
+  private mem = new Map<Id, Scalar>()
 
   /** `device` sizes the process image (its manifest's `target.image`). */
   constructor(project: Project, device: Pick<Device, 'target'>) {
@@ -377,12 +406,12 @@ export class Simulator {
   }
 
   private programsInOrder(): Program[] {
-    const { tasks, programs } = this.project
-    if (tasks.length === 0) return programs
+    const { tasks, pous } = this.project
+    if (tasks.length === 0) return pous
     const out: Program[] = []
     for (const t of tasks) {
       for (const name of t.programs) {
-        const p = programs.find((x) => x.name === name)
+        const p = pous.find((x) => x.name === name)
         if (p) out.push(p)
       }
     }
@@ -400,7 +429,7 @@ export class Simulator {
     const budget = opts.budgetMs
     this.tags.applyForces()
     const trace: Trace = new Map()
-    const errors = new Map<string, string>()
+    const errors = new Map<Id, string>()
     let overrun = false
     try {
       this.runPrograms(dtMs, trace, errors, () => {
@@ -419,11 +448,11 @@ export class Simulator {
   }
 
   /** The current trace, packed for postMessage: bits in=1, out=2, active=4. */
-  snapshotTrace(): Array<[string, number]> {
+  snapshotTrace(): Array<[Id, number]> {
     return packTrace(this.trace)
   }
 
-  private runPrograms(dtMs: number, trace: Trace, errors: Map<string, string>, check: () => void): void {
+  private runPrograms(dtMs: number, trace: Trace, errors: Map<Id, string>, check: () => void): void {
     for (const program of this.programsInOrder()) {
       let depth = 0
       const ctx: ExecContext = {
@@ -435,10 +464,24 @@ export class Simulator {
         mem: this.mem,
       }
       const run = (routine: Routine) => {
-        if (routine.kind !== 'ladder') return
-        for (const r of routine.rungs) {
+        let i = 0
+        while (i < routine.rungs.length) {
           check()
-          executeRung(r.body, ctx)
+          executeRung(routine.rungs[i].elements, ctx)
+          if (ctx.ret) {
+            ctx.ret = false
+            return
+          }
+          if (ctx.jumpTo !== undefined) {
+            const label = ctx.jumpTo.toLowerCase()
+            ctx.jumpTo = undefined
+            const to = routine.rungs.findIndex((g) => g.label?.toLowerCase() === label)
+            if (to >= 0) {
+              i = to
+              continue
+            }
+          }
+          i++
         }
       }
       ctx.jsr = (name) => {
@@ -453,7 +496,7 @@ export class Simulator {
         }
         return true
       }
-      const main = program.routines.find((r) => r.name === program.main)
+      const main = program.routines[0]
       if (main) run(main)
     }
   }
@@ -468,13 +511,13 @@ export interface ScanOptions {
 
 const OVERRUN = Symbol('scan overrun')
 
-export function packTrace(trace: Trace): Array<[string, number]> {
-  const out: Array<[string, number]> = []
+export function packTrace(trace: Trace): Array<[Id, number]> {
+  const out: Array<[Id, number]> = []
   for (const [id, t] of trace) out.push([id, (t.in ? 1 : 0) | (t.out ? 2 : 0) | (t.active ? 4 : 0)])
   return out
 }
 
-export function unpackTrace(packed: Array<[string, number]>): Trace {
+export function unpackTrace(packed: Array<[Id, number]>): Trace {
   const out: Trace = new Map()
   for (const [id, bits] of packed) out.set(id, { in: (bits & 1) !== 0, out: (bits & 2) !== 0, active: (bits & 4) !== 0 })
   return out

@@ -5,8 +5,8 @@
 
 import { create } from 'zustand'
 import {
-  createMissingTags, demoProject, findElement, flatten, type Instruction, type Program, type Project,
-  type Routine, type Rung, type Series,
+  createMissingTags, demoProject, findElement, flatten, reserveProjectIds, type Element, type Id, type Instruction,
+  type Program, type Project, type Routine, type Rung,
 } from '@/model'
 import { applyTheme, initialTheme, type ThemeId } from './theme'
 
@@ -19,11 +19,29 @@ export type View =
 export type Mode = 'offline' | 'simulate' | 'online'
 
 export interface Selection {
-  rungId: string | null
-  elementId: string | null
+  rungId: Id | null
+  elementId: Id | null
 }
 
 export type SaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error' | 'memory'
+
+/** Dialogs opened from commands (context menus, the palette). */
+export type DialogState =
+  | { kind: 'manifest'; device: string }
+  | { kind: 'updateManifest'; device: string }
+  | { kind: 'addDevice'; pane?: 'catalog' | 'import' | 'detect' }
+  | { kind: 'import' }
+  | { kind: 'export'; program?: string; routine?: string }
+  | { kind: 'download' }
+  | null
+
+/** Something a view should bring into view or start editing, once. */
+export type FocusRequest =
+  | { kind: 'tag'; tag: string; rename?: boolean }
+  | { kind: 'comment'; rungId: Id }
+  | { kind: 'renameRoutine'; program: string; routine: string }
+  | { kind: 'point'; tag: string }
+  | null
 
 const HISTORY_LIMIT = 200
 
@@ -35,13 +53,17 @@ export interface EditorState {
   view: View
   selection: Selection
   /** Element whose operand editor is open. */
-  editing: { rungId: string; elementId: string } | null
+  editing: { rungId: Id; elementId: Id } | null
   mode: Mode
   theme: ThemeId
   saveStatus: SaveStatus
   saveError?: string
   paletteOpen: boolean
   projectsOpen: boolean
+  dialog: DialogState
+  focus: FocusRequest
+  /** The generated-ST panel beside a ladder routine. */
+  stView: boolean
   /** Short message for the status bar (last action, errors). */
   notice: { text: string; tone: 'info' | 'alarm' | 'fault' } | null
 
@@ -57,11 +79,14 @@ export interface EditorState {
   setSaveStatus(s: SaveStatus, error?: string): void
   setPaletteOpen(o: boolean): void
   setProjectsOpen(o: boolean): void
+  setDialog(d: DialogState): void
+  setFocus(f: FocusRequest): void
+  setStView(o: boolean): void
   notify(text: string, tone?: 'info' | 'alarm' | 'fault'): void
 }
 
 export function firstRoutineView(p: Project): View {
-  const prog = p.programs[0]
+  const prog = p.pous[0]
   const r = prog?.routines[0]
   return prog && r ? { kind: 'routine', program: prog.name, routine: r.name } : { kind: 'tags' }
 }
@@ -79,9 +104,13 @@ export const useEditor = create<EditorState>((set, get) => ({
   saveStatus: 'idle',
   paletteOpen: false,
   projectsOpen: false,
+  dialog: null,
+  focus: null,
+  stView: false,
   notice: null,
 
   openProject(id, project) {
+    reserveProjectIds(project)
     set({
       projectId: id,
       project,
@@ -137,6 +166,15 @@ export const useEditor = create<EditorState>((set, get) => ({
   setProjectsOpen(o) {
     set({ projectsOpen: o })
   },
+  setDialog(d) {
+    set({ dialog: d })
+  },
+  setFocus(f) {
+    set({ focus: f })
+  },
+  setStView(o) {
+    set({ stView: o })
+  },
   notify(text, tone = 'info') {
     set({ notice: { text, tone } })
   },
@@ -153,7 +191,7 @@ function fixView() {
 // ---------------------------------------------------------------- selectors
 
 export function findProgram(p: Project, name: string): Program | undefined {
-  return p.programs.find((x) => x.name === name)
+  return p.pous.find((x) => x.name === name)
 }
 
 export function findRoutine(p: Project, program: string, routine: string): Routine | undefined {
@@ -167,7 +205,7 @@ export function currentRoutine(s: Pick<EditorState, 'project' | 'view'>): Routin
 export function selectedElement(s: EditorState): Instruction | undefined {
   const r = currentRoutine(s)
   const rung = r?.rungs.find((x) => x.id === s.selection.rungId)
-  return rung && s.selection.elementId ? findElement(rung.body, s.selection.elementId) : undefined
+  return rung && s.selection.elementId != null ? findElement(rung.elements, s.selection.elementId) : undefined
 }
 
 // ---------------------------------------------------------------- edit helpers
@@ -175,7 +213,7 @@ export function selectedElement(s: EditorState): Instruction | undefined {
 export function mapRoutine(p: Project, program: string, routine: string, fn: (r: Routine) => Routine): Project {
   return {
     ...p,
-    programs: p.programs.map((pr) =>
+    pous: p.pous.map((pr) =>
       pr.name !== program ? pr : { ...pr, routines: pr.routines.map((r) => (r.name === routine ? fn(r) : r)) },
     ),
   }
@@ -189,25 +227,26 @@ export function editCurrentRoutine(fn: (r: Routine) => Routine) {
     let next = mapRoutine(p, view.program, view.routine, fn)
     const r = findRoutine(next, view.program, view.routine)
     if (!r) return next
-    let tags = next.tags
+    let tags = next.globals
     const created: string[] = []
+    const locals = findProgram(next, view.program)?.variables.map((v) => v.name) ?? []
     for (const rung of r.rungs) {
-      const res = createMissingTags(tags, rung.body)
+      const res = createMissingTags(tags, rung.elements, locals)
       tags = res.tags
-      created.push(...res.created.map((t) => `${t.name} (${t.type})`))
+      created.push(...res.created.map((t) => `${t.name} (${t.data_type})`))
     }
     if (created.length) {
-      next = { ...next, tags }
+      next = { ...next, globals: tags }
       useEditor.getState().notify(`Created tag${created.length > 1 ? 's' : ''} ${created.join(', ')}`)
     }
     return next
   })
 }
 
-export function editRung(rungId: string, fn: (body: Series) => Series) {
+export function editRung(rungId: Id, fn: (elements: Element[]) => Element[]) {
   editCurrentRoutine((r) => ({
     ...r,
-    rungs: r.rungs.map((g) => (g.id === rungId ? { ...g, body: fn(g.body) } : g)),
+    rungs: r.rungs.map((g) => (g.id === rungId ? { ...g, elements: fn(g.elements) } : g)),
   }))
 }
 
@@ -222,7 +261,7 @@ export function cursorText(s: EditorState): string {
   const idx = r.rungs.findIndex((g) => g.id === s.selection.rungId)
   if (idx < 0) return `${r.rungs.length} rung${r.rungs.length === 1 ? '' : 's'}`
   const rung = r.rungs[idx]
-  const els = flatten(rung.body)
+  const els = flatten(rung.elements)
   const ei = els.findIndex((e) => e.id === s.selection.elementId)
   return `Rung ${idx}${ei >= 0 ? `, element ${ei + 1}/${els.length}` : ''}`
 }

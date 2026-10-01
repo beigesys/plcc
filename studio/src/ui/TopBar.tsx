@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
-import { ChevronRight, Download, Palette, Check } from 'lucide-react'
+import { ChevronRight, Download, Palette, Check, FileText } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuShortcut,
+  DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { resolveDevice } from '@/devices/project'
 import { useEditor, type Mode } from '@/state/editor'
 import { useLive } from '@/state/live'
+import { exportRoutine } from '@/state/convert'
+import { downloadZip } from '@/state/persistence'
 import { THEMES } from '@/state/theme'
 import { Logo } from './Logo'
 import { StateDot } from './StateDot'
@@ -103,6 +106,44 @@ function ThemeMenu() {
   )
 }
 
+function FileMenu() {
+  const s = () => useEditor.getState()
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="sm" aria-label="File">
+          <FileText /> File
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-64">
+        <DropdownMenuItem onSelect={() => s().setProjectsOpen(true)}>Projects…</DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={() => s().setDialog({ kind: 'import' })}>
+          Import L5X, PLCopen, ST, TwinCAT…
+        </DropdownMenuItem>
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>Export project as</DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            <DropdownMenuItem onSelect={() => void exportRoutine('l5x')}>
+              Rockwell L5X <DropdownMenuShortcut>.L5X</DropdownMenuShortcut>
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => void exportRoutine('plcopen')}>
+              PLCopen XML (IEC ladder) <DropdownMenuShortcut>.xml</DropdownMenuShortcut>
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => void exportRoutine('st')}>
+              Structured Text (IEC) <DropdownMenuShortcut>.st</DropdownMenuShortcut>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={() => downloadZip(s().project)}>
+              plcc studio project <DropdownMenuShortcut>.zip</DropdownMenuShortcut>
+            </DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
 export function TopBar() {
   const project = useEditor((s) => s.project)
   const view = useEditor((s) => s.view)
@@ -118,6 +159,7 @@ export function TopBar() {
         <Logo />
         <span className="font-semibold tracking-tight">plcc studio</span>
       </div>
+      <FileMenu />
       <nav aria-label="Breadcrumb" className="flex min-w-0 flex-1 items-center gap-1 text-dense">
         <button
           type="button"
@@ -139,15 +181,12 @@ export function TopBar() {
       <ThemeMenu />
       <Tooltip>
         <TooltipTrigger asChild>
-          {/* A disabled button gets no pointer events; the span carries the tooltip. */}
-          <span tabIndex={0} aria-label="Download (coming soon: compiles and flashes from the browser)">
-            <Button disabled className="pointer-events-none">
-              <Download />
-              Download
-            </Button>
-          </span>
+          <Button onClick={() => useEditor.getState().setDialog({ kind: 'download' })}>
+            <Download />
+            Download
+          </Button>
         </TooltipTrigger>
-        <TooltipContent>Coming soon: runs in your browser, no install</TooltipContent>
+        <TooltipContent>Compile for the device and flash it over USB, from the browser</TooltipContent>
       </Tooltip>
     </header>
   )

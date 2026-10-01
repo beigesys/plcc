@@ -1,65 +1,107 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// Instruction catalog: mnemonics, operand lists, and how each one is drawn and
-// executed. Rung text, the palette, quick entry and the simulator all read it.
+// The Logix instruction catalog: plcc's (logix-catalog.json, generated from
+// plcc_ladder::catalog by scripts/gen-catalog.mjs) with what the editor adds
+// for the instructions it offers: titles, defaults, the type a new tag gets,
+// and the status bits drawn on a box.
 
-import type { BoxInstr, CoilKind, ContactKind } from './types'
+import catalogJson from './logix-catalog.json'
+import type { Block, Element, PinDir } from './types'
 
 export type Role = 'input' | 'output'
 
-export interface OperandSpec {
-  /** Key in `Box.operands`. */
-  key: string
+/** One instruction of plcc's catalog (`plcc_ladder::catalog::Spec`). */
+export interface CatalogSpec {
+  name: string
+  category: string
+  role: 'input' | 'output' | 'box'
+  pins: { name: string; dir: PinDir }[]
+  variadic: boolean
+  instance: boolean
+}
+
+export const LOGIX_CATALOG = catalogJson as CatalogSpec[]
+const BY_NAME = new Map(LOGIX_CATALOG.map((s) => [s.name, s]))
+
+export function catalogSpec(name: string): CatalogSpec | undefined {
+  return BY_NAME.get(name.toUpperCase())
+}
+
+/** Name of operand `k` of `mnemonic`, as plcc names it (`catalog::logix_operand_name`). */
+export function logixOperandName(mnemonic: string, k: number): string {
+  const s = catalogSpec(mnemonic)
+  if (s && s.variadic && s.pins.length > 0 && k + 1 >= s.pins.length) {
+    return `${s.pins[s.pins.length - 1].name} ${k + 2 - s.pins.length}`
+  }
+  if (s && k < s.pins.length) return s.pins[k].name
+  return `Operand ${k + 1}`
+}
+
+/** Direction of operand `k` of `mnemonic` (`catalog::logix_operand_dir`). */
+export function logixOperandDir(mnemonic: string, k: number): PinDir {
+  const s = catalogSpec(mnemonic)
+  if (s && k < s.pins.length) return s.pins[k].dir
+  if (s && s.variadic && s.pins.length > 0) return s.pins[s.pins.length - 1].dir
+  return 'input'
+}
+
+export interface PinSpec {
+  /** The pin's name in the model (plcc's operand name). */
+  name: string
+  /** Shorter label for the box. */
   label: string
   /** Type a new tag gets when this operand names an unknown tag; undefined = never create. */
   newTagType?: string
-  /** Default text when the instruction is inserted. */
+  /** Text when the instruction is inserted. */
   default: string
 }
 
 export interface BoxSpec {
-  instr: BoxInstr
+  instr: string
   title: string
   role: Role
-  operands: OperandSpec[]
-  /** Status bits drawn on the right edge (read from the first operand's tag). */
+  pins: PinSpec[]
+  /** Status bits drawn on the right edge (members of the first operand's tag). */
   outputs?: string[]
-  group: 'Timers' | 'Counters' | 'Bit' | 'Compare' | 'Math' | 'Move' | 'Program'
+  group: 'Timers' | 'Counters' | 'Bit' | 'Compare' | 'Math' | 'Move' | 'Program' | 'Other'
 }
 
-const tag = (key: string, label: string, newTagType?: string): OperandSpec => ({
-  key, label, newTagType, default: '?',
-})
-const lit = (key: string, label: string, def: string): OperandSpec => ({ key, label, default: def })
+const tag = (name: string, label: string, newTagType?: string): PinSpec => ({ name, label, newTagType, default: '?' })
+const lit = (name: string, label: string, def: string): PinSpec => ({ name, label, default: def })
 
-const timer = (instr: BoxInstr, title: string): BoxSpec => ({
+const timer = (instr: string, title: string): BoxSpec => ({
   instr, title, role: 'output', group: 'Timers', outputs: ['EN', 'DN'],
-  operands: [tag('timer', 'Timer', 'TIMER'), lit('preset', 'Preset', '1000'), lit('accum', 'Accum', '0')],
+  pins: [tag('Timer', 'Timer', 'TIMER'), lit('Preset', 'Preset', '1000'), lit('Accum', 'Accum', '0')],
 })
-const counter = (instr: BoxInstr, title: string): BoxSpec => ({
+const counter = (instr: string, title: string): BoxSpec => ({
   instr, title, role: 'output', group: 'Counters', outputs: [instr === 'CTU' ? 'CU' : 'CD', 'DN'],
-  operands: [tag('counter', 'Counter', 'COUNTER'), lit('preset', 'Preset', '10'), lit('accum', 'Accum', '0')],
+  pins: [tag('Counter', 'Counter', 'COUNTER'), lit('Preset', 'Preset', '10'), lit('Accum', 'Accum', '0')],
 })
-const compare = (instr: BoxInstr, title: string): BoxSpec => ({
+const compare = (instr: string, title: string): BoxSpec => ({
   instr, title, role: 'input', group: 'Compare',
-  operands: [tag('a', 'Source A', 'DINT'), lit('b', 'Source B', '0')],
+  pins: [tag('Source A', 'Source A', 'DINT'), lit('Source B', 'Source B', '0')],
 })
-const math = (instr: BoxInstr, title: string): BoxSpec => ({
+const math = (instr: string, title: string): BoxSpec => ({
   instr, title, role: 'output', group: 'Math',
-  operands: [tag('a', 'Source A', 'DINT'), lit('b', 'Source B', '0'), tag('dest', 'Dest', 'DINT')],
+  pins: [tag('Source A', 'Source A', 'DINT'), lit('Source B', 'Source B', '0'), tag('Dest', 'Dest', 'DINT')],
 })
 
-export const BOX_SPECS: Record<BoxInstr, BoxSpec> = {
+/** The box instructions the editor offers, with its extras. */
+export const BOX_SPECS: Record<string, BoxSpec> = {
   TON: timer('TON', 'Timer On Delay'),
   TOF: timer('TOF', 'Timer Off Delay'),
   RTO: timer('RTO', 'Retentive Timer On'),
   CTU: counter('CTU', 'Count Up'),
   CTD: counter('CTD', 'Count Down'),
-  RES: { instr: 'RES', title: 'Reset', role: 'output', group: 'Timers', operands: [tag('target', 'Timer/Counter')] },
-  ONS: { instr: 'ONS', title: 'One Shot', role: 'input', group: 'Bit', operands: [tag('storage', 'Storage Bit', 'BOOL')] },
+  RES: { instr: 'RES', title: 'Reset', role: 'output', group: 'Timers', pins: [tag('Structure', 'Timer/Counter')] },
+  ONS: { instr: 'ONS', title: 'One Shot', role: 'input', group: 'Bit', pins: [tag('Storage Bit', 'Storage Bit', 'BOOL')] },
   OSR: {
     instr: 'OSR', title: 'One Shot Rising', role: 'output', group: 'Bit',
-    operands: [tag('storage', 'Storage Bit', 'BOOL'), tag('output', 'Output Bit', 'BOOL')],
+    pins: [tag('Storage Bit', 'Storage Bit', 'BOOL'), tag('Output Bit', 'Output Bit', 'BOOL')],
+  },
+  OSF: {
+    instr: 'OSF', title: 'One Shot Falling', role: 'output', group: 'Bit',
+    pins: [tag('Storage Bit', 'Storage Bit', 'BOOL'), tag('Output Bit', 'Output Bit', 'BOOL')],
   },
   EQU: compare('EQU', 'Equal'),
   NEQ: compare('NEQ', 'Not Equal'),
@@ -67,45 +109,69 @@ export const BOX_SPECS: Record<BoxInstr, BoxSpec> = {
   GEQ: compare('GEQ', 'Greater or Equal'),
   LES: compare('LES', 'Less Than'),
   LEQ: compare('LEQ', 'Less or Equal'),
+  LIM: {
+    instr: 'LIM', title: 'Limit', role: 'input', group: 'Compare',
+    pins: [lit('Low Limit', 'Low', '0'), tag('Test', 'Test', 'DINT'), lit('High Limit', 'High', '100')],
+  },
   ADD: math('ADD', 'Add'),
   SUB: math('SUB', 'Subtract'),
   MUL: math('MUL', 'Multiply'),
   DIV: math('DIV', 'Divide'),
   MOV: {
     instr: 'MOV', title: 'Move', role: 'output', group: 'Move',
-    operands: [lit('source', 'Source', '0'), tag('dest', 'Dest', 'DINT')],
+    pins: [lit('Source', 'Source', '0'), tag('Dest', 'Dest', 'DINT')],
   },
   CPT: {
     instr: 'CPT', title: 'Compute', role: 'output', group: 'Math',
-    operands: [tag('dest', 'Dest', 'DINT'), lit('expr', 'Expression', '0')],
+    pins: [tag('Dest', 'Dest', 'DINT'), lit('Expression', 'Expression', '0')],
   },
-  JSR: { instr: 'JSR', title: 'Jump to Subroutine', role: 'output', group: 'Program', operands: [lit('routine', 'Routine', '?')] },
+  JSR: {
+    instr: 'JSR', title: 'Jump to Subroutine', role: 'output', group: 'Program',
+    pins: [lit('Routine Name', 'Routine', '?'), lit('Input Count', 'Inputs', '0')],
+  },
 }
 
-/** Rung-text mnemonics for contacts and coils. XIC/XIO/OTE/OTL/OTU are Logix; the rest are plcc extensions. */
-export const CONTACT_MNEMONIC: Record<ContactKind, string> = { no: 'XIC', nc: 'XIO', rise: 'XICR', fall: 'XICF' }
-export const COIL_MNEMONIC: Record<CoilKind, string> = {
-  normal: 'OTE', negated: 'OTEN', set: 'OTL', reset: 'OTU', rise: 'OTER', fall: 'OTEF',
+/** The editor's spec of a block: its own, else one from plcc's catalog, else from its pins. */
+export function boxSpec(b: Pick<Block, 'name' | 'pins'>): BoxSpec {
+  const own = BOX_SPECS[b.name.toUpperCase()]
+  if (own) return own
+  const c = catalogSpec(b.name)
+  const pins = b.pins.map((p) => ({ name: p.name, label: p.name, default: '?' }))
+  return {
+    instr: b.name,
+    title: c ? c.category.replace('_', ' ') : 'Instruction',
+    role: c?.role === 'input' ? 'input' : 'output',
+    group: 'Other',
+    pins,
+  }
 }
 
-export const CONTACT_BY_MNEMONIC: Record<string, ContactKind> = Object.fromEntries(
-  Object.entries(CONTACT_MNEMONIC).map(([k, m]) => [m, k as ContactKind]),
-)
-export const COIL_BY_MNEMONIC: Record<string, CoilKind> = Object.fromEntries(
-  Object.entries(COIL_MNEMONIC).map(([k, m]) => [m, k as CoilKind]),
-)
-
-export function isBoxInstr(m: string): m is BoxInstr {
-  return Object.prototype.hasOwnProperty.call(BOX_SPECS, m)
+/** Any instruction the editor can insert by mnemonic (contacts, coils, boxes, ST). */
+export function specOf(mnemonic: string): { pins: PinSpec[] } | undefined {
+  const m = mnemonic.toUpperCase()
+  if (m === 'XIC' || m === 'XIO' || m === 'OTE' || m === 'OTL' || m === 'OTU') return { pins: [tag('Data Bit', 'Tag', 'BOOL')] }
+  if (m === 'JMP') return { pins: [lit('Label Name', 'Label', '?')] }
+  if (m === 'RET') return { pins: [] }
+  const own = BOX_SPECS[m]
+  if (own) return own
+  const c = catalogSpec(m)
+  return c ? { pins: c.pins.map((p) => ({ name: p.name, label: p.name, default: '?' })) } : undefined
 }
 
-/** Number of operands a mnemonic takes (for quick entry), or undefined if unknown. */
-export function operandCount(mnemonic: string): number | undefined {
-  if (mnemonic in CONTACT_BY_MNEMONIC || mnemonic in COIL_BY_MNEMONIC) return 1
-  if (mnemonic === 'ST') return 1
-  if (isBoxInstr(mnemonic)) return BOX_SPECS[mnemonic].operands.length
-  return undefined
+export function isBoxInstr(m: string): boolean {
+  return Object.prototype.hasOwnProperty.call(BOX_SPECS, m.toUpperCase())
 }
+
+/** Whether an element acts on the rung (coils, output instructions) rather than conditioning it. */
+export function isOutput(e: Element): boolean {
+  if (e.type === 'coil' || e.type === 'jump' || e.type === 'return') return true
+  if (e.type === 'block') return boxSpec(e).role === 'output'
+  return false
+}
+
+/** Contact and coil mnemonics (Logix). */
+export const CONTACT_MNEMONIC = { no: 'XIC', nc: 'XIO' } as const
+export const COIL_MNEMONIC = { normal: 'OTE', set: 'OTL', reset: 'OTU' } as const
 
 export interface PaletteItem {
   mnemonic: string
@@ -116,13 +182,11 @@ export interface PaletteItem {
 export const PALETTE: PaletteItem[] = [
   { mnemonic: 'XIC', label: 'Examine On (NO contact)', group: 'Bit' },
   { mnemonic: 'XIO', label: 'Examine Off (NC contact)', group: 'Bit' },
-  { mnemonic: 'XICR', label: 'Rising-edge contact', group: 'Bit' },
-  { mnemonic: 'XICF', label: 'Falling-edge contact', group: 'Bit' },
   { mnemonic: 'OTE', label: 'Output Energize (coil)', group: 'Bit' },
-  { mnemonic: 'OTEN', label: 'Negated coil', group: 'Bit' },
   { mnemonic: 'OTL', label: 'Output Latch (set)', group: 'Bit' },
   { mnemonic: 'OTU', label: 'Output Unlatch (reset)', group: 'Bit' },
-  { mnemonic: 'OTER', label: 'Rising-edge coil', group: 'Bit' },
-  { mnemonic: 'OTEF', label: 'Falling-edge coil', group: 'Bit' },
   ...Object.values(BOX_SPECS).map((s) => ({ mnemonic: s.instr, label: s.title, group: s.group })),
+  { mnemonic: 'JMP', label: 'Jump to label', group: 'Program' },
+  { mnemonic: 'RET', label: 'Return', group: 'Program' },
+  { mnemonic: 'ST', label: 'Structured Text box', group: 'Program' },
 ]

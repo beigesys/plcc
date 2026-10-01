@@ -158,11 +158,11 @@ export function isSimulatorRunning() {
 /** Values of every addressed tag, decoded from a device image. */
 export function valuesFromImage(project: Project, img: ProcessImage): Record<string, TagValue> {
   const out: Record<string, TagValue> = {}
-  for (const t of project.tags) {
+  for (const t of project.globals) {
     if (!t.address) continue
     const a = parseAddress(t.address)
     if (!a || !img.inRange(a)) continue
-    out[t.name.toLowerCase()] = img.read(a, t.type)
+    out[t.name.toLowerCase()] = img.read(a, t.data_type)
   }
   return out
 }

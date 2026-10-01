@@ -145,7 +145,7 @@ describe('simulator host', () => {
   it('reports an overrun instead of spinning on a huge program', () => {
     const p = demoProject()
     const rung = parseRung('XIC(A)CPT(X,SQRT(X*X+1)*1.0001)OTE(B);')
-    p.programs[0].routines[0].rungs = Array.from({ length: 40_000 }, (_, i) => ({ id: `r${i}`, comment: '', body: rung }))
+    p.pous[0].routines[0].rungs = Array.from({ length: 40_000 }, (_, i) => ({ id: 100_000 + i, ...rung }))
     const posts: Snapshot[] = []
     const host = new SimHost((m) => m.type === 'snapshot' && posts.push(m), { scanBudgetMs: 5 })
     host.handle({ type: 'init', project: p, device: SIM, periodMs: 10 })

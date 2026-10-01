@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
-import { useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { ArrowUpCircle, Cable, Cpu, FileCode2, FolderOpen, Plus, Rows3, Tags, Timer, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { catalogUpdates, removeDevice, resolveDevice } from '@/devices/project'
-import type { RoutineKind } from '@/model'
-import { findProgram, useEditor, type View } from '@/state/editor'
+import { isStRoutine, newRoutine, type RoutineKind } from '@/model'
+import { useEditor, type View } from '@/state/editor'
 import { useLive } from '@/state/live'
+import { countBySeverity, useProblems } from '@/state/problems'
+import { deleteRoutine, renameRoutine, type Target } from '@/state/registry'
+import { WithCommandMenu } from './CommandMenu'
 import { AddDeviceDialog } from './DeviceDialogs'
 import { StateDot } from './StateDot'
 
@@ -17,12 +20,13 @@ function sameView(a: View, b: View): boolean {
   return true
 }
 
-function Item({ view, icon, children, trailing }: { view: View; icon: ReactNode; children: ReactNode; trailing?: ReactNode }) {
+function Item({
+  view, icon, children, trailing, menu, label,
+}: { view: View; icon: ReactNode; children: ReactNode; trailing?: ReactNode; menu?: Target; label?: string }) {
   const current = useEditor((s) => s.view)
   const setView = useEditor((s) => s.setView)
   const active = sameView(current, view)
-  return (
-    <li className="group flex items-center">
+  const button = (
       <button
         type="button"
         aria-current={active ? 'page' : undefined}
@@ -36,7 +40,47 @@ function Item({ view, icon, children, trailing }: { view: View; icon: ReactNode;
         </span>
         <span className="truncate">{children}</span>
       </button>
+  )
+  return (
+    <li className="group flex items-center">
+      {menu ? (
+        <WithCommandMenu target={menu} label={label}>
+          {button}
+        </WithCommandMenu>
+      ) : (
+        button
+      )}
       {trailing}
+    </li>
+  )
+}
+
+function RenameRoutine({ program, routine }: { program: string; routine: string }) {
+  const [name, setName] = useState(routine)
+  const [error, setError] = useState('')
+  const ref = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    ref.current?.focus()
+    ref.current?.select()
+  }, [])
+  const done = () => useEditor.getState().setFocus(null)
+  return (
+    <li>
+      <form
+        className="space-y-1 rounded-control border border-line bg-surface p-1.5"
+        onSubmit={(e) => {
+          e.preventDefault()
+          const err = renameRoutine(program, routine, name)
+          if (err) setError(err)
+          else done()
+        }}
+      >
+        <label htmlFor="rename-routine" className="sr-only">
+          New name for {routine}
+        </label>
+        <Input id="rename-routine" ref={ref} value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Escape' && done()} onBlur={done} className="h-7" />
+        {error && <p className="text-dense text-alarm">{error}</p>}
+      </form>
     </li>
   )
 }
@@ -61,14 +105,12 @@ function NewRoutineForm({ program, onDone }: { program: string; onDone(): void }
     const n = name.trim()
     const s = useEditor.getState()
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(n)) return setError('Use letters, digits and _')
-    if (s.project.programs.some((p) => p.routines.some((r) => r.name.toLowerCase() === n.toLowerCase()))) {
+    if (s.project.pous.some((p) => p.routines.some((r) => r.name.toLowerCase() === n.toLowerCase()))) {
       return setError('A routine with that name exists')
     }
     s.commit((p) => ({
       ...p,
-      programs: p.programs.map((pr) =>
-        pr.name === program ? { ...pr, routines: [...pr.routines, { name: n, kind, rungs: [], st: kind === 'st' ? '' : undefined }] } : pr,
-      ),
+      pous: p.pous.map((pr) => (pr.name === program ? { ...pr, routines: [...pr.routines, newRoutine(n, kind)] } : pr)),
     }))
     s.setView({ kind: 'routine', program, routine: n })
     onDone()
@@ -121,26 +163,10 @@ export function LeftNav() {
   const [adding, setAdding] = useState<string | null>(null)
   const [addingDevice, setAddingDevice] = useState(false)
   const updates = catalogUpdates(project)
-
-  const deleteRoutine = (program: string, routine: string) => {
-    const s = useEditor.getState()
-    const prog = findProgram(s.project, program)
-    if (!prog || prog.routines.length <= 1) return s.notify('A program needs at least one routine', 'alarm')
-    s.commit((p) => ({
-      ...p,
-      programs: p.programs.map((pr) =>
-        pr.name === program
-          ? {
-              ...pr,
-              routines: pr.routines.filter((r) => r.name !== routine),
-              main: pr.main === routine ? (pr.routines.find((r) => r.name !== routine)?.name ?? '') : pr.main,
-            }
-          : pr,
-      ),
-    }))
-    const next = findProgram(useEditor.getState().project, program)?.routines[0]
-    if (next) s.setView({ kind: 'routine', program, routine: next.name })
-  }
+  const focus = useEditor((s) => s.focus)
+  const problems = useProblems((s) => s.problems)
+  const routineCount = (program: string, routine: string) =>
+    countBySeverity(problems.filter((p) => p.place.kind === 'element' && p.place.program === program && p.place.routine === routine))
 
   return (
     <aside aria-label="Project navigation" className="flex min-h-0 flex-col border-r border-line bg-nav">
@@ -163,6 +189,8 @@ export function LeftNav() {
                 key={d.name}
                 view={{ kind: 'io', device: d.name }}
                 icon={<Cpu />}
+                menu={{ kind: 'device', device: d.name }}
+                label={`Device ${d.name}`}
                 trailing={
                   <span className="flex items-center gap-1 pr-2">
                     {update && (
@@ -196,7 +224,7 @@ export function LeftNav() {
         </Section>
         <AddDeviceDialog open={addingDevice} onOpenChange={setAddingDevice} />
 
-        {project.programs.map((prog) => (
+        {project.pous.map((prog) => (
           <Section
             key={prog.name}
             title={prog.name}
@@ -211,11 +239,18 @@ export function LeftNav() {
               </Button>
             }
           >
-            {prog.routines.map((r) => (
+            {prog.routines.map((r, ri) => {
+              if (focus?.kind === 'renameRoutine' && focus.program === prog.name && focus.routine === r.name) {
+                return <RenameRoutine key={r.name} program={prog.name} routine={r.name} />
+              }
+              const c = routineCount(prog.name, r.name)
+              return (
               <Item
                 key={r.name}
                 view={{ kind: 'routine', program: prog.name, routine: r.name }}
-                icon={r.kind === 'st' ? <FileCode2 /> : <Rows3 />}
+                icon={isStRoutine(r) ? <FileCode2 /> : <Rows3 />}
+                menu={{ kind: 'routine', program: prog.name, routine: r.name }}
+                label={`Routine ${r.name}`}
                 trailing={
                   prog.routines.length > 1 ? (
                     <Button
@@ -231,9 +266,20 @@ export function LeftNav() {
                 }
               >
                 {r.name}
-                {prog.main === r.name && <span className="ml-1.5 text-[11px] text-text-muted">main</span>}
+                {ri === 0 && <span className="ml-1.5 text-[11px] text-text-muted">main</span>}
+                {c.errors > 0 && (
+                  <span className="ml-1.5 rounded-control bg-fault/15 px-1 text-[11px] text-fault" aria-label={`${c.errors} errors`}>
+                    {c.errors}
+                  </span>
+                )}
+                {c.errors === 0 && c.warnings > 0 && (
+                  <span className="ml-1.5 rounded-control bg-alarm-bg px-1 text-[11px] text-alarm" aria-label={`${c.warnings} warnings`}>
+                    {c.warnings}
+                  </span>
+                )}
               </Item>
-            ))}
+              )
+            })}
             {adding === prog.name && (
               <li>
                 <NewRoutineForm program={prog.name} onDone={() => setAdding(null)} />
@@ -244,7 +290,7 @@ export function LeftNav() {
 
         <Section title="Project">
           <Item view={{ kind: 'tags' }} icon={<Tags />}>
-            Tags <span className="text-text-muted">· {project.tags.length}</span>
+            Tags <span className="text-text-muted">· {project.globals.length}</span>
           </Item>
           <Item view={{ kind: 'io', device: project.devices[0]?.name ?? '' }} icon={<Cable />}>
             I/O mapping

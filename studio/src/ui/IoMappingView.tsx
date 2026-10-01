@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, ArrowUpCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { CATALOG } from '@/devices/catalog'
 import type { Device, IoPoint } from '@/devices/manifest'
 import { catalogUpdates, changeDevice, resolveDevice, type ManifestUpdate, type RemapReport } from '@/devices/project'
-import { defaultInitial, parseAddress, type Tag } from '@/model'
+import { newTag, parseAddress, type Tag } from '@/model'
 import { useEditor } from '@/state/editor'
 import { useLive, type LiveState } from '@/state/live'
 import { pointMismatch, pointState, tagsAt } from './io'
@@ -20,7 +20,7 @@ function bind(point: IoPoint, tagName: string) {
   const s = useEditor.getState()
   s.commit((p) => ({
     ...p,
-    tags: p.tags.map((t) => {
+    globals: p.globals.map((t) => {
       if (t.address?.toUpperCase() === point.address.toUpperCase() && t.name !== tagName) return { ...t, address: undefined }
       if (t.name === tagName) return { ...t, address: point.address }
       return t
@@ -31,12 +31,12 @@ function bind(point: IoPoint, tagName: string) {
 function createAndBind(point: IoPoint, name: string): string | undefined {
   const s = useEditor.getState()
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return 'Invalid tag name'
-  if (s.project.tags.some((t) => t.name.toLowerCase() === name.toLowerCase())) return `${name} exists; pick it from the list`
+  if (s.project.globals.some((t) => t.name.toLowerCase() === name.toLowerCase())) return `${name} exists; pick it from the list`
   s.commit((p) => ({
     ...p,
-    tags: [
-      ...p.tags.map((t) => (t.address?.toUpperCase() === point.address.toUpperCase() ? { ...t, address: undefined } : t)),
-      { name, type: point.type, initial: defaultInitial(point.type), address: point.address, comment: point.label },
+    globals: [
+      ...p.globals.map((t) => (t.address?.toUpperCase() === point.address.toUpperCase() ? { ...t, address: undefined } : t)),
+      newTag(name, point.type, { address: point.address, comment: point.label }),
     ],
   }))
   return undefined
@@ -145,7 +145,7 @@ function PointRow({ point, tags, image }: { point: IoPoint; tags: Tag[]; image: 
               else if (v === NONE) {
                 useEditor.getState().commit((p) => ({
                   ...p,
-                  tags: p.tags.map((t) => (t.address?.toUpperCase() === point.address.toUpperCase() ? { ...t, address: undefined } : t)),
+                  globals: p.globals.map((t) => (t.address?.toUpperCase() === point.address.toUpperCase() ? { ...t, address: undefined } : t)),
                 }))
               } else bind(point, v)
             }}
@@ -156,7 +156,7 @@ function PointRow({ point, tags, image }: { point: IoPoint; tags: Tag[]; image: 
             </option>
             {sorted.map((t) => (
               <option key={t.name} value={t.name} className="bg-surface-2">
-                {t.name} ({t.type}
+                {t.name} ({t.data_type}
                 {t.address && t.address.toUpperCase() !== point.address.toUpperCase() ? ` at ${t.address}` : ''}
                 {compatible(t) ? '' : ', mismatch'})
               </option>
@@ -195,7 +195,7 @@ export function IoMappingView({ device }: { device: string }) {
   }, [profile])
   const known = new Set(profile.io.map((p) => p.address.toUpperCase()))
   const img = profile.target.image
-  const stray = project.tags.filter((t) => {
+  const stray = project.globals.filter((t) => {
     if (!t.address) return false
     const a = parseAddress(t.address)
     if (!a) return true
@@ -220,6 +220,22 @@ export function IoMappingView({ device }: { device: string }) {
     }
   }
   const console_ = profile.console
+  const focus = useEditor((s) => s.focus)
+  // "Change address / map to terminal" from a tag's menu.
+  useEffect(() => {
+    if (focus?.kind !== 'point') return
+    const s = useEditor.getState()
+    s.setFocus(null)
+    const tag = s.project.globals.find((t) => t.name.toLowerCase() === focus.tag.toLowerCase())
+    const point = tag?.address ? profile.io.find((p) => p.address.toUpperCase() === tag.address?.toUpperCase()) : undefined
+    if (point) {
+      requestAnimationFrame(() => {
+        const sel = document.getElementById(`io-${point.id}`)
+        sel?.scrollIntoView({ block: 'center' })
+        sel?.focus()
+      })
+    } else s.notify(`${focus.tag} is not on a terminal of ${profile.device.name}: pick it in a terminal's Tag list`)
+  }, [focus, profile])
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
@@ -306,7 +322,7 @@ export function IoMappingView({ device }: { device: string }) {
                 </TableHeader>
                 <TableBody>
                   {points.map((pt) => (
-                    <PointRow key={pt.id} point={pt} tags={project.tags} image={image} />
+                    <PointRow key={pt.id} point={pt} tags={project.globals} image={image} />
                   ))}
                 </TableBody>
               </Table>

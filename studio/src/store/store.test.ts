@@ -1,33 +1,94 @@
 // SPDX-License-Identifier: MPL-2.0
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { demoProject, emptyProject } from '@/model'
+import { demoProject, emptyProject, newRoutine, printRung, stRoutineCode, withStRoutineCode } from '@/model'
 import type { Project } from '@/model'
 import {
-  MemoryFileStore, ProjectFormatError, ProjectRepo, createAutosaver, projectFromFiles, projectNeedsMigration, projectToFiles,
+  MemoryFileStore, ProjectFormatError, ProjectRepo, createAutosaver, loadProjectFiles, projectFromFiles, projectNeedsMigration, projectToFiles,
 } from '@/store'
 import { catalogEntry } from '@/devices/catalog'
 import type { AutosaveStatus } from '@/store'
 
 function withSt(): Project {
   const p = demoProject()
-  p.programs[0].routines.push({ name: 'Calc', kind: 'st', rungs: [], st: 'x := x + 1;\n' })
+  p.pous[0].routines.push(newRoutine('Calc', 'st'))
+  p.pous[0].routines[1] = withStRoutineCode(p.pous[0].routines[1], 'x := x + 1;\n')
   return p
 }
 
+/** A project as the first studio saved it (format 1, its draft model). */
+function formatOne(): Record<string, string> {
+  return {
+    'project.toml': [
+      'name = "Old Demo"',
+      '[[devices]]',
+      'name = "Opta"',
+      'manifest = "devices/arduino-opta.toml"',
+      '[[tasks]]',
+      'name = "MainTask"',
+      'interval_ms = 10',
+      'programs = [ "MainProgram" ]',
+      '[[programs]]',
+      'name = "MainProgram"',
+      'main = "MainRoutine"',
+      '[[programs.routines]]',
+      'name = "Calc"',
+      'kind = "st"',
+      '[[programs.routines]]',
+      'name = "MainRoutine"',
+      'kind = "ladder"',
+      '',
+    ].join('\n'),
+    'devices/arduino-opta.toml': catalogEntry('arduino-opta')!.text,
+    'tags.toml': [
+      '[[tag]]', 'name = "StartPB"', 'type = "BOOL"', 'initial = "FALSE"', 'address = "%MX0.0"', 'comment = "Start"',
+      '[[tag]]', 'name = "Motor"', 'type = "BOOL"', 'initial = "FALSE"', 'address = "%QX0.0"', 'comment = ""',
+      '[[tag]]', 'name = "RunTimer"', 'type = "TIMER"', 'initial = ""', 'comment = ""',
+      '[[tag]]', 'name = "Sp"', 'type = "DINT"', 'initial = "42"', 'comment = ""',
+      '',
+    ].join('\n'),
+    'routines/Calc.st': 'Sp := Sp + 1;\n',
+    'routines/MainRoutine.ladder.json': JSON.stringify({
+      format: 'plcc-studio-ladder',
+      version: 1,
+      name: 'MainRoutine',
+      rungs: [
+        {
+          id: 'r1', comment: 'seal-in',
+          body: { type: 'series', items: [
+            { type: 'parallel', id: 'p1', branches: [
+              { type: 'series', items: [{ type: 'contact', id: 'c1', kind: 'no', tag: 'StartPB' }] },
+              { type: 'series', items: [{ type: 'contact', id: 'c2', kind: 'no', tag: 'Motor' }] },
+            ] },
+            { type: 'coil', id: 'o1', kind: 'normal', tag: 'Motor' },
+          ] },
+        },
+        { id: 'r2', comment: '', body: { type: 'series', items: [
+          { type: 'contact', id: 'c3', kind: 'no', tag: 'Motor' },
+          { type: 'box', id: 'b1', instr: 'TON', operands: { timer: 'RunTimer', preset: '5000', accum: '0' } },
+        ] } },
+        { id: 'r3', comment: '', body: { type: 'series', items: [
+          { type: 'contact', id: 'c4', kind: 'rise', tag: 'StartPB' },
+          { type: 'coil', id: 'o2', kind: 'negated', tag: 'Lamp' },
+        ] } },
+      ],
+    }),
+  }
+}
+
 describe('project files', () => {
-  it('writes the documented layout', () => {
+  it('writes the documented layout: project.toml, the plcc-ladder model, devices', () => {
     const files = projectToFiles(withSt())
-    expect(Object.keys(files).sort()).toEqual([
-      'devices/arduino-opta.toml', 'project.toml', 'routines/Calc.st', 'routines/MainRoutine.ladder.json', 'tags.toml',
-    ])
+    expect(Object.keys(files).sort()).toEqual(['devices/arduino-opta.toml', 'project.json', 'project.toml'])
     expect(files['project.toml']).toContain('manifest = "devices/arduino-opta.toml"')
+    expect(files['project.toml']).toContain('format = 2')
     expect(files['devices/arduino-opta.toml']).toContain('id = "arduino-opta"')
     expect(files['project.toml']).toContain('name = "Demo Opta"')
-    expect(files['project.toml']).toContain('interval_ms = 10')
-    expect(files['tags.toml']).toContain('address = "%MX0.0"')
-    const ladder = JSON.parse(files['routines/MainRoutine.ladder.json'])
-    expect(ladder.format).toBe('plcc-studio-ladder')
-    expect(ladder.rungs).toHaveLength(3)
+    const model = JSON.parse(files['project.json'])
+    expect(model.dialect).toBe('logix')
+    expect(model.tasks[0]).toEqual({ name: 'MainTask', interval_ms: 10, programs: ['MainProgram'] })
+    expect(model.globals[0]).toEqual({ name: 'StartPB', data_type: 'BOOL', section: 'global', address: '%MX0.0', comment: 'Start pushbutton (Modbus HR0 bit 0)' })
+    expect(model.pous[0].routines[0].rungs).toHaveLength(3)
+    expect(model.pous[0].routines[1].rungs[0].elements[0]).toMatchObject({ type: 'st', code: 'x := x + 1;\n' })
   })
 
   it('round-trips the demo project', () => {
@@ -39,7 +100,7 @@ describe('project files', () => {
     const p = withSt()
     const back = projectFromFiles(projectToFiles(p))
     expect(back).toEqual(p)
-    expect(back.tags.find((t) => t.name === 'RunTimer')?.address).toBeUndefined()
+    expect(back.globals.find((t) => t.name === 'RunTimer')?.address).toBeUndefined()
   })
 
   it('reports a missing project.toml', () => {
@@ -48,27 +109,66 @@ describe('project files', () => {
 
   it('reports bad TOML with the file name', () => {
     const files = projectToFiles(demoProject())
-    files['tags.toml'] = '[[tag]\nname = '
+    files['project.toml'] = '[[devices]\nname = '
     expect(() => projectFromFiles(files)).toThrow(ProjectFormatError)
-    expect(() => projectFromFiles(files)).toThrow(/tags.toml: invalid TOML/)
+    expect(() => projectFromFiles(files)).toThrow(/project.toml: invalid TOML/)
   })
 
-  it('reports bad JSON and bad elements', () => {
+  it('reports bad JSON and bad elements with their path', () => {
     const files = projectToFiles(demoProject())
-    expect(() => projectFromFiles({ ...files, 'routines/MainRoutine.ladder.json': '{ nope' })).toThrow(
-      /MainRoutine.ladder.json: invalid JSON/,
+    expect(() => projectFromFiles({ ...files, 'project.json': '{ nope' })).toThrow(/project.json: invalid JSON/)
+    const doc = JSON.parse(files['project.json'])
+    doc.pous[0].routines[0].rungs[0].elements[1].kind = 'sideways'
+    expect(() => projectFromFiles({ ...files, 'project.json': JSON.stringify(doc) })).toThrow(
+      /pous\[0\].*rungs\[0\]\.elements\[1\]: "kind" must be one of/,
     )
-    const doc = JSON.parse(files['routines/MainRoutine.ladder.json'])
-    doc.rungs[0].body.items[1].kind = 'sideways'
-    expect(() =>
-      projectFromFiles({ ...files, 'routines/MainRoutine.ladder.json': JSON.stringify(doc) }),
-    ).toThrow(/rungs\[0\].body.items\[1\]: bad contact kind/)
   })
 
-  it('reports a missing routine file', () => {
+  it('reports a missing model file', () => {
     const files = projectToFiles(demoProject())
-    delete files['routines/MainRoutine.ladder.json']
-    expect(() => projectFromFiles(files)).toThrow(/routines\/MainRoutine.ladder.json: file is missing/)
+    delete files['project.json']
+    expect(() => projectFromFiles(files)).toThrow(/project.json: file is missing/)
+  })
+})
+
+describe('format 1 projects (the first studio\'s draft model)', () => {
+  it('migrates into the plcc-ladder model, with notes for what Logix has no instruction for', () => {
+    const files = formatOne()
+    expect(projectNeedsMigration(files)).toBe(true)
+    const { project: p, migrated } = loadProjectFiles(files)
+    expect(p.dialect).toBe('logix')
+    expect(p.name).toBe('Old Demo')
+    // The main routine comes first.
+    expect(p.pous[0].routines.map((r) => r.name)).toEqual(['MainRoutine', 'Calc'])
+    expect(stRoutineCode(p.pous[0].routines[1])).toBe('Sp := Sp + 1;\n')
+    const texts = p.pous[0].routines[0].rungs.map((r) => printRung(r))
+    expect(texts[0]).toBe('[XIC(StartPB) ,XIC(Motor) ]OTE(Motor);')
+    expect(p.pous[0].routines[0].rungs[0].comment).toBe('seal-in')
+    expect(texts[1]).toBe('XIC(Motor)TON(RunTimer,5000,0);')
+    // XICR(StartPB)OTEN(Lamp) → an OSR rung before, XIC of its output, OTE of a helper and a rung after.
+    expect(texts[2]).toMatch(/^XIC\(StartPB\)OSR\(edge\d+_sb,edge\d+\);$/)
+    expect(texts[3]).toMatch(/^XIC\(edge\d+\)OTE\(neg\d+\);$/)
+    expect(texts[4]).toMatch(/^XIO\(neg\d+\)OTE\(Lamp\);$/)
+    expect(migrated?.notes).toHaveLength(2)
+    expect(p.tasks).toEqual([{ name: 'MainTask', interval_ms: 10, programs: ['MainProgram'] }])
+    const tag = (n: string) => p.globals.find((t) => t.name === n)
+    expect(tag('StartPB')).toEqual({ name: 'StartPB', data_type: 'BOOL', section: 'global', address: '%MX0.0', comment: 'Start' })
+    expect(tag('Sp')?.initial).toBe('42')
+    expect(tag('RunTimer')?.initial).toBeUndefined()
+    expect(p.globals.filter((t) => /^(edge|neg)\d+/.test(t.name)).length).toBe(3)
+  })
+
+  it('is saved in format 2 when opened, and the old files go', async () => {
+    const store = new MemoryFileStore()
+    for (const [path, text] of Object.entries(formatOne())) await store.writeText(`projects/old/${path}`, text)
+    const repo = new ProjectRepo(store)
+    const { project, migrated } = await repo.loadWithNotes('old')
+    expect(migrated?.notes.length).toBe(2)
+    expect(await store.readText('projects/old/tags.toml')).toBeNull()
+    expect(await store.readText('projects/old/routines/MainRoutine.ladder.json')).toBeNull()
+    expect(await store.readText('projects/old/project.toml')).toContain('format = 2')
+    expect((await repo.loadWithNotes('old')).migrated).toBeUndefined()
+    expect(await repo.load('old')).toEqual(project)
   })
 })
 
@@ -91,14 +191,14 @@ describe('ProjectRepo', () => {
     await expect(repo.load(id)).rejects.toThrow(/not found/)
   })
 
-  it('removes routine files that are no longer in the project', async () => {
+  it('removes device files that are no longer in the project', async () => {
     const store = new MemoryFileStore()
     const repo = new ProjectRepo(store)
-    const id = await repo.create(withSt())
-    expect(await store.readText(`projects/${id}/routines/Calc.st`)).not.toBeNull()
-    await repo.save(id, demoProject())
-    expect(await store.readText(`projects/${id}/routines/Calc.st`)).toBeNull()
-    expect(await store.readText(`projects/${id}/routines/MainRoutine.ladder.json`)).not.toBeNull()
+    const id = await repo.create(demoProject())
+    expect(await store.readText(`projects/${id}/devices/arduino-opta.toml`)).not.toBeNull()
+    await repo.save(id, emptyProject('x'))
+    expect(await store.readText(`projects/${id}/devices/arduino-opta.toml`)).toBeNull()
+    expect(await store.readText(`projects/${id}/devices/simulator.toml`)).not.toBeNull()
   })
 
   it('exports and imports a zip', async () => {

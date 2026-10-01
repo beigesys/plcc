@@ -5,22 +5,21 @@ import { Slider } from '@/components/ui/slider'
 import { Switch } from '@/components/ui/switch'
 import type { IoPoint } from '@/devices/manifest'
 import { primaryDevice } from '@/devices/project'
-import { BOX_SPECS, baseTag, parseAddress, type Instruction, type Tag } from '@/model'
+import { baseTag, operandsOf, parseAddress, type Element, type Tag } from '@/model'
 import { selectedElement, useEditor } from '@/state/editor'
 import { formatValue, simSend, useLive } from '@/state/live'
 import { demoSetInput, isDemoDevice, onlineCanWrite, onlineForceBit, onlineWriteWord } from '@/state/online'
+import { useProblems } from '@/state/problems'
+import { WithCommandMenu } from './CommandMenu'
 import { pointState, readImage } from './io'
 import { StateDot } from './StateDot'
 import { useDraft } from './useDraft'
 
-function tagOf(el: Instruction | undefined): string | undefined {
+function tagOf(el: Element | undefined): string | undefined {
   if (!el) return undefined
-  if (el.type === 'contact' || el.type === 'coil') return baseTag(el.tag)
-  if (el.type === 'box') {
-    for (const o of BOX_SPECS[el.instr].operands) {
-      const b = baseTag(el.operands[o.key] ?? '')
-      if (b) return b
-    }
+  for (const o of operandsOf(el)) {
+    const b = baseTag(o)
+    if (b) return b
   }
   return undefined
 }
@@ -86,7 +85,7 @@ function TagPanel({ tag }: { tag: Tag }) {
   const point = tag.address ? profile.io.find((p) => p.address.toUpperCase() === tag.address?.toUpperCase()) : undefined
   const v = values[tag.name.toLowerCase()]
   const forced = forces[tag.name.toLowerCase()]
-  const isBool = tag.type.toUpperCase() === 'BOOL'
+  const isBool = tag.data_type.toUpperCase() === 'BOOL'
   const a = tag.address ? parseAddress(tag.address) : undefined
 
   let forceNote = ''
@@ -94,7 +93,7 @@ function TagPanel({ tag }: { tag: Tag }) {
   let canWrite = false
   if (mode === 'offline') forceNote = 'Force and write work in Simulate and Online.'
   else if (mode === 'simulate') {
-    canForce = isBool || /INT|REAL|WORD|BYTE/i.test(tag.type)
+    canForce = isBool || /INT|REAL|WORD|BYTE/i.test(tag.data_type)
     canWrite = !isBool && canForce
   } else {
     canForce = isBool && a?.area === 'M' && a.size === 'X' && (mKnown === 0 || onlineCanWrite(tag.address ?? ''))
@@ -126,14 +125,18 @@ function TagPanel({ tag }: { tag: Tag }) {
     >
       <div className="mb-1 flex items-center gap-2">
         {isBool && <StateDot state={v === undefined ? 'unknown' : v ? 'power' : 'idle'} />}
-        <span className="text-mono text-[15px] font-medium">{tag.name}</span>
+        <WithCommandMenu target={{ kind: 'tag', tag: tag.name }} label={`Tag ${tag.name}`}>
+          <span className="text-mono text-[15px] font-medium" data-tag={tag.name}>
+            {tag.name}
+          </span>
+        </WithCommandMenu>
       </div>
       <dl className="text-dense">
         <Row label="Type">
-          <span className="text-mono">{tag.type}</span>
+          <span className="text-mono">{tag.data_type}</span>
         </Row>
         <Row label="Value">
-          <span className={`text-mono ${isBool && v ? 'text-power-text' : ''}`}>{formatValue(v, tag.type)}</span>
+          <span className={`text-mono ${isBool && v ? 'text-power-text' : ''}`}>{formatValue(v, tag.data_type)}</span>
         </Row>
         <Row label="Address">
           <span className="text-mono">{tag.address ?? '—'}</span>
@@ -174,7 +177,7 @@ function IoPointRow({ p }: { p: IoPoint }) {
   const mode = useEditor((s) => s.mode)
   const image = useLive((s) => s.image)
   const onlineState = useLive((s) => s.online.state)
-  const tags = useEditor((s) => s.project.tags)
+  const tags = useEditor((s) => s.project.globals)
   const bound = tags.find((t) => t.address?.toUpperCase() === p.address.toUpperCase())
   const { state } = pointState(p, image)
   const raw = readImage(image, p.address, p.type)
@@ -191,7 +194,15 @@ function IoPointRow({ p }: { p: IoPoint }) {
       <div className="flex items-center gap-2">
         <StateDot state={image ? state : 'unknown'} />
         <span className="w-10 text-mono text-text-muted">{p.terminal}</span>
-        <span className="min-w-0 flex-1 truncate">{bound ? <span className="text-mono">{bound.name}</span> : <span className="text-text-muted">{p.label}</span>}</span>
+        <span className="min-w-0 flex-1 truncate">
+          {bound ? (
+            <WithCommandMenu target={{ kind: 'tag', tag: bound.name }} label={`Tag ${bound.name}`}>
+              <span className="text-mono">{bound.name}</span>
+            </WithCommandMenu>
+          ) : (
+            <span className="text-text-muted">{p.label}</span>
+          )}
+        </span>
         {drive && p.kind === 'digital' && (
           <Switch
             aria-label={`${p.terminal} ${p.label}`}
@@ -251,21 +262,33 @@ function DevicePanel() {
   )
 }
 
-function ElementPanel({ el }: { el: Instruction }) {
+function ElementPanel({ el }: { el: Element }) {
   const errors = useLive((s) => s.errors)
   const mode = useEditor((s) => s.mode)
+  const problems = useProblems((s) => s.problems)
   const err = mode === 'simulate' ? errors[el.id] : undefined
-  if (!err) return null
+  const mine = problems.filter((p) => p.place.kind === 'element' && p.place.element === el.id)
+  if (!err && !mine.length) return null
   return (
     <Panel title="Instruction">
-      <p className="rounded-control border border-alarm-border bg-alarm-bg px-2 py-1 text-dense text-alarm">{err}</p>
+      <ul className="space-y-1">
+        {mine.map((p, i) => (
+          <li
+            key={i}
+            className={`rounded-control border px-2 py-1 text-dense ${p.severity === 'error' ? 'border-fault/50 text-fault' : 'border-alarm-border bg-alarm-bg text-alarm'}`}
+          >
+            {p.message}
+          </li>
+        ))}
+        {err && <li className="rounded-control border border-alarm-border bg-alarm-bg px-2 py-1 text-dense text-alarm">{err}</li>}
+      </ul>
     </Panel>
   )
 }
 
 export function Inspector() {
   const el = useEditor(selectedElement)
-  const tags = useEditor((s) => s.project.tags)
+  const tags = useEditor((s) => s.project.globals)
   const name = tagOf(el)
   const tag = name ? tags.find((t) => t.name.toLowerCase() === name.toLowerCase()) : undefined
   return (

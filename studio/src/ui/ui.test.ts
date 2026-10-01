@@ -7,7 +7,7 @@ import { suggest } from './TagInput'
 
 describe('ladder layout', () => {
   it('puts trailing outputs against the right rail', () => {
-    const l = layoutRung(parseRung('XIC(A)XIO(B)OTE(C);'), 1000)
+    const l = layoutRung(parseRung('XIC(A)XIO(B)OTE(C);').elements, 1000)
     const nodes = allNodes(l)
     const coil = nodes[nodes.length - 1]
     expect(coil.el.type).toBe('coil')
@@ -16,10 +16,10 @@ describe('ladder layout', () => {
   })
 
   it('stacks parallel branches and shares one wire height', () => {
-    const l = layoutRung(parseRung('[XIC(A) ,XIC(B) ,XIC(C) ]OTE(D);'), 600)
+    const l = layoutRung(parseRung('[XIC(A) ,XIC(B) ,XIC(C) ]OTE(D);').elements, 600)
     const par = allNodes(l)[0]
-    expect(par.branches?.length).toBe(3)
-    const ys = par.branches?.map((b) => b.wy) ?? []
+    expect(par.legs?.length).toBe(3)
+    const ys = par.legs?.map((b) => b.wy) ?? []
     expect(ys[0]).toBe(l.wy)
     expect(ys[1]).toBeGreaterThan(ys[0])
     expect(ys[2]).toBeGreaterThan(ys[1])
@@ -28,12 +28,12 @@ describe('ladder layout', () => {
 
   it('grows past the requested width when the rung needs it', () => {
     const text = `${'XIC(A)'.repeat(20)}OTE(B);`
-    expect(layoutRung(parseRung(text), 400).width).toBeGreaterThan(20 * G.contactW)
+    expect(layoutRung(parseRung(text).elements, 400).width).toBeGreaterThan(20 * G.contactW)
   })
 })
 
 describe('tag suggestions', () => {
-  const tags = demoProject().tags
+  const tags = demoProject().globals
   it('ranks prefix matches first', () => {
     expect(suggest(tags, 'st').map((s) => s.value)).toEqual(['StartPB', 'StopPB'])
     expect(suggest(tags, 'mot')[0].value).toBe('Motor')

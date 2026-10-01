@@ -5,20 +5,22 @@
 
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
-import {
-  BOX_SPECS, COIL_BY_MNEMONIC, COIL_MNEMONIC, CONTACT_BY_MNEMONIC, CONTACT_MNEMONIC, type Instruction, type Tag,
-} from '@/model'
+import { boxSpec, isUnassigned, type Element, type Tag } from '@/model'
+import { changedType, changeTypeOptions, mnemonicOf } from '@/state/commands'
 import { TagInput } from './TagInput'
 
 export interface OperandEditorProps {
-  el: Instruction
+  el: Element
   tags: Tag[]
-  onCommit(next: Instruction): void
+  onCommit(next: Element): void
   onCancel(): void
 }
 
+const shown = (v: string | undefined) => (isUnassigned(v) ? '' : (v ?? ''))
+const stored = (v: string) => (v.trim() === '' ? '?' : v)
+
 export function OperandEditor({ el, tags, onCommit, onCancel }: OperandEditorProps) {
-  const [draft, setDraft] = useState<Instruction>(el)
+  const [draft, setDraft] = useState<Element>(el)
 
   const commit = () => onCommit(draft)
   const keyCancel = (e: React.KeyboardEvent) => {
@@ -29,64 +31,88 @@ export function OperandEditor({ el, tags, onCommit, onCancel }: OperandEditorPro
     }
   }
 
+  const current = mnemonicOf(draft)
+  const swaps = changeTypeOptions(draft)
+  const typeRow = current && swaps.length > 0 && (
+    <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="Instruction">
+      {[current, ...swaps].sort().map((m) => (
+        <button
+          key={m}
+          type="button"
+          role="radio"
+          aria-checked={current === m}
+          onClick={() => setDraft((d) => changedType(d, m))}
+          className={`rounded-control border px-1.5 py-0.5 text-mono ${current === m ? 'border-text-muted bg-surface-2 text-text' : 'border-line text-text-muted hover:text-text'}`}
+        >
+          {m}
+        </button>
+      ))}
+    </div>
+  )
+
   let body: React.ReactNode = null
   if (draft.type === 'contact' || draft.type === 'coil') {
-    const options = draft.type === 'contact' ? Object.values(CONTACT_MNEMONIC) : Object.values(COIL_MNEMONIC)
-    const current = draft.type === 'contact' ? CONTACT_MNEMONIC[draft.kind] : COIL_MNEMONIC[draft.kind]
     body = (
       <>
-        <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="Instruction">
-          {options.map((m) => (
-            <button
-              key={m}
-              type="button"
-              role="radio"
-              aria-checked={current === m}
-              onClick={() =>
-                setDraft((d) =>
-                  d.type === 'contact' ? { ...d, kind: CONTACT_BY_MNEMONIC[m] } : d.type === 'coil' ? { ...d, kind: COIL_BY_MNEMONIC[m] } : d,
-                )
-              }
-              className={`rounded-control border px-1.5 py-0.5 text-mono ${current === m ? 'border-text-muted bg-surface-2 text-text' : 'border-line text-text-muted hover:text-text'}`}
-            >
-              {m}
-            </button>
-          ))}
-        </div>
+        {typeRow}
         <TagInput
           label="Tag"
-          value={draft.tag}
+          value={shown(draft.operand)}
           tags={tags}
           autoFocus
           newTagType="BOOL"
           placeholder="Tag or Tag.member"
-          onChange={(v) => setDraft((d) => (d.type === 'contact' || d.type === 'coil' ? { ...d, tag: v } : d))}
+          onChange={(v) => setDraft((d) => (d.type === 'contact' || d.type === 'coil' ? { ...d, operand: stored(v) } : d))}
           onSubmit={commit}
           onCancel={onCancel}
         />
       </>
     )
-  } else if (draft.type === 'box') {
-    const spec = BOX_SPECS[draft.instr]
-    body = spec.operands.map((o, i) => (
+  } else if (draft.type === 'block') {
+    const spec = boxSpec(draft)
+    body = (
+      <>
+        {typeRow}
+        {draft.pins.map((pin, i) => {
+          const ps = spec.pins[i]
+          return (
+            <TagInput
+              key={i}
+              label={ps?.label ?? pin.name}
+              value={shown(pin.value)}
+              tags={tags}
+              autoFocus={i === 0}
+              newTagType={ps?.newTagType}
+              placeholder={ps && ps.default !== '?' ? ps.default : 'Tag'}
+              onChange={(v) =>
+                setDraft((d) => (d.type === 'block' ? { ...d, pins: d.pins.map((x, j) => (j === i ? { ...x, value: stored(v) } : x)) } : d))
+              }
+              onSubmit={i === draft.pins.length - 1 ? commit : focusNext}
+              onCancel={onCancel}
+            />
+          )
+        })}
+        {draft.pins.length === 0 && <p className="text-dense text-text-muted">{draft.name} has no operands.</p>}
+      </>
+    )
+  } else if (draft.type === 'jump') {
+    body = (
       <TagInput
-        key={o.key}
-        label={o.label}
-        value={draft.operands[o.key] ?? ''}
-        tags={tags}
-        autoFocus={i === 0}
-        newTagType={o.newTagType}
-        placeholder={o.default === '?' ? 'Tag' : o.default}
-        onChange={(v) => setDraft((d) => (d.type === 'box' ? { ...d, operands: { ...d.operands, [o.key]: v } } : d))}
-        onSubmit={i === spec.operands.length - 1 ? commit : focusNext}
+        label="Label"
+        value={shown(draft.label)}
+        tags={[]}
+        autoFocus
+        placeholder="Label name"
+        onChange={(v) => setDraft((d) => (d.type === 'jump' ? { ...d, label: stored(v) } : d))}
+        onSubmit={commit}
         onCancel={onCancel}
       />
-    ))
+    )
   } else if (draft.type === 'st') {
     body = (
       <div>
         <label htmlFor="st-code" className="mb-0.5 block text-[11px] text-text-muted">
-          Structured Text (not simulated in this phase)
+          Structured Text (Logix ST), run while the rung is true
         </label>
         <textarea
           id="st-code"

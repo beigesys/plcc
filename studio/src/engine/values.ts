@@ -119,11 +119,28 @@ function isStructType(type: string): boolean {
 }
 
 function initialValue(tag: Tag): Scalar | StructValue {
-  const t = tag.type.toUpperCase()
-  if (t === 'TIMER') return { ...newTimer() }
-  if (t === 'COUNTER') return { ...newCounter() }
-  const lit = parseLiteral(tag.initial)
+  const t = tag.data_type.toUpperCase()
+  if (t === 'TIMER') return { ...newTimer(), ...structInit(tag.initial) }
+  if (t === 'COUNTER') return { ...newCounter(), ...structInit(tag.initial) }
+  const lit = parseLiteral(tag.initial ?? '')
   return coerce(t, lit ?? 0)
+}
+
+/** `(PRE := 150, ACC := 0)`, an L5X structure's initial members. */
+function structInit(text: string | undefined): StructValue {
+  const out: StructValue = {}
+  if (!text) return out
+  for (const m of text.replace(/^\(|\)$/g, '').split(',')) {
+    const [k, v] = m.split(':=').map((x) => x.trim())
+    const lit = v === undefined ? undefined : parseLiteral(v)
+    if (k && lit !== undefined) out[k.toUpperCase()] = k.toUpperCase() === 'PRE' || k.toUpperCase() === 'ACC' ? toNumber(lit) : toBool(lit)
+  }
+  return out
+}
+
+/** Every tag the preview simulator knows: controller tags, then program tags. */
+export function projectTags(project: Pick<Project, 'globals' | 'pous'>): Tag[] {
+  return [...project.globals, ...project.pous.flatMap((p) => p.variables)]
 }
 
 export class TagStore {
@@ -139,19 +156,19 @@ export class TagStore {
   /** Adds new tags, drops removed ones, re-inits tags whose type or address changed; keeps the rest. */
   sync(project: Project): void {
     const next = new Map<string, Entry>()
-    for (const tag of project.tags) {
+    for (const tag of projectTags(project)) {
       const key = tag.name.toLowerCase()
       const old = this.entries.get(key)
       const addr = tag.address ? parseAddress(tag.address) : undefined
-      if (old && old.tag.type.toUpperCase() === tag.type.toUpperCase() && old.tag.address === tag.address) {
+      if (old && old.tag.data_type.toUpperCase() === tag.data_type.toUpperCase() && old.tag.address === tag.address) {
         next.set(key, { ...old, tag })
         continue
       }
       const entry: Entry = { tag, addr, value: initialValue(tag) }
       next.set(key, entry)
-      if (addr && addr.area !== 'I' && !isStructType(tag.type)) {
+      if (addr && addr.area !== 'I' && !isStructType(tag.data_type)) {
         const v = entry.value as Scalar
-        if (toNumber(v) !== 0) this.image.write(addr, v, tag.type)
+        if (toNumber(v) !== 0) this.image.write(addr, v, tag.data_type)
       }
     }
     this.entries = next
@@ -163,8 +180,8 @@ export class TagStore {
   reset(): void {
     for (const e of this.entries.values()) {
       e.value = initialValue(e.tag)
-      if (e.addr && e.addr.area !== 'I' && !isStructType(e.tag.type)) {
-        this.image.write(e.addr, e.value as Scalar, e.tag.type)
+      if (e.addr && e.addr.area !== 'I' && !isStructType(e.tag.data_type)) {
+        this.image.write(e.addr, e.value as Scalar, e.tag.data_type)
       }
     }
     this.applyForces()
@@ -179,7 +196,7 @@ export class TagStore {
   }
 
   private raw(e: Entry): Scalar | StructValue {
-    if (e.addr && !isStructType(e.tag.type)) return this.image.read(e.addr, e.tag.type)
+    if (e.addr && !isStructType(e.tag.data_type)) return this.image.read(e.addr, e.tag.data_type)
     return e.value
   }
 
@@ -220,15 +237,15 @@ export class TagStore {
     if (!e) return false
     if (this.forces.has(key) || this.forces.has(base)) return true
     if (rest.length === 0) {
-      if (isStructType(e.tag.type)) return false
-      const v = coerce(e.tag.type, value)
-      if (e.addr) this.image.write(e.addr, v, e.tag.type)
+      if (isStructType(e.tag.data_type)) return false
+      const v = coerce(e.tag.data_type, value)
+      if (e.addr) this.image.write(e.addr, v, e.tag.data_type)
       else e.value = v
       return true
     }
     if (rest.length !== 1) return false
     const member = rest[0]
-    if (typeof e.value === 'object' && isStructType(e.tag.type)) {
+    if (typeof e.value === 'object' && isStructType(e.tag.data_type)) {
       const m = member.toUpperCase()
       if (!(m in e.value)) return false
       e.value[m] = m === 'PRE' || m === 'ACC' ? coerce('DINT', value) : toBool(value)
@@ -243,7 +260,7 @@ export class TagStore {
       const has = Math.floor(n / mask) % 2 === 1
       const on = toBool(value)
       const next = on === has ? n : on ? n + mask : n - mask
-      return this.write(base, coerce(e.tag.type, next))
+      return this.write(base, coerce(e.tag.data_type, next))
     }
     return false
   }
@@ -256,7 +273,7 @@ export class TagStore {
   force(ref: string, value: Scalar): void {
     const key = ref.trim().toLowerCase()
     const e = this.entries.get(key.split('.')[0])
-    this.forces.set(key, e && !key.includes('.') ? coerce(e.tag.type, value) : value)
+    this.forces.set(key, e && !key.includes('.') ? coerce(e.tag.data_type, value) : value)
     this.applyForces()
   }
 
@@ -269,7 +286,7 @@ export class TagStore {
     for (const [key, v] of this.forces) {
       if (key.includes('.')) continue
       const e = this.entries.get(key)
-      if (e?.addr && !isStructType(e.tag.type)) this.image.write(e.addr, v, e.tag.type)
+      if (e?.addr && !isStructType(e.tag.data_type)) this.image.write(e.addr, v, e.tag.data_type)
     }
   }
 

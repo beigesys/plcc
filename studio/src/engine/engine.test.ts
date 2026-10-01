@@ -1,34 +1,44 @@
 // SPDX-License-Identifier: MPL-2.0
 import { describe, expect, it } from 'vitest'
 import { Simulator, evaluateExpression, packTrace, parseLiteral, traceRoutine, unpackTrace } from '@/engine'
-import { demoProject, flatten, parseAddress, parseRung } from '@/model'
-import type { Project, Tag } from '@/model'
+import { demoProject, flatten, newId, parseAddress, parseRung } from '@/model'
+import type { Element, Project, Tag } from '@/model'
 import { catalogEntry } from '@/devices/catalog'
 
 const ARDUINO_OPTA = catalogEntry('arduino-opta')!.device
 const SIMULATOR = catalogEntry('simulator')!.device
 
 function tag(name: string, type: string, address?: string, initial = ''): Tag {
-  return { name, type, initial, address, comment: '' }
+  const t: Tag = { name, data_type: type, section: 'global' }
+  if (initial) t.initial = initial
+  if (address) t.address = address
+  return t
 }
 
 function project(rungs: string[], tags: Tag[]): Project {
   return {
+    dialect: 'logix',
     name: 't',
     devices: [],
     deviceFiles: {},
-    tasks: [{ name: 'T', intervalMs: 10, programs: ['P'] }],
-    programs: [
+    declarations: [],
+    tasks: [{ name: 'T', interval_ms: 10, programs: ['P'] }],
+    pous: [
       {
+        id: newId(),
         name: 'P',
-        main: 'Main',
-        routines: [
-          { name: 'Main', kind: 'ladder', rungs: rungs.map((t, i) => ({ id: `r${i}`, comment: '', body: parseRung(t) })) },
-        ],
+        kind: 'program',
+        variables: [],
+        routines: [{ id: newId(), name: 'Main', rungs: rungs.map((t) => ({ id: newId(), ...parseRung(t) })) }],
       },
     ],
-    tags,
+    globals: tags,
   }
+}
+
+/** An element built directly (rung text cannot write IEC-only kinds). */
+function el(e: { type: string; operand: string; kind: string }): Element {
+  return { ...e, id: newId() } as unknown as Element
 }
 
 function sim(rungs: string[], tags: Tag[]): Simulator {
@@ -88,14 +98,14 @@ describe('seal-in (demo project)', () => {
     s.scan(10)
     s.tags.write('StartPB', false)
     s.scan(10)
-    const [par, start, motorC, stop, coil] = flatten(p.programs[0].routines[0].rungs[0].body)
+    const [par, start, motorC, stop, coil] = flatten(p.pous[0].routines[0].rungs[0].elements)
     expect(s.trace.get(par.id)).toEqual({ in: true, out: true, active: true })
     expect(s.trace.get(start.id)).toEqual({ in: true, out: false, active: false })
     expect(s.trace.get(motorC.id)).toEqual({ in: true, out: true, active: true })
     expect(s.trace.get(stop.id)).toEqual({ in: true, out: true, active: true })
     expect(s.trace.get(coil.id)).toEqual({ in: true, out: true, active: true })
     // Every element of every rung is traced.
-    for (const r of p.programs[0].routines[0].rungs) for (const e of flatten(r.body)) expect(s.trace.has(e.id)).toBe(true)
+    for (const r of p.pous[0].routines[0].rungs) for (const e of flatten(r.elements)) expect(s.trace.has(e.id)).toBe(true)
     expect(unpackTrace(s.snapshotTrace())).toEqual(s.trace)
     expect(packTrace(s.trace).find(([id]) => id === start.id)?.[1]).toBe(1)
   })
@@ -218,11 +228,18 @@ describe('bit instructions', () => {
     expect(s.tags.read('Q')).toBe(false)
   })
 
-  it('edge contacts and edge / negated coils', () => {
-    const s = sim(
-      ['XICR(A)ADD(Up,1,Up);', 'XICF(A)ADD(Dn,1,Dn);', 'XIC(A)OTER(P);', 'XIC(A)OTEF(F);', 'XIC(A)OTEN(Nq);'],
+  it('edge contacts and edge / negated coils (IEC kinds, imported models)', () => {
+    const p = project(
+      ['ADD(Up,1,Up);', 'ADD(Dn,1,Dn);', 'XIC(A);', 'XIC(A);', 'XIC(A);'],
       [tag('A', 'BOOL'), tag('Up', 'DINT'), tag('Dn', 'DINT'), tag('P', 'BOOL'), tag('F', 'BOOL'), tag('Nq', 'BOOL')],
     )
+    const rungs = p.pous[0].routines[0].rungs
+    rungs[0].elements.unshift(el({ type: 'contact', operand: 'A', kind: 'rising' }))
+    rungs[1].elements.unshift(el({ type: 'contact', operand: 'A', kind: 'falling' }))
+    rungs[2].elements.push(el({ type: 'coil', operand: 'P', kind: 'rising' }))
+    rungs[3].elements.push(el({ type: 'coil', operand: 'F', kind: 'falling' }))
+    rungs[4].elements.push(el({ type: 'coil', operand: 'Nq', kind: 'negated' }))
+    const s = new Simulator(p, SIMULATOR)
     s.scan(10)
     expect(s.tags.read('Nq')).toBe(true)
     s.tags.write('A', true)
@@ -308,14 +325,12 @@ describe('compare and math', () => {
     s.scan(10)
     const msgs = [...s.errors.values()]
     expect(msgs).toContain('unknown tag Nope')
-    expect(msgs).toContain('ST box not simulated')
+    expect(msgs).toContain('ST box: not run by the preview simulator')
   })
 
   it('JSR runs another routine of the program', () => {
-    const p = project(['XIC(Go)JSR(Sub);', 'JSR(Missing);'], [tag('Go', 'BOOL'), tag('N', 'DINT')])
-    p.programs[0].routines.push({
-      name: 'Sub', kind: 'ladder', rungs: [{ id: 's0', comment: '', body: parseRung('ADD(N,1,N);') }],
-    })
+    const p = project(['XIC(Go)JSR(Sub,0);', 'JSR(Missing,0);'], [tag('Go', 'BOOL'), tag('N', 'DINT')])
+    p.pous[0].routines.push({ id: newId(), name: 'Sub', rungs: [{ id: newId(), ...parseRung('ADD(N,1,N);') }] })
     const s = new Simulator(p, SIMULATOR)
     s.scan(10)
     expect(s.tags.read('N')).toBe(0)
@@ -357,7 +372,7 @@ describe('tag store', () => {
     s.tags.write('W.1', true)
     expect(s.tags.read('W')).toBe(7)
     s.tags.write('T.ACC', 42)
-    s.setProject({ ...p, tags: [...p.tags, tag('New', 'BOOL')] })
+    s.setProject({ ...p, globals: [...p.globals, tag('New', 'BOOL')] })
     expect(s.tags.read('T.ACC')).toBe(42)
     expect(s.tags.read('New')).toBe(false)
     const snap = s.tags.snapshot()
@@ -375,14 +390,14 @@ describe('traceRoutine (online mode)', () => {
     const s = new Simulator(p, ARDUINO_OPTA)
     s.tags.write('Motor', true)
     const before = JSON.stringify(s.tags.snapshot())
-    const routine = p.programs[0].routines[0]
+    const routine = p.pous[0].routines[0]
     const trace = traceRoutine(routine, (ref) => s.tags.read(ref))
     expect(JSON.stringify(s.tags.snapshot())).toBe(before)
-    const [par, , , stop, coil] = flatten(routine.rungs[0].body)
+    const [par, , , stop, coil] = flatten(routine.rungs[0].elements)
     expect(trace.get(par.id)?.out).toBe(true)
     expect(trace.get(stop.id)?.active).toBe(true)
     expect(trace.get(coil.id)).toEqual({ in: true, out: true, active: true })
-    const [grt] = flatten(routine.rungs[2].body)
+    const [grt] = flatten(routine.rungs[2].elements)
     expect(trace.get(grt.id)?.active).toBe(false)
   })
 })

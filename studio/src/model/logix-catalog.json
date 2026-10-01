@@ -1,0 +1,1658 @@
+[
+ {
+  "name": "XIC",
+  "category": "bit",
+  "role": "input",
+  "pins": [
+   {
+    "name": "Data Bit",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "XIO",
+  "category": "bit",
+  "role": "input",
+  "pins": [
+   {
+    "name": "Data Bit",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "OTE",
+  "category": "bit",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Data Bit",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "OTL",
+  "category": "bit",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Data Bit",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "OTU",
+  "category": "bit",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Data Bit",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "ONS",
+  "category": "edge",
+  "role": "input",
+  "pins": [
+   {
+    "name": "Storage Bit",
+    "dir": "in_out"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "OSR",
+  "category": "edge",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Storage Bit",
+    "dir": "in_out"
+   },
+   {
+    "name": "Output Bit",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "OSF",
+  "category": "edge",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Storage Bit",
+    "dir": "in_out"
+   },
+   {
+    "name": "Output Bit",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "TON",
+  "category": "timer",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Timer",
+    "dir": "in_out"
+   },
+   {
+    "name": "Preset",
+    "dir": "input"
+   },
+   {
+    "name": "Accum",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "TOF",
+  "category": "timer",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Timer",
+    "dir": "in_out"
+   },
+   {
+    "name": "Preset",
+    "dir": "input"
+   },
+   {
+    "name": "Accum",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "RTO",
+  "category": "timer",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Timer",
+    "dir": "in_out"
+   },
+   {
+    "name": "Preset",
+    "dir": "input"
+   },
+   {
+    "name": "Accum",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "CTU",
+  "category": "counter",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Counter",
+    "dir": "in_out"
+   },
+   {
+    "name": "Preset",
+    "dir": "input"
+   },
+   {
+    "name": "Accum",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "CTD",
+  "category": "counter",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Counter",
+    "dir": "in_out"
+   },
+   {
+    "name": "Preset",
+    "dir": "input"
+   },
+   {
+    "name": "Accum",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "RES",
+  "category": "counter",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Structure",
+    "dir": "in_out"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "EQU",
+  "category": "compare",
+  "role": "input",
+  "pins": [
+   {
+    "name": "Source A",
+    "dir": "input"
+   },
+   {
+    "name": "Source B",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "NEQ",
+  "category": "compare",
+  "role": "input",
+  "pins": [
+   {
+    "name": "Source A",
+    "dir": "input"
+   },
+   {
+    "name": "Source B",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "LES",
+  "category": "compare",
+  "role": "input",
+  "pins": [
+   {
+    "name": "Source A",
+    "dir": "input"
+   },
+   {
+    "name": "Source B",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "LEQ",
+  "category": "compare",
+  "role": "input",
+  "pins": [
+   {
+    "name": "Source A",
+    "dir": "input"
+   },
+   {
+    "name": "Source B",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "GRT",
+  "category": "compare",
+  "role": "input",
+  "pins": [
+   {
+    "name": "Source A",
+    "dir": "input"
+   },
+   {
+    "name": "Source B",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "GEQ",
+  "category": "compare",
+  "role": "input",
+  "pins": [
+   {
+    "name": "Source A",
+    "dir": "input"
+   },
+   {
+    "name": "Source B",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "LIM",
+  "category": "compare",
+  "role": "input",
+  "pins": [
+   {
+    "name": "Low Limit",
+    "dir": "input"
+   },
+   {
+    "name": "Test",
+    "dir": "input"
+   },
+   {
+    "name": "High Limit",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "MEQ",
+  "category": "compare",
+  "role": "input",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Mask",
+    "dir": "input"
+   },
+   {
+    "name": "Compare",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "CMP",
+  "category": "expression",
+  "role": "input",
+  "pins": [
+   {
+    "name": "Expression",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "ADD",
+  "category": "math",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source A",
+    "dir": "input"
+   },
+   {
+    "name": "Source B",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "SUB",
+  "category": "math",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source A",
+    "dir": "input"
+   },
+   {
+    "name": "Source B",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "MUL",
+  "category": "math",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source A",
+    "dir": "input"
+   },
+   {
+    "name": "Source B",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "DIV",
+  "category": "math",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source A",
+    "dir": "input"
+   },
+   {
+    "name": "Source B",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "MOD",
+  "category": "math",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source A",
+    "dir": "input"
+   },
+   {
+    "name": "Source B",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "XPY",
+  "category": "math",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source A",
+    "dir": "input"
+   },
+   {
+    "name": "Source B",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "CPT",
+  "category": "expression",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Dest",
+    "dir": "output"
+   },
+   {
+    "name": "Expression",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "NEG",
+  "category": "math",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "ABS",
+  "category": "math",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "SQR",
+  "category": "math",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "SIN",
+  "category": "math",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "COS",
+  "category": "math",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "TAN",
+  "category": "math",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "ASN",
+  "category": "math",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "ACS",
+  "category": "math",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "ATN",
+  "category": "math",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "LN",
+  "category": "math",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "LOG",
+  "category": "math",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "DEG",
+  "category": "math",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "RAD",
+  "category": "math",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "TRN",
+  "category": "math",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "TOD",
+  "category": "math",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "FRD",
+  "category": "math",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "MOV",
+  "category": "move",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "MVM",
+  "category": "move",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Mask",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "in_out"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "CLR",
+  "category": "move",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "AND",
+  "category": "logical",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source A",
+    "dir": "input"
+   },
+   {
+    "name": "Source B",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "OR",
+  "category": "logical",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source A",
+    "dir": "input"
+   },
+   {
+    "name": "Source B",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "XOR",
+  "category": "logical",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source A",
+    "dir": "input"
+   },
+   {
+    "name": "Source B",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "NOT",
+  "category": "logical",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "BTD",
+  "category": "move",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Source Bit",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "in_out"
+   },
+   {
+    "name": "Dest Bit",
+    "dir": "input"
+   },
+   {
+    "name": "Length",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "COP",
+  "category": "file",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   },
+   {
+    "name": "Length",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "CPS",
+  "category": "file",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   },
+   {
+    "name": "Length",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "FLL",
+  "category": "file",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   },
+   {
+    "name": "Length",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "SWPB",
+  "category": "move",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Order Mode",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "CONCAT",
+  "category": "string",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source A",
+    "dir": "input"
+   },
+   {
+    "name": "Source B",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "MID",
+  "category": "string",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Qty",
+    "dir": "input"
+   },
+   {
+    "name": "Start",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "DELETE",
+  "category": "string",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Qty",
+    "dir": "input"
+   },
+   {
+    "name": "Start",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "INSERT",
+  "category": "string",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source A",
+    "dir": "input"
+   },
+   {
+    "name": "Source B",
+    "dir": "input"
+   },
+   {
+    "name": "Start",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "FIND",
+  "category": "string",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Search",
+    "dir": "input"
+   },
+   {
+    "name": "Start",
+    "dir": "input"
+   },
+   {
+    "name": "Result",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "UPPER",
+  "category": "string",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "LOWER",
+  "category": "string",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "DTOS",
+  "category": "string",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "STOD",
+  "category": "string",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "BSL",
+  "category": "file",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Array",
+    "dir": "in_out"
+   },
+   {
+    "name": "Control",
+    "dir": "in_out"
+   },
+   {
+    "name": "Source Bit",
+    "dir": "input"
+   },
+   {
+    "name": "Length",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "BSR",
+  "category": "file",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Array",
+    "dir": "in_out"
+   },
+   {
+    "name": "Control",
+    "dir": "in_out"
+   },
+   {
+    "name": "Source Bit",
+    "dir": "input"
+   },
+   {
+    "name": "Length",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "FFL",
+  "category": "file",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Stack",
+    "dir": "in_out"
+   },
+   {
+    "name": "Control",
+    "dir": "in_out"
+   },
+   {
+    "name": "Length",
+    "dir": "input"
+   },
+   {
+    "name": "Position",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "FFU",
+  "category": "file",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Stack",
+    "dir": "in_out"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   },
+   {
+    "name": "Control",
+    "dir": "in_out"
+   },
+   {
+    "name": "Length",
+    "dir": "input"
+   },
+   {
+    "name": "Position",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "LFL",
+  "category": "file",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Stack",
+    "dir": "in_out"
+   },
+   {
+    "name": "Control",
+    "dir": "in_out"
+   },
+   {
+    "name": "Length",
+    "dir": "input"
+   },
+   {
+    "name": "Position",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "LFU",
+  "category": "file",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Stack",
+    "dir": "in_out"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   },
+   {
+    "name": "Control",
+    "dir": "in_out"
+   },
+   {
+    "name": "Length",
+    "dir": "input"
+   },
+   {
+    "name": "Position",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "JSR",
+  "category": "program_control",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Routine Name",
+    "dir": "input"
+   },
+   {
+    "name": "Input Count",
+    "dir": "input"
+   },
+   {
+    "name": "Parameter",
+    "dir": "in_out"
+   }
+  ],
+  "variadic": true,
+  "instance": false
+ },
+ {
+  "name": "SBR",
+  "category": "program_control",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Parameter",
+    "dir": "in_out"
+   }
+  ],
+  "variadic": true,
+  "instance": false
+ },
+ {
+  "name": "RET",
+  "category": "program_control",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Parameter",
+    "dir": "in_out"
+   }
+  ],
+  "variadic": true,
+  "instance": false
+ },
+ {
+  "name": "JMP",
+  "category": "program_control",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Label Name",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "LBL",
+  "category": "program_control",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Label Name",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "MCR",
+  "category": "program_control",
+  "role": "output",
+  "pins": [],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "TND",
+  "category": "program_control",
+  "role": "output",
+  "pins": [],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "AFI",
+  "category": "program_control",
+  "role": "output",
+  "pins": [],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "NOP",
+  "category": "program_control",
+  "role": "output",
+  "pins": [],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "UID",
+  "category": "program_control",
+  "role": "output",
+  "pins": [],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "UIE",
+  "category": "program_control",
+  "role": "output",
+  "pins": [],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "FOR",
+  "category": "program_control",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Routine Name",
+    "dir": "input"
+   },
+   {
+    "name": "Index",
+    "dir": "in_out"
+   },
+   {
+    "name": "Initial Value",
+    "dir": "input"
+   },
+   {
+    "name": "Terminal Value",
+    "dir": "input"
+   },
+   {
+    "name": "Step Size",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "BRK",
+  "category": "program_control",
+  "role": "output",
+  "pins": [],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "EVENT",
+  "category": "program_control",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Task",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "SIZE",
+  "category": "file",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Source",
+    "dir": "input"
+   },
+   {
+    "name": "Dimension to Vary",
+    "dir": "input"
+   },
+   {
+    "name": "Size",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "GSV",
+  "category": "other",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Class Name",
+    "dir": "input"
+   },
+   {
+    "name": "Instance Name",
+    "dir": "input"
+   },
+   {
+    "name": "Attribute Name",
+    "dir": "input"
+   },
+   {
+    "name": "Dest",
+    "dir": "output"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "SSV",
+  "category": "other",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Class Name",
+    "dir": "input"
+   },
+   {
+    "name": "Instance Name",
+    "dir": "input"
+   },
+   {
+    "name": "Attribute Name",
+    "dir": "input"
+   },
+   {
+    "name": "Source",
+    "dir": "input"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ },
+ {
+  "name": "MSG",
+  "category": "other",
+  "role": "output",
+  "pins": [
+   {
+    "name": "Message Control",
+    "dir": "in_out"
+   }
+  ],
+  "variadic": false,
+  "instance": false
+ }
+]
