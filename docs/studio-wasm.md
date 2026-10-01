@@ -3,34 +3,41 @@
 # plcc studio in the browser: what runs where
 
 plcc studio (the ladder/ST editor in `studio/`) runs entirely in the browser.
-There is no build server: projects live in the browser's origin-private file
-system, the simulator runs in a Web Worker, and a board is flashed over WebUSB.
-This page describes the browser-side building blocks, what each costs, the one
-piece that is not in the browser yet (code generation), and the plan for it.
+There is no server of any kind: projects live in the browser's origin-private
+file system, plcc itself — front end, LLVM code generation, linkers — runs as
+WebAssembly in Web Workers, the simulator runs plcc's own wasm32 build of the
+project, and a board is flashed over WebUSB. This page describes the pieces,
+what each costs, how they are built and shipped, and what is left.
 
 ```
- browser tab                                     Web Worker(s)
- ┌──────────────────────────────┐   postMessage   ┌──────────────────────────────┐
- │ editor (studio/)             │ ──────────────▶ │ @plcc/plcc-wasm              │
- │  - diagnostics, tag browser  │ ◀────────────── │  parse + check, tag outline  │
- │  - I/O view, online mode     │                 │  convert, ladder catalog     │
- │                              │                 ├──────────────────────────────┤
- │                              │ ──────────────▶ │ @plcc/plc-wasm (worker.ts)   │
- │                              │ ◀── snapshots ─ │  runs the program's .wasm,   │
- │                              │                 │  scan scheduler, %I/%Q/%M    │
- │ @plcc/webdfu ── WebUSB ──────┼──▶ Opta DFU     └──────────────────────────────┘
- │ Web Serial (1200-baud touch, │
- │  USB console, online mode)   │     code generation: see "The compile gap"
- └──────────────────────────────┘
+ browser tab                                         Web Workers
+ ┌────────────────────────────────┐  postMessage  ┌──────────────────────────────────┐
+ │ editor (studio/)               │ ────────────▶ │ front end: @plcc/plcc-wasm       │
+ │  - model: plcc-ladder JSON     │ ◀──────────── │  check (diagnostics on rungs),   │
+ │  - diagnostics, Problems,      │               │  convert (ST view, import,       │
+ │    ST view, import / export    │               │  export), device manifests       │
+ │                                │               ├──────────────────────────────────┤
+ │                                │ ────────────▶ │ compiler: @plcc/plcc-compiler-   │
+ │                                │ ◀── objects ─ │  wasm (plcc-build + LLVM + wasm  │
+ │                                │               │  linker), loaded on first use    │
+ │                                │               ├──────────────────────────────────┤
+ │                                │ ────────────▶ │ simulator: @plcc/plc-wasm runs   │
+ │                                │ ◀─ snapshots  │  the wasm32 build (TS preview    │
+ │                                │               │  engine until it is ready)       │
+ │ @plcc/plc-image: program image │               └──────────────────────────────────┘
+ │ @plcc/webdfu ── WebUSB ────────┼──▶ Opta DFU, program slot only
+ │ WebSerial: console (Online),   │
+ │  1200-baud touch               │
+ └────────────────────────────────┘
 ```
 
-| Piece | Where | Size | Status |
+| Piece | Where | Download | Status |
 |---|---|---|---|
-| Front end: ST / PLCopen XML / L5X / TwinCAT → diagnostics, tag outline; `plcc convert` (ST, PLCopen LD, L5X RLL, ladder JSON, IEC↔Logix); ladder instruction catalog; device manifests (parse, validate, expand) | `crates/plcc-driver`, `crates/plcc-device`, `crates/plcc-wasm`, `packages/plcc-wasm` | 2.15 MB wasm, 743 KB gzip, 547 KB brotli (the manifest API, mostly the TOML parser, is 269 KB / 85 KB gzip of it) | done, tested in Node |
-| Simulator runtime for plcc's wasm32 output | `packages/plc-wasm` | ~20 KB TS; programs 3-4 KB each | done, tested in Node |
-| Flashing (WebUSB DFU 1.1 + DfuSe), 1200-baud touch | `packages/webdfu` | ~15 KB TS | done, tested against a fake device; not yet run against hardware from a browser |
-| Code generation (ST → wasm32 for the simulator, → Thumb for the Opta) | `crates/plcc-codegen` (LLVM) | 31.7 MB wasm, 6.8 MB brotli (spike) | **spike works**: LLVM in wasm, output byte-identical to native |
-| Linking for the Opta: program images | `crates/plcc-image`, `packages/plc-image` | 88 KB wasm | done, tested in Node and under QEMU; byte-identical to lld. The runtime that loads them (`runtimes/arduino-opta/loader`) is built and statically verified, first hardware flash pending |
+| Front end: ST / PLCopen XML / L5X / TwinCAT / ladder model → diagnostics (placed on rungs and elements for a ladder model), tag outline; `plcc convert`; the ladder catalog; device manifests | `crates/plcc-driver`, `crates/plcc-device`, `crates/plcc-wasm`, `packages/plcc-wasm` | 2.2 MB wasm, 765 KB gzip | done; the studio loads it when it opens |
+| Compiler: the front end, LLVM 21 code generation (ARM and WebAssembly backends) and a single-object wasm linker | `crates/plcc-build`, `crates/plcc-wasm-link`, `packages/plcc-compiler-wasm` | 32.3 MB wasm, **10.2 MB gzip**, fetched on the first Simulate or Download, then cached | done; same object as `plcc compile` (tested) |
+| Simulator runtime for plcc's wasm32 output | `packages/plc-wasm`, `studio/src/runtime/plcHost.ts` | ~20 KB TS; programs a few KB | done |
+| Program images for the Opta's program slot | `crates/plcc-image`, `packages/plc-image` | 88 KB wasm, 38 KB gzip | done; the loader runtime's first hardware flash is pending |
+| Flashing (WebUSB DFU 1.1 + DfuSe), 1200-baud touch | `packages/webdfu` | ~15 KB TS | done, tested against a fake bootloader; not yet run from a browser against hardware |
 
 ## `@plcc/plcc-wasm` — the front end
 
@@ -243,103 +250,139 @@ and resets into the bootloader). The plcc Opta runtime calls `Serial.begin()`,
 so a running program can always be touched; a board stuck in a crash loop can
 still be put in DFU mode with a double press of its reset button.
 
-## The compile gap
+## The compiler in the browser
 
-Everything above runs in the browser. Two steps still need native tools:
+`packages/plcc-compiler-wasm` is plcc's compiler as one WASI command:
+`compiler/` (its own Cargo workspace) reads a JSON request on stdin and writes
+a JSON response on stdout — no files, no arguments:
 
-1. **Code generation.** `plcc-codegen` is LLVM (inkwell → the LLVM C API). ST →
-   wasm32 for the simulator and ST → Thumb-2 for the Opta both go through it.
-2. **Linking.** For the simulator, the relocatable wasm object must become a
-   module (`wasm-ld` today). For the Opta this is solved: the object becomes a
-   program image (`@plcc/plc-image`, below) for a runtime flashed once, instead
-   of being linked into the whole Arduino firmware with arm-none-eabi-gcc via
-   `arduino-cli` per download.
+```ts
+import { compile, loadCompiler } from "@plcc/plcc-compiler-wasm";
+const { module } = await loadCompiler({ baseUrl: "/plcc-compiler/", onProgress });
+const r = await compile(module, {
+  files: { "project.json": model },   // any input check takes: .st, .xml, .L5X, TwinCAT, a ladder model
+  entry: ["project.json"],
+  target: "wasm32-unknown-unknown",   // or `device: manifestToml` (triple, CPU, float ABI, image sizes)
+  image: { I: 18, Q: 1, M: 64 },
+  opt_level: 2,
+  link: true,                         // wasm32: also link a module for @plcc/plc-wasm
+});
+// { ok, diagnostics, symbols, target, timings, object, module }
+```
 
-The feasibility spike below looked at both.
+- **`crates/plcc-build`** is `plcc compile` over in-memory files: plcc-driver's
+  front end (so every input format and the ladder model), LLVM codegen, the
+  symbol table, the object as bytes, codegen errors as diagnostics. A parity
+  test (`crates/plcc-cli/tests/build_parity.rs`) builds fixtures with both and
+  requires the same object and symbol table, wasm32 and Arm, with and without
+  a device manifest. It found that LLVM keeps state between builds in one
+  process (a wasm32 build changes how a later Arm build lowers `CASE`), so the
+  browser runs a **fresh instance per build** (instantiating is cheap; the
+  compiled module is reused).
+- **Linking for the simulator** (`crates/plcc-wasm-link`, wasmparser +
+  wasm-encoder, ~750 lines): LLVM writes relocatable wasm objects only, and
+  `wasm-ld` (lld) is not in the browser. YoWASP's lld for WASI would add tens
+  of MB; plcc's objects are one object with a handful of relocation types, so
+  a single-object linker doing what `wasm-ld --no-entry --export-dynamic
+  --allow-undefined --export-table` does is cheaper and was the
+  recommendation here. Tested against wasm-ld's output for 46 objects (the
+  fixture programs at -O0 and -O2, an L5X program, hand-written IR for the
+  cases plcc does not emit yet): same imports and exports, and the same
+  process image, globals, prints and faults scan after scan when both run
+  side by side (wasmi). It refuses what plcc never emits (constructors,
+  undefined data symbols) with a clear error.
+- **The WASI host** is 150 lines of TypeScript (`src/wasi.ts`): stdin, stdout,
+  stderr, clocks, random; no file system.
+- **LLVM 21.1.8 for `wasm32-wasip1`** (`llvm/build.sh`, from the spike):
+  ARM and WebAssembly backends only, built with wasi-sdk 34 and YoWASP's WASI
+  patch rebased onto 21.1.8 (`llvm-21.1.8-wasi.patch`, Apache-2.0 WITH
+  LLVM-exception); threads off, no zlib/zstd/libxml2, MinSizeRel. 71 static
+  libraries, 110 MB; packed as a 17 MB `llvm-21.1.8-wasi.tar.xz` (the
+  libraries plus the headers llvm-sys compiles against). About an hour to
+  build on 3-4 cores.
+- **`build.sh`** links the compiler against that prefix (llvm-sys reads a
+  stand-in `llvm-config`; an empty `libffi.a`; wasi-sdk's libc++abi and WASI
+  emulation libraries; 8 MiB stack, 2 GiB maximum memory) and writes
+  `dist/plcc-compiler.wasm.gz` (gzip -9) and `dist/plcc-compiler.json`
+  (version, sizes, SHA-256). About a minute with the LLVM prefix in place.
 
-### (a) LLVM compiled to WebAssembly — works
-
-`spikes/browser-codegen/` holds the scripts. The result, in about three hours:
-
-1. **LLVM 21.1.8 libraries for `wasm32-wasip1`**, ARM and WebAssembly backends
-   only, built with wasi-sdk 34 (`llvm-wasi/build.sh`). Upstream LLVM 21 does not
-   configure for a WASI host ("Unable to determine platform"); YoWASP's single
-   WASI patch (the one behind `@yowasp/clang`, Apache-2.0 WITH LLVM-exception)
-   applies to 21.1.8 with five hunks redone by hand plus two small fixes
-   (`llvm-21.1.8-wasi.patch`, 18 files, all in `Support` and CMake). Threads
-   off, no zlib/zstd/libxml2, MinSizeRel. 71 static libraries, 110 MB of
-   archives; ~57 minutes on 3 cores, a one-time CI artifact.
-2. **plcc-codegen + inkwell + plcc-driver linked against them** as a WASI
-   program (`webcc/`): llvm-sys needs only a stand-in `llvm-config` script, an
-   empty `libffi.a`, wasi-sdk's `libc++abi` and the WASI emulation libraries. No
-   source change in plcc (the program calls `Compiler` exactly as the CLI does).
-3. **It runs, and its output is byte-identical to native plcc.** Under Node's
-   WASI, for `chaser_io.st`, `water_treatment.st`, `batch_process.st` and
-   `pid_simple.st`: every `thumbv7em-none-eabi` object has the same `.text`,
-   `.rodata` and relocations as `plcc compile -O2`, the symbols JSON is identical,
-   and every `wasm32-unknown-unknown` object is identical byte for byte.
-   Linking the web-built Opta object with the spike linker gives the same image
-   as linking the native one.
+### Size, loading, caching
 
 | | |
 |---|---|
-| `webcc.wasm` (release, LTO, `opt-level = "s"`, stripped) | 31.7 MB; 10.1 MB gzip; **6.8 MB brotli** |
-| after `wasm-opt -Oz` | 24.9 MB; 9.2 MB gzip; 6.7 MB brotli (and ~40 % slower) |
-| module compile (V8, Node 22) | ~90 ms (lazy tier-up) |
-| parse + check + codegen + `-O2` + emit, one program | 0.4-0.6 s |
+| `plcc-compiler.wasm` (release, LTO, `opt-level = "s"`, stripped) | 32.3 MB |
+| shipped as `plcc-compiler.wasm.gz` | 10.2 MB |
+| gunzip in the browser (DecompressionStream) | ~0.2 s |
+| `WebAssembly.compile` (V8, lazy tier-up) | ~0.1 s |
+| first Simulate on a local server: download, check, compile, link, run | 1.6-1.7 s |
+| first Simulate after a reload (from Cache Storage) | 1.4 s |
+| Arm build of the demo for the Opta, compiler already loaded | 0.8-0.9 s |
 
-A 6.8 MB download, cached by the service worker once, is acceptable for an IDE
-(VS Code for the Web and StackBlitz ship more). It is what makes the simulator
-and the Opta build share one compiler with the native CLI — no second backend,
-no drift.
+Nothing loads the compiler until Simulate or Download needs it; typing only
+ever waits for the 765 KB front end. The page fetches
+`plcc-compiler.json` (no-cache), then the `.gz` (progress in the status bar
+and the Download dialog), decompresses it with `DecompressionStream`
+(a server that sends `Content-Encoding: gzip` has already done it: the gzip
+magic decides), checks its SHA-256 against the manifest, stores it in Cache
+Storage under its hash (old versions are deleted), and compiles it in the
+compiler's worker. A private window or a full quota just skips the cache.
 
-To productize (**~1-2 weeks**): a reactor-style entry point (`compile(request)
-→ { object, symbols, diagnostics }` instead of `main` and files) or a small WASI
-shim over in-memory files in the worker (`@bjorn3/browser_wasi_shim`, MIT/Apache,
-or 150 lines of our own: the program only reads the source and writes the
-outputs); CI that builds and caches the LLVM libraries; codegen errors as
-structured diagnostics; memory limits (`--max-memory` is 1 GiB now); and a size
-pass (drop MCJIT/Interpreter from the link, `-Oz`, fewer passes).
+Brotli would be 6.8 MB, but browsers only decompress brotli when the server
+sends `Content-Encoding: br`, which GitHub Pages does not do for `.wasm`;
+gzip through `DecompressionStream` works on every static host. `wasm-opt -Oz`
+saves 7 MB raw but less than 1 MB gzipped and makes code generation ~40 %
+slower, so it is not used.
 
-### (b) A second backend for the simulator only
+### Shipping it: built in CI, deployed with the Pages artifact
 
-Cranelift has no 32-bit ARM backend, so it could only ever serve the simulator —
-and it does not emit WebAssembly either, so "Cranelift in the browser" would mean
-running Cranelift-compiled *native* code, which a browser cannot. The real
-option is a direct ST → WebAssembly backend with `wasm-encoder`
-(Apache-2.0 WITH LLVM-exception / MIT), from the same AST/HIR the LLVM backend
-uses.
+The 32 MB module is not committed. `.github/workflows/studio-pages.yml`
+builds every browser package and deploys them with the studio as the Pages
+artifact (GitHub Pages: 100 MB per file, 1 GB per site; the whole site is
+about 14 MB):
 
-- Size: `plcc-codegen` is ~15 000 lines of lowering (expressions and implicit
-  conversions for every IEC type, strings and their functions, TIME/DATE
-  arithmetic, FB instances and init, OOP dispatch, references and pointers, the
-  runtime contract, faults, …). A wasm backend would re-implement nearly all of
-  it: **6-10 weeks** to parity, then two backends to keep in lockstep forever.
-- Risk: the simulator would no longer run the code the PLC runs. Every semantic
-  divergence (integer wrap, division, REAL rounding, string truncation) becomes a
-  "works in the simulator, not on the PLC" bug — the worst kind for this product.
-- Output would be a finished module (no linker needed), and the backend would be
-  small in the browser (~1 MB).
+1. LLVM for WASI comes from `actions/cache` (keyed on `llvm/`); on a miss,
+   from this repository's release **`llvm-wasi-21.1.8-r1`**
+   (`llvm-21.1.8-wasi.tar.xz`, checked against `llvm/llvm-21.1.8-wasi.sha256`);
+   only if that is missing too is it built from source (about an hour, within
+   the job's 150-minute limit). The release asset is built locally from the
+   spike's build: `WORK=<scratch> sh packages/plcc-compiler-wasm/llvm/build.sh
+   package`, then `gh release create llvm-wasi-21.1.8-r1
+   <scratch>/llvm-21.1.8-wasi.tar.xz` (update the `.sha256` file with it).
+2. wasi-sdk 34, `wasm-bindgen` 0.2.129 and binaryen are installed.
+3. `packages/plcc-wasm`, `packages/plc-image` and
+   `packages/plcc-compiler-wasm` are built and tested, then `plc-wasm` and
+   `webdfu` are tested.
+4. The studio is linted, tested (its tests use the real compiler, front end
+   and image linker) and built with `STUDIO_BASE=/<repo>/`; the build copies
+   the compiler into `plcc-compiler/`.
 
-Not recommended while (a) is viable.
+Without the compiler (a local build that skipped `build.sh`) the studio still
+builds and works: Simulate runs the preview engine and says why, Download
+says the compiler is not part of the build.
 
-### (c) Other paths
+### Browser support
 
-- **An interpreter** of the HIR in Rust → wasm, for the simulator: the same
-  duplication and divergence problem as (b), slower at run time; no.
-- **lld in the browser** for the simulator's link step: YoWASP ships LLVM/Clang/LLD
-  for WASI (`@yowasp/clang`, 105 MB unpacked) — usable, but far larger than the
-  problem. plcc's wasm objects are as simple as its ARM ones: across the fixture
-  programs the only relocations are `R_WASM_FUNCTION_INDEX_LEB`,
-  `R_WASM_MEMORY_ADDR_{LEB,SLEB,I32}` and `R_WASM_TABLE_INDEX_I32` (plus
-  `GLOBAL_INDEX_LEB` / `TYPE_INDEX_LEB` at `-O0`). A single-object wasm linker
-  (lay out data segments, place the stack, build the table and exports, patch
-  those relocations) with `wasmparser` + `wasm-encoder` is **~3-4 days**.
-- **Emit a finished module from codegen**: LLVM cannot; its wasm backend only
-  writes relocatable objects.
-- **Keep a native compile service** (the original `plcc serve` design): ruled out
-  by the browser-only requirement, but it remains the fallback if (a) proves too
-  heavy for low-end machines.
+| | Chrome / Edge | Firefox, Safari |
+|---|---|---|
+| Editing, check, Problems, ST view, import / export | yes (tested: headless Chromium) | expected (Workers, wasm); untested |
+| Simulate with plcc's build (Workers, `DecompressionStream`, Cache Storage) | yes (tested) | expected (Firefox 113+, Safari 16.4+); untested |
+| Projects in OPFS | yes | Firefox 111+, Safari: in memory where OPFS writes are missing (the status bar says so) |
+| Online, Detect (WebSerial) and Download (WebSerial + WebUSB) | yes | no: Chromium-only APIs |
+| TwinCAT project folder import (File System Access) | yes | no: import the project as a .zip |
+
+The compiler runs in its own worker with its own linear memory (allowed to
+grow to 2 GiB) and a fresh instance per build.
+
+### Alternatives that were not taken
+
+- **A second backend for the simulator** (ST → WebAssembly with
+  `wasm-encoder`): 6-10 weeks to parity with plcc-codegen's ~15 000 lines, two
+  backends to keep in lockstep forever, and a simulator that no longer runs
+  the code the PLC runs. Cranelift has no 32-bit ARM and does not emit wasm.
+- **An HIR interpreter**: the same divergence problem, slower.
+- **lld in the browser** (YoWASP, ~105 MB unpacked): far larger than the
+  problem (above).
+- **A native compile service**: ruled out; nothing runs outside the browser.
 
 ### Download to the Opta without the Arduino toolchain: program images
 
@@ -389,35 +432,28 @@ await dev.flash(img.bytes);                           // erases 1-4 sectors of t
   `stop`/`run` on the console. Built and statically verified; **its first
   flash to hardware is pending** (runtimes/arduino-opta/README.md, "First
   flash").
-- **Studio** needs `flash.program` (and the `prog`/`stop`/`run` console
-  commands) in its TypeScript manifest loader (`studio/src/devices/manifest.ts`)
-  to load the version-2 Opta manifest.
+- **Studio**: its manifest loader reads `[flash.program]` and the
+  `prog`/`stop`/`run` commands; Download builds the image and writes the slot
+  (after checking over the console that the board runs a program-image
+  runtime of the same device); Online shows the program state from `info` and
+  offers Run / Stop.
 
 The remaining codegen change worth making: drop `.ARM.exidx` at the source
 (`nounwind`, no unwind tables); the image linker discards it today.
 
-## Recommendation
+## Status and what is left
 
-1. **Ship option (a).** Build the LLVM-for-WASI libraries in CI (cached), turn
-   the `webcc` spike into `crates/plcc-web` (reactor API, JSON request/response
-   like `plcc-wasm`, same structured diagnostics), and run it in a worker next to
-   `@plcc/plcc-wasm`. The front-end module stays separate and small (0.5 MB) so
-   typing never waits for the 6.8 MB compiler; the compiler loads on first
-   Simulate/Download. ~1-2 weeks.
-2. **Simulator:** a single-object wasm linker in Rust (`wasmparser` +
-   `wasm-encoder`, ~3-4 days) turns the compiler's wasm32 object into the module
-   `@plcc/plc-wasm` already runs. (Until then the studio could fall back to
-   plcc's native `plcc compile` + `wasm-ld` for development.)
-3. **Opta:** program images — done (above and program-image.md): the image
-   linker and `@plcc/plc-image`, the slot profile in `@plcc/webdfu`, the
-   loader runtime. Left: the first flash of the loader runtime with someone at
-   the bench, then studio's Download button (manifest loader support for
-   `flash.program`, `buildDeviceImage`, `programProfileFromManifest`, the build
-   id compared with `info`).
-4. Not (b): a second backend would double the compiler and let the simulator
-   drift from the PLC.
-5. While there: compile Cortex-M code for the real CPU (cortex-m7 + FPU,
-   softfp) instead of a generic ARMv7E-M — REAL math is library calls today.
+- Done: the studio's model is plcc's ladder model; plcc check, convert and the
+  compiler run in the browser; Simulate runs plcc's wasm32 build; Download
+  compiles for the Opta, links a program image and writes the program slot
+  over WebUSB (checked end to end against webdfu's fake bootloader).
+- Left: the first flash of the loader runtime to an Opta at the bench
+  (runtimes/arduino-opta/README.md), then a Download and an Online session
+  against it from Chrome; publishing the `llvm-wasi-21.1.8-r1` release asset
+  (until then the first CI run builds LLVM, then caches it).
+- Worth doing: compile Cortex-M code for the real CPU (cortex-m7 + FPU,
+  softfp) — the Opta manifest's `cpu`/`features` already do this for builds
+  with a device; drop `.ARM.exidx` at the source (`nounwind`).
 
 ## Development
 
@@ -427,8 +463,12 @@ cd packages/plcc-wasm && npm install && npm run build && npm test
 cd packages/plc-wasm  && npm install && npm test      # fixtures: npm run fixtures (plcc + wasm-ld)
 cd packages/webdfu    && npm install && npm test
 cd packages/plc-image && npm install && npm test      # builds pkg/plcc_image.wasm (cargo, wasm32) if missing
+# the compiler → packages/plcc-compiler-wasm/dist (rustup target add wasm32-wasip1)
+WORK=~/.cache/plcc/llvm-build sh packages/plcc-compiler-wasm/llvm/build.sh package   # once, ~1 h
+LLVM_WASI=… WASI_SDK=… sh packages/plcc-compiler-wasm/build.sh                       # ~1 min
+cd packages/plcc-compiler-wasm && npm install && npm test
 ```
 
-All four packages are plain TypeScript ES modules with no framework and no
-runtime dependencies; `main`/`types` point at `src/index.ts` for a Vite build to
-consume directly.
+The packages are plain TypeScript ES modules with no framework and no runtime
+dependencies; `main`/`types` point at `src/index.ts` for a Vite build to
+consume directly. The studio links them (`studio/.npmrc`: `install-links=false`).

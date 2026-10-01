@@ -1,5 +1,17 @@
 # SPDX-License-Identifier: MPL-2.0
-# Builds plcc studio and publishes it to GitHub Pages.
+# Builds plcc studio with everything it runs in the browser and publishes it
+# to GitHub Pages:
+#   packages/plcc-wasm           plcc's front end (check, convert, manifests), wasm-bindgen
+#   packages/plc-image           the program image linker (crates/plcc-image)
+#   packages/plcc-compiler-wasm  plcc's compiler: front end + LLVM codegen + wasm linker,
+#                                a WASI module linked against LLVM 21.1.8 built for WASI
+# The compiler is ~32 MB (10 MB gzip): it is not committed, it is built here and
+# deployed with the Pages artifact (docs/studio-wasm.md, "Shipping the compiler").
+#
+# LLVM for WASI takes about an hour to build, so it is cached; on a cache miss
+# the prebuilt package is taken from this repository's release
+# `llvm-wasi-21.1.8-r1` (checked against llvm/llvm-21.1.8-wasi.sha256), and
+# only if that is missing too is it built from source.
 name: studio-pages
 
 on:
@@ -7,8 +19,11 @@ on:
     branches: [main]
     paths:
       - "studio/**"
+      - "packages/**"
+      - "crates/**"
+      - "Cargo.lock"
+      - "Cargo.toml"
       - "devices"
-      - "crates/plcc-device/builtin/**"
       - ".github/workflows/studio-pages.yml"
   workflow_dispatch:
 
@@ -21,28 +36,107 @@ concurrency:
   group: pages
   cancel-in-progress: true
 
+env:
+  LLVM_WASI_TAG: llvm-wasi-21.1.8-r1
+  LLVM_WASI: ${{ github.workspace }}/.llvm-wasi/llvm-21.1.8-wasi
+  WASI_SDK: ${{ github.workspace }}/.llvm-wasi/wasi-sdk-34.0-x86_64-linux
+  CARGO_TERM_COLOR: always
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: studio
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: studio/package-lock.json
-      - run: npm ci
-      - run: npm test
-      - run: npm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown, wasm32-wasip1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            packages/plcc-compiler-wasm/compiler -> ../target
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.129
+
+      - name: Install wasm-opt
+        run: sudo apt-get update && sudo apt-get install -y binaryen
+
+      # ---- LLVM 21.1.8 for wasm32-wasip1 and wasi-sdk 34
+      - id: llvm-cache
+        uses: actions/cache@v4
+        with:
+          path: .llvm-wasi
+          key: llvm-wasi-${{ hashFiles('packages/plcc-compiler-wasm/llvm/**') }}
+
+      - name: LLVM for WASI from the release
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        id: llvm-release
+        continue-on-error: true
+        run: |
+          mkdir -p .llvm-wasi
+          curl -fsSL -o .llvm-wasi/llvm.tar.xz \
+            "https://github.com/${{ github.repository }}/releases/download/${LLVM_WASI_TAG}/llvm-21.1.8-wasi.tar.xz"
+          (cd .llvm-wasi && sha256sum -c ../packages/plcc-compiler-wasm/llvm/llvm-21.1.8-wasi.sha256)
+          tar -C .llvm-wasi -xJf .llvm-wasi/llvm.tar.xz && rm .llvm-wasi/llvm.tar.xz
+
+      - name: LLVM for WASI from source (about an hour)
+        if: steps.llvm-cache.outputs.cache-hit != 'true' && steps.llvm-release.outcome != 'success'
+        run: |
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s 21
+          sudo apt-get install -y ninja-build cmake
+          WORK=$PWD/.llvm-build JOBS=$(nproc) sh packages/plcc-compiler-wasm/llvm/build.sh package
+          mkdir -p .llvm-wasi && tar -C .llvm-wasi -xJf .llvm-build/llvm-21.1.8-wasi.tar.xz
+          rm -rf .llvm-build
+
+      - name: wasi-sdk 34
+        run: |
+          [ -x "$WASI_SDK/bin/clang" ] || curl -fsSL \
+            https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz \
+            | tar -C .llvm-wasi -xzf -
+
+      # ---- the browser packages
+      - name: plcc-wasm (front end)
+        working-directory: packages/plcc-wasm
+        run: npm ci && npm run build && npm test
+
+      - name: plc-image (program image linker)
+        working-directory: packages/plc-image
+        run: npm ci && sh build.sh && npm test
+
+      - name: plcc-compiler-wasm (the compiler)
+        working-directory: packages/plcc-compiler-wasm
+        run: CAP_GB=12 sh build.sh && npm ci && npm test
+
+      - name: plc-wasm, webdfu
+        run: |
+          (cd packages/plc-wasm && npm ci && npm test)
+          (cd packages/webdfu && npm ci && npm test)
+
+      # ---- studio
+      - name: studio
+        working-directory: studio
+        run: |
+          npm ci
+          npm run lint
+          npm test
+          npm run build
         env:
           STUDIO_BASE: /${{ github.event.repository.name }}/
       # Unknown paths fall back to the app.
-      - run: cp dist/index.html dist/404.html
+      - run: cp studio/dist/index.html studio/dist/404.html
+      - name: Sizes
+        run: du -ah studio/dist | sort -h | tail -8
       - uses: actions/upload-pages-artifact@v3
         with:
           path: studio/dist

@@ -1,28 +1,12 @@
 {
-  "simulate10ms": {
+  "compilerFirstLoadMs": 1641,
+  "simulatePlcc": {
     "fps": 60.3,
     "p50FrameMs": 16.7,
     "p99FrameMs": 16.8,
-    "worstFrameMs": 16.8,
     "longTasks": 0,
     "longestTaskMs": 0,
-    "statusBar": "Preview simulator (browser, not plcc output) Scan 200 µs Period 10 ms Jitter 2.78 ms 3 rungs Saved"
+    "statusBar": "Simulator · plcc wasm32 build (1449 ms) Scan 31 µs · max 100 µs Period 10 ms Jitter 4.11 ms · max 4.66 ms 0 0 Rung 0, element 3/5 Saved"
   },
-  "simulate1ms": {
-    "fps": 60.3,
-    "p50FrameMs": 16.7,
-    "p99FrameMs": 16.8,
-    "worstFrameMs": 16.8,
-    "longTasks": 0,
-    "longestTaskMs": 0,
-    "statusBar": "Preview simulator (browser, not plcc output) Scan < 0.1 ms Period 1 ms Jitter 2.21 ms 3 rungs Saved"
-  },
-  "offline": {
-    "fps": 60.7,
-    "p50FrameMs": 16.7,
-    "p99FrameMs": 16.8,
-    "worstFrameMs": 16.8,
-    "longTasks": 0,
-    "longestTaskMs": 0
-  }
+  "compilerCachedLoadMs": 1404
 }

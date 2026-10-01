@@ -168,13 +168,13 @@ export function StatusBar() {
         <>
           <span title="Average and worst case over the last second" className="flex items-center gap-5">
             <Field label="Scan">
-              <span className="inline-block w-[15ch] tabular-nums">
+              <span className="inline-block w-[19ch] tabular-nums">
                 {shown ? `${fmtMs(shown.scanAvg)} · max ${fmtMs(shown.scanMax)}` : '—'}
               </span>
             </Field>
             <Field label="Period">{stats ? `${stats.periodMs} ms` : '—'}</Field>
             <Field label="Jitter">
-              <span className="inline-block w-[15ch] tabular-nums">
+              <span className="inline-block w-[19ch] tabular-nums">
                 {shown ? `${fmtMs(shown.jitterAvg)} · max ${fmtMs(shown.jitterMax)}` : '—'}
               </span>
             </Field>
