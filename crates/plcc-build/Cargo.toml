@@ -1,0 +1,14 @@
+[package]
+name = "plcc-build"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+inkwell = { version = "0.8.0", features = ["llvm21-1", "llvm21-1-force-static"] }
+plcc-codegen = { version = "0.1.0", path = "../plcc-codegen" }
+plcc-device = { version = "0.1.0", path = "../plcc-device" }
+plcc-driver = { version = "0.1.0", path = "../plcc-driver" }
+plcc-runtime = { version = "0.1.0", path = "../plcc-runtime" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"

@@ -8758,6 +8758,16 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
+    /// The object file as bytes (no file system needed: the browser compiler).
+    pub fn emit_object_bytes(&self, triple: &str) -> Result<Vec<u8>, CodegenError> {
+        let machine = self.target_machine(triple)?;
+        self.set_target(triple)?;
+        let buf = machine
+            .write_to_memory_buffer(&self.module, FileType::Object)
+            .map_err(|e| CodegenError::LlvmError(e.to_string()))?;
+        Ok(buf.as_slice().to_vec())
+    }
+
     pub(crate) fn target_machine(&self, triple: &str) -> Result<TargetMachine, CodegenError> {
         Target::initialize_all(&InitializationConfig::default());
         let target_triple = TargetTriple::create(triple);

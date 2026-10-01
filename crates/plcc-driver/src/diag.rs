@@ -34,6 +34,8 @@ pub enum Stage {
     Typecheck,
     /// Converting between notations and ladder dialects (`plcc convert`).
     Convert,
+    /// Code generation and the device manifest a build targets (`plcc compile`).
+    Codegen,
 }
 
 /// A position in a file. `line` and `col` are 1-based; `col` counts UTF-16 code
