@@ -1,0 +1,3 @@
+[submodule "devices"]
+	path = devices
+	url = https://github.com/beigesys/plcc-devices

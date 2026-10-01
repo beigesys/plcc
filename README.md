@@ -290,6 +290,12 @@ cargo run --example linux_sim -p plcc-hal -- plc.st --input 0=1 --scans 10
 
 Requires Rust 1.75+ and LLVM development headers.
 
+The device catalog in `devices/` is a git submodule
+([beigesys/plcc-devices](https://github.com/beigesys/plcc-devices)). Clone with
+`git clone --recursive`, or run `git submodule update --init` in an existing
+checkout. Without it, plcc falls back to built-in copies of the Opta and
+Simulator manifests.
+
 ```bash
 # Install LLVM (Ubuntu/Debian)
 sudo apt install llvm-21-dev
@@ -297,7 +303,7 @@ sudo apt install llvm-21-dev
 # Build
 cargo build --release
 
-# Run tests (668 tests)
+# Run tests
 cargo test
 
 # Run the Linux simulator example
