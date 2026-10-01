@@ -23,6 +23,12 @@ export interface DeviceProfile {
   maxSize: number;
   /** Leave DFU mode (start the application) after a download. */
   leave: boolean;
+  /**
+   * Where leaving DFU mode starts the board: the application's vector table.
+   * Default `address`. A program-slot profile writes the slot but starts the
+   * runtime (a program image is not a vector table).
+   */
+  entry?: number;
 }
 
 /**
@@ -59,4 +65,20 @@ export const OPTA: DeviceProfile = {
   leave: true,
 };
 
-export const PROFILES: Record<string, DeviceProfile> = { opta: OPTA };
+/**
+ * The Opta's program slot (docs/program-image.md; devices/arduino-opta.toml
+ * version 2, [flash.program]): the last four 128 KiB sectors,
+ * 0x08180000-0x081FFFFF. Nothing below the slot can be erased or written
+ * with this profile, so a program download cannot touch the runtime, let
+ * alone the bootloader. Leaving DFU mode starts the runtime at 0x08040000.
+ */
+export const OPTA_PROGRAM: DeviceProfile = {
+  ...OPTA,
+  name: "Arduino Opta program slot",
+  minAddress: 0x08180000,
+  address: 0x08180000,
+  maxSize: 0x80000,
+  entry: 0x08040000,
+};
+
+export const PROFILES: Record<string, DeviceProfile> = { opta: OPTA, "opta-program": OPTA_PROGRAM };

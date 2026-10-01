@@ -24,6 +24,8 @@ export interface ManifestFlash {
   reboot?: string;
   runtime_usb?: { vid: number; pid: number }[];
   protected?: { start: number; size: number; reason?: string }[];
+  /** [flash.program]: the slot program images are written to (docs/program-image.md). */
+  program?: { format: number; address: number; max_size: number; ram?: { start: number; size: number }; services?: number };
 }
 
 /** A manifest that asks for more than webdfu allows. Nothing was flashed. */
@@ -103,5 +105,50 @@ export function profileFromManifest(flash: ManifestFlash, name = "device"): Devi
     address,
     maxSize,
     leave: flash.leave ?? true,
+  };
+}
+
+/** Flash words: a program slot must start and end on them (STM32H7: 32 bytes). */
+const FLASH_WORD = 32;
+
+/**
+ * The profile for writing a device's program slot ([flash.program],
+ * docs/program-image.md): only the slot can be erased or written, and
+ * leaving DFU mode starts the runtime at the application address. Built on
+ * profileFromManifest, so every check of the application area applies; the
+ * slot itself must lie inside the built-in floor, past the application area
+ * (the runtime) and outside every protected region. It can only narrow.
+ */
+export function programProfileFromManifest(flash: ManifestFlash, name = "device"): DeviceProfile {
+  const app = profileFromManifest(flash, name);
+  const fail = (m: string): never => {
+    throw new ManifestError(`${name} manifest [flash.program]: ${m}`);
+  };
+  const p = flash.program;
+  if (!p) fail("missing: the device has no program slot, so program images cannot be written to it");
+  const { address, max_size: size, format } = p!;
+  if (format !== 1) fail(`program image format ${String(format)} is not one webdfu writes (1)`);
+  if (!isInt(address) || !isInt(size) || address < 0 || size <= 0) fail("address and max_size must be positive integers");
+  if (address % FLASH_WORD !== 0) fail(`address ${hex(address)} is not ${FLASH_WORD}-byte aligned`);
+  const floor = floorFor(app.dfuFilters[0].vendorId, app.dfuFilters[0].productId)!;
+  const minAddress = Math.max(...app.dfuFilters.map((f) => floorFor(f.vendorId, f.productId)!.minAddress));
+  const end = Math.min(...app.dfuFilters.map((f) => floorFor(f.vendorId, f.productId)!.end));
+  if (address < minAddress) fail(`address ${hex(address)} is below ${hex(minAddress)}, the lowest address webdfu writes on ${floor.name}`);
+  if (address + size > end) fail(`${hex(address)} + max_size 0x${size.toString(16)} ends at ${hex(address + size)}, past ${hex(end)}`);
+  if (address < app.address + app.maxSize && app.address < address + size) {
+    fail(`the slot ${hex(address)}..${hex(address + size)} overlaps the application (runtime) area ${hex(app.address)}..${hex(app.address + app.maxSize)}`);
+  }
+  for (const r of flash.protected ?? []) {
+    if (isInt(r.start) && isInt(r.size) && address < r.start + r.size && r.start < address + size) {
+      fail(`the slot overlaps the protected region ${hex(r.start)}..${hex(r.start + r.size)}`);
+    }
+  }
+  return {
+    ...app,
+    name: `${name} program slot`,
+    minAddress: address,
+    address,
+    maxSize: size,
+    entry: app.address,
   };
 }

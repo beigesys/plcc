@@ -232,7 +232,9 @@ export class DfuseDevice {
 
     if (opts.leave ?? this.profile.leave) {
       report({ phase: "manifest", done: 0, total: 1 });
-      await this.leave(address);
+      // Start the application, which for a program-slot profile is the
+      // runtime (profile.entry), not the address just written.
+      await this.leave(this.profile.entry ?? address);
       report({ phase: "manifest", done: 1, total: 1 });
     } else {
       await this.dfu.abort();
@@ -269,8 +271,12 @@ export class DfuseDevice {
    * manifestation (AN3156 §6.3.4). The device resets, so the status request
    * may fail; that is expected.
    */
-  async leave(address = this.profile.address): Promise<void> {
-    if (address < this.profile.minAddress || address < this.floor.minAddress) {
+  async leave(address = this.profile.entry ?? this.profile.address): Promise<void> {
+    // Starting is not writing: the profile's entry (a program-slot profile
+    // starts the runtime below its slot) is allowed, but never below the
+    // floor, i.e. never into the bootloader.
+    const entry = this.profile.entry ?? this.profile.address;
+    if (address < this.floor.minAddress || (address < this.profile.minAddress && address !== entry)) {
       throw new SafetyError(`refusing to start the application at ${hex(address)}`);
     }
     await this.setAddress(address);

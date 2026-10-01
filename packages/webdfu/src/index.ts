@@ -8,8 +8,8 @@
 export { DfuError, DfuInterface, State, STATUS, describeStatus, stateName, type DfuStatus, type FunctionalDescriptor, type Sleep } from "./dfu";
 export { DfuseDevice, SafetyError, type FlashOptions, type OpenOptions, type Phase, type Progress, type WritePlan } from "./dfuse";
 export { LayoutError, parseLayout, sectorAt, type MemoryLayout, type Sector } from "./layout";
-export { OPTA, PROFILES, type DeviceProfile } from "./profiles";
+export { OPTA, OPTA_PROGRAM, PROFILES, type DeviceProfile } from "./profiles";
 export { FLOORS, floorFor, usbKey, type Floor } from "./floors";
-export { ManifestError, profileFromManifest, type ManifestFlash } from "./manifest";
+export { ManifestError, profileFromManifest, programProfileFromManifest, type ManifestFlash } from "./manifest";
 export { isRuntimePort, touch1200, waitForDfuDevice, type UsbLike } from "./touch";
 export type { SerialPortLike, UsbDeviceLike } from "./usb";
