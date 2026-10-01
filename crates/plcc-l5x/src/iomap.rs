@@ -118,6 +118,20 @@ impl IoMap {
         })
     }
 
+    /// Bind one more tag (a ladder model variable's `address`).
+    pub fn add(&mut self, tag: &str, addr: &str) -> Result<(), String> {
+        if addr_ok(addr).is_none() {
+            return Err(format!(
+                "`{tag}` = `{addr}`: not a process-image address (%IX0.0, %QW3, %MD10, ...)"
+            ));
+        }
+        self.entries.push(Entry {
+            tag: tag.to_string(),
+            addr: addr.trim().to_string(),
+        });
+        Ok(())
+    }
+
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }

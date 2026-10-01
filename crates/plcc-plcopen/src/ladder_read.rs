@@ -86,6 +86,7 @@ pub fn read(source: &str) -> (Option<m::Project>, Vec<PlcOpenError>) {
         globals: Vec::new(),
         pous: Vec::new(),
         declarations: Vec::new(),
+        tasks: Vec::new(),
     };
     if let Some(types) = xml::child(root, "types")
         && let Some(pous) = xml::child(types, "pous")

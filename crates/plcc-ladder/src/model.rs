@@ -57,6 +57,25 @@ pub struct Project {
     /// converting ST to ladder and back loses nothing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub declarations: Vec<String>,
+    /// How the programs are scheduled (Logix tasks). Empty: every program in
+    /// one continuous task.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<Task>,
+}
+
+/// A task: which programs run, and how often.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Task {
+    pub name: String,
+    /// Period in milliseconds; `None`: continuous (runs back to back).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_ms: Option<f64>,
+    /// Logix priority (1 = most urgent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<u32>,
+    /// The programs (POU names) the task runs, in order.
+    #[serde(default)]
+    pub programs: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -231,6 +231,14 @@ pub fn catalog(dialect_name: &str) -> Option<String> {
     dialect(dialect_name).map(plcc_driver::convert::catalog_json)
 }
 
+/// Where a fault site `line:col` (in the L5X a ladder model is compiled as)
+/// is in the model: JSON `{ pou, routine, rung, element, operand }`, or
+/// `null` when it is not in a rung or ST box.
+#[wasm_bindgen]
+pub fn locate_ladder(model: &str, line: u32, col: u32) -> Option<String> {
+    plcc_driver::ladder::locate_site(model, line, col).and_then(|r| serde_json::to_string(&r).ok())
+}
+
 /// `null` if `path` is acceptable as a project path, else why not.
 #[wasm_bindgen]
 pub fn validate_path(path: &str) -> Option<String> {

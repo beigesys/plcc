@@ -75,6 +75,7 @@ pub fn read(source: &str) -> (Option<Project>, Vec<L5xError>) {
             .collect(),
         pous: Vec::new(),
         declarations: Vec::new(),
+        tasks: lp.tasks.iter().filter_map(task).collect(),
     };
     for pr in &lp.programs {
         let mut pou = Pou {
@@ -105,6 +106,24 @@ pub fn read(source: &str) -> (Option<Project>, Vec<L5xError>) {
         project.pous.push(pou);
     }
     (Some(project), errors)
+}
+
+/// A continuous or periodic task (event tasks and inhibited tasks are left
+/// out: the model has no triggers).
+fn task(t: &l5::TaskDef) -> Option<Task> {
+    if t.kind == l5::TaskType::Event || t.inhibited {
+        return None;
+    }
+    Some(Task {
+        name: t.name.text.clone(),
+        interval_ms: if t.kind == l5::TaskType::Periodic {
+            t.rate_ms
+        } else {
+            None
+        },
+        priority: Some(t.priority),
+        programs: t.programs.iter().map(|p| p.text.clone()).collect(),
+    })
 }
 
 fn variable(t: &l5::TagDef, section: VarSection) -> Variable {
@@ -410,6 +429,49 @@ const ATOMIC: &[&str] = &[
 /// Write a Logix-dialect model as an L5X project; warnings name tags whose
 /// type had to be guessed.
 pub fn write(project: &Project) -> Result<(String, Vec<String>), Vec<WriteError>> {
+    write_mapped(project).map(|(text, warnings, _)| (text, warnings))
+}
+
+/// Where [`write_mapped`] put a rung's text or a line of Structured Text in
+/// the L5X, so positions in it (diagnostics, fault sites) can be traced back
+/// to the model.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapEntry {
+    pub pou: String,
+    pub routine: String,
+    pub rung: Id,
+    /// Byte range of the text (inside its CDATA) in the L5X.
+    pub range: std::ops::Range<usize>,
+    pub kind: MapKind,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum MapKind {
+    /// A rung's text: each element (depth first, as [`walk`] visits them)
+    /// with its byte range and its operands' ranges, relative to the text.
+    Rung(Vec<MappedElement>),
+    /// Line `line` (0-based) of an ST box's code (or of an ST routine, whose
+    /// one box is `element`); `code_offset` is where the line starts in the
+    /// code, in bytes.
+    StLine {
+        element: Id,
+        line: usize,
+        code_offset: usize,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MappedElement {
+    pub id: Id,
+    pub span: std::ops::Range<usize>,
+    pub operands: Vec<std::ops::Range<usize>>,
+}
+
+/// [`write`], and where each rung and ST line went.
+pub fn write_mapped(
+    project: &Project,
+) -> Result<(String, Vec<String>, Vec<MapEntry>), Vec<WriteError>> {
+    let mut map: Vec<MapEntry> = Vec::new();
     if project.dialect != Dialect::Logix {
         return Err(vec![WriteError {
             element: 0,
@@ -474,13 +536,25 @@ pub fn write(project: &Project) -> Result<(String, Vec<String>), Vec<WriteError>
             tag(&mut out, v);
         }
         out.push_str("</Tags>\n<Routines>\n");
-        let mut extra: Vec<(String, String)> = Vec::new();
+        let mut extra: Vec<(String, String, Id, Id, String)> = Vec::new();
         for r in &pou.routines {
             if let [g] = r.rungs.as_slice()
                 && let [Element::St(s)] = g.elements.as_slice()
                 && g.label.is_none()
             {
-                st_routine(&mut out, &r.name, &s.code);
+                for (line, code_offset, range) in st_routine(&mut out, &r.name, &s.code) {
+                    map.push(MapEntry {
+                        pou: pou.name.clone(),
+                        routine: r.name.clone(),
+                        rung: g.id,
+                        range,
+                        kind: MapKind::StLine {
+                            element: s.id,
+                            line,
+                            code_offset,
+                        },
+                    });
+                }
                 continue;
             }
             let _ = writeln!(
@@ -493,14 +567,29 @@ pub fn write(project: &Project) -> Result<(String, Vec<String>), Vec<WriteError>
                 let mut g = g.clone();
                 let mut boxes = Vec::new();
                 replace_st_boxes(&mut g.elements, &r.name, &mut boxes);
-                extra.extend(boxes);
+                extra.extend(
+                    boxes
+                        .into_iter()
+                        .map(|(rn, code, id)| (rn, code, g.id, id, r.name.clone())),
+                );
                 match rll::write(&g) {
                     Ok(text) => {
                         let _ = write!(out, "<Rung Number=\"{n}\" Type=\"N\">\n");
                         if let Some(c) = &g.comment {
                             let _ = writeln!(out, "<Comment>\n{}\n</Comment>", cdata(c));
                         }
-                        let _ = writeln!(out, "<Text>\n{}\n</Text>\n</Rung>", cdata(&text));
+                        out.push_str("<Text>\n<![CDATA[");
+                        let start = out.len();
+                        out.push_str(&text.replace("]]>", "]]]]><![CDATA[>"));
+                        let end = out.len();
+                        out.push_str("]]>\n</Text>\n</Rung>\n");
+                        map.push(MapEntry {
+                            pou: pou.name.clone(),
+                            routine: r.name.clone(),
+                            rung: g.id,
+                            range: start..end,
+                            kind: MapKind::Rung(mapped_elements(&g, &text)),
+                        });
                     }
                     Err(e) => errors.push(WriteError {
                         element: e.element,
@@ -510,41 +599,133 @@ pub fn write(project: &Project) -> Result<(String, Vec<String>), Vec<WriteError>
             }
             out.push_str("</RLLContent>\n</Routine>\n");
         }
-        for (rn, code) in extra {
-            st_routine(&mut out, &rn, &code);
+        for (rn, code, rung, element, routine) in extra {
+            for (line, code_offset, range) in st_routine(&mut out, &rn, &code) {
+                map.push(MapEntry {
+                    pou: pou.name.clone(),
+                    routine: routine.clone(),
+                    rung,
+                    range,
+                    kind: MapKind::StLine {
+                        element,
+                        line,
+                        code_offset,
+                    },
+                });
+            }
         }
         out.push_str("</Routines>\n</Program>\n");
     }
-    out.push_str("</Programs>\n<Tasks>\n<Task Name=\"MainTask\" Type=\"CONTINUOUS\" Priority=\"10\" Watchdog=\"500\" DisableUpdateOutputs=\"false\" InhibitTask=\"false\">\n<ScheduledPrograms>\n");
-    for pou in &project.pous {
-        let _ = writeln!(out, "<ScheduledProgram Name=\"{}\"/>", esc(&pou.name));
+    out.push_str("</Programs>\n<Tasks>\n");
+    let default_task;
+    let tasks = if project.tasks.is_empty() {
+        default_task = [Task {
+            name: "MainTask".into(),
+            interval_ms: None,
+            priority: Some(10),
+            programs: project.pous.iter().map(|p| p.name.clone()).collect(),
+        }];
+        &default_task[..]
+    } else {
+        &project.tasks[..]
+    };
+    for t in tasks {
+        let kind = match t.interval_ms {
+            Some(ms) => format!("Type=\"PERIODIC\" Rate=\"{ms}\""),
+            None => "Type=\"CONTINUOUS\"".to_string(),
+        };
+        let _ = writeln!(
+            out,
+            "<Task Name=\"{}\" {kind} Priority=\"{}\" Watchdog=\"500\" DisableUpdateOutputs=\"false\" InhibitTask=\"false\">\n<ScheduledPrograms>",
+            esc(&t.name),
+            t.priority.unwrap_or(10)
+        );
+        for p in &t.programs {
+            let _ = writeln!(out, "<ScheduledProgram Name=\"{}\"/>", esc(p));
+        }
+        out.push_str("</ScheduledPrograms>\n</Task>\n");
     }
-    out.push_str("</ScheduledPrograms>\n</Task>\n</Tasks>\n</Controller>\n</RSLogix5000Content>\n");
+    out.push_str("</Tasks>\n</Controller>\n</RSLogix5000Content>\n");
     if errors.is_empty() {
-        Ok((out, warnings))
+        Ok((out, warnings, map))
     } else {
         Err(errors)
     }
 }
 
-fn st_routine(out: &mut String, name: &str, code: &str) {
+/// The elements of a rung written as `text`, with their places in it: the
+/// text read back (rung text round-trips) visits its elements in the same
+/// order as the rung's own.
+fn mapped_elements(rung: &Rung, text: &str) -> Vec<MappedElement> {
+    let mut ids = Vec::new();
+    walk(&rung.elements, &mut |e| ids.push(e.id()));
+    let Ok(read) = rll::read(text, &mut Ids::new()) else {
+        return Vec::new();
+    };
+    let mut srcs = Vec::new();
+    for g in &read {
+        walk(&g.elements, &mut |e| {
+            let src = match e {
+                Element::Contact(c) => c.src.as_ref(),
+                Element::Coil(c) => c.src.as_ref(),
+                Element::Branch(b) => b.src.as_ref(),
+                Element::Block(b) => b.src.as_ref(),
+                Element::Jump(j) => j.src.as_ref(),
+                Element::Return(r) => r.src.as_ref(),
+                Element::St(_) => None,
+            };
+            srcs.push(src.cloned());
+        });
+    }
+    if srcs.len() != ids.len() {
+        return Vec::new();
+    }
+    ids.into_iter()
+        .zip(srcs)
+        .filter_map(|(id, src)| {
+            let src = src?;
+            Some(MappedElement {
+                id,
+                span: src.span,
+                operands: src.operands,
+            })
+        })
+        .collect()
+}
+
+/// An ST routine; returns (line, offset of the line in `code`, byte range
+/// of the line in `out`) for each line.
+fn st_routine(
+    out: &mut String,
+    name: &str,
+    code: &str,
+) -> Vec<(usize, usize, std::ops::Range<usize>)> {
     let _ = writeln!(
         out,
         "<Routine Name=\"{}\" Type=\"ST\">\n<STContent>",
         esc(name)
     );
-    for (k, line) in code.lines().enumerate() {
-        let _ = writeln!(out, "<Line Number=\"{k}\">\n{}\n</Line>", cdata(line));
+    let mut lines = Vec::new();
+    let mut code_offset = 0;
+    for (k, line) in code.split('\n').enumerate() {
+        let text = line.strip_suffix('\r').unwrap_or(line);
+        let _ = write!(out, "<Line Number=\"{k}\">\n<![CDATA[");
+        let start = out.len();
+        out.push_str(&text.replace("]]>", "]]]]><![CDATA[>"));
+        lines.push((k, code_offset, start..out.len()));
+        out.push_str("]]>\n</Line>\n");
+        code_offset += line.len() + 1;
     }
     out.push_str("</STContent>\n</Routine>\n");
+    lines
 }
 
-fn replace_st_boxes(series: &mut [Element], routine: &str, out: &mut Vec<(String, String)>) {
+fn replace_st_boxes(series: &mut [Element], routine: &str, out: &mut Vec<(String, String, Id)>) {
     for e in series.iter_mut() {
         match e {
             Element::St(s) => {
                 let name = format!("{routine}_ST{}", s.id);
-                out.push((name.clone(), s.code.clone()));
+                out.push((name.clone(), s.code.clone(), s.id));
                 *e = Element::Block(Block {
                     id: s.id,
                     name: "JSR".into(),

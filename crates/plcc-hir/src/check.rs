@@ -438,6 +438,27 @@ impl TypeChecker {
                     base = self.fb_extends.get(&b.to_uppercase()).cloned();
                 }
                 self.check_statement_list(&fb.body, &mut scope);
+                // Method bodies see the block's variables (inherited ones too),
+                // their own, and their name as the return value.
+                for m in &fb.methods {
+                    let mut ms = Scope::new();
+                    ms.variables = scope.variables.clone();
+                    let own = self.build_scope(&m.var_blocks);
+                    ms.variables.extend(own.variables);
+                    if let Some(ret) = m.return_type.as_ref().map(|t| self.resolve_type_spec(t)) {
+                        ms.define(
+                            m.name.name.clone(),
+                            VarInfo {
+                                ty: ret,
+                                is_constant: false,
+                                is_input: false,
+                                is_output: false,
+                                is_in_out: false,
+                            },
+                        );
+                    }
+                    self.check_statement_list(&m.body, &mut ms);
+                }
             }
             _ => {}
         }

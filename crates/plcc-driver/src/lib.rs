@@ -11,6 +11,7 @@
 
 pub mod convert;
 pub mod diag;
+pub mod ladder;
 pub mod tags;
 
 pub use diag::{Diagnostic, Label, LineIndex, Position, Severity, Stage};
@@ -360,11 +361,62 @@ pub fn parse_project(project: &Project) -> (Option<Parsed>, Vec<Diagnostic>) {
     let mut any_l5x = false;
     let mut defined: HashSet<String> = HashSet::new();
     for (path, library) in &inputs.files {
-        let source = &project.files[path];
-        let logix = is_l5x(path, source);
+        let mut source = &project.files[path];
+        let lowered;
+        let (logix, unit) = if ladder::is_model_path(path) {
+            // A ladder model: as L5X (Logix) or lowered to ST (IEC).
+            lowered = match ladder::lower(path, source) {
+                Ok((lowered, d)) => {
+                    diags.extend(d);
+                    lowered
+                }
+                Err(d) => {
+                    diags.extend(d);
+                    continue;
+                }
+            };
+            match &lowered.l5x {
+                Some(text) => {
+                    let mut opts = l5x.clone();
+                    for (tag, addr) in &lowered.io {
+                        if let Err(e) = opts.io_map.add(tag, addr) {
+                            let mut d =
+                                Diagnostic::plain(Some(path), Stage::IoMap, Severity::Error, e);
+                            d.ladder = Some(ladder::LadderRef {
+                                tag: Some(tag.clone()),
+                                ..Default::default()
+                            });
+                            diags.push(d);
+                        }
+                    }
+                    let (unit, mut file_diags) = parse_file(path, text, &opts);
+                    ladder::remap(&mut file_diags, path, &lowered);
+                    diags.extend(file_diags);
+                    source = text;
+                    (true, unit)
+                }
+                None => {
+                    let (unit, errs) = plcc_ladder::to_unit(&lowered.model, false);
+                    for e in errs {
+                        let mut d = Diagnostic::plain(
+                            Some(path),
+                            Stage::Convert,
+                            Severity::Error,
+                            format!("the ladder model does not lower: {e}"),
+                        );
+                        d.ladder = Some(ladder::LadderRef::default());
+                        diags.push(d);
+                    }
+                    (false, unit)
+                }
+            }
+        } else {
+            let logix = is_l5x(path, source);
+            let (unit, file_diags) = parse_file(path, source, &l5x);
+            diags.extend(file_diags);
+            (logix, unit)
+        };
         any_l5x |= logix;
-        let (unit, file_diags) = parse_file(path, source, &l5x);
-        diags.extend(file_diags);
         let origin = Origin {
             name: path.clone(),
             source: Rc::new(source.clone()),
@@ -525,11 +577,26 @@ pub fn typecheck(parsed: &Parsed) -> Vec<Diagnostic> {
     out
 }
 
+/// Trace diagnostics in ladder model inputs (reported against the L5X they
+/// were written as) back to the model.
+pub fn remap_ladder(project: &Project, diags: &mut [Diagnostic]) {
+    for (path, source) in &project.files {
+        if ladder::is_model_path(path)
+            && diags.iter().any(|d| d.file.as_deref() == Some(path.as_str()))
+            && let Ok((lowered, _)) = ladder::lower(path, source)
+        {
+            ladder::remap(diags, path, &lowered);
+        }
+    }
+}
+
 /// Parse and type-check: exactly what `plcc check` decides.
 pub fn check(project: &Project) -> Checked {
     let (parsed, mut diagnostics) = parse_project(project);
     if let Some(p) = &parsed {
-        diagnostics.extend(typecheck(p));
+        let mut found = typecheck(p);
+        remap_ladder(project, &mut found);
+        diagnostics.extend(found);
     }
     Checked {
         ok: parsed.is_some() && !has_error(&diagnostics),

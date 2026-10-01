@@ -72,6 +72,11 @@ pub struct Diagnostic {
     pub span: Option<Label>,
     /// Every labelled range, the primary one first.
     pub labels: Vec<Label>,
+    /// For a ladder model input: the program, routine, rung and element the
+    /// diagnostic is about. `span` is then a range in the rung's text or in
+    /// the ST box's code.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ladder: Option<crate::ladder::LadderRef>,
 }
 
 impl Diagnostic {
@@ -86,6 +91,7 @@ impl Diagnostic {
             help: None,
             span: None,
             labels: Vec::new(),
+            ladder: None,
         }
     }
 
@@ -127,6 +133,7 @@ impl Diagnostic {
             help: d.help().map(|h| h.to_string()),
             span: labels.first().cloned(),
             labels,
+            ladder: None,
         }
     }
 }

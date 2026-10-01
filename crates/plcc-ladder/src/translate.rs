@@ -426,6 +426,7 @@ impl<'o> Tr<'o> {
             globals: Vec::new(),
             pous: Vec::new(),
             declarations: p.declarations.clone(),
+            tasks: p.tasks.clone(),
         };
         // Instances: declared, and the ones blocks name.
         for v in p
@@ -1275,6 +1276,7 @@ impl<'o> Tr<'o> {
             globals: Vec::new(),
             pous: Vec::new(),
             declarations: p.declarations.clone(),
+            tasks: p.tasks.clone(),
         };
         // TIMER / COUNTER tags: which instruction uses them.
         for q in &p.pous {

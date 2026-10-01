@@ -60,3 +60,23 @@ PRINT('x');
 END_PROGRAM";
     assert_eq!(undefined(src), Vec::<String>::new());
 }
+
+#[test]
+fn method_bodies_are_checked() {
+    // Methods see the block's variables, inherited ones, their own and their
+    // return value; anything else is undefined (Logix ST routines are methods).
+    let src = "
+FUNCTION_BLOCK Base VAR bl : INT; END_VAR END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB EXTENDS Base
+VAR x : INT; END_VAR
+METHOD M : INT
+VAR_INPUT k : INT; END_VAR
+VAR t : INT; END_VAR
+    t := k + x + bl;
+    M := t;
+    x := Bogus + 1;
+END_METHOD
+M(k := 1);
+END_FUNCTION_BLOCK";
+    assert_eq!(undefined(src), ["Bogus"]);
+}
