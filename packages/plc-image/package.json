@@ -1,0 +1,30 @@
+{
+  "name": "@plcc/plc-image",
+  "version": "0.1.0",
+  "description": "Link a plcc Cortex-M object into a program image for a device's program slot, in the browser (crates/plcc-image compiled to WebAssembly)",
+  "license": "MPL-2.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./pkg/*": "./pkg/*"
+  },
+  "files": [
+    "src",
+    "pkg"
+  ],
+  "scripts": {
+    "build": "sh build.sh",
+    "pretest": "test -f pkg/plcc_image.wasm || sh build.sh",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "fixtures": "sh test/fixtures/build.sh"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.2"
+  }
+}
