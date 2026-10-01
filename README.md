@@ -2,6 +2,10 @@
 
 IEC 61131-3 Structured Text compiler written in Rust. Compiles ST to native code via LLVM for any target: x86_64, ARM, RISC-V, WebAssembly.
 
+**[Open plcc studio](https://beigesys.github.io/plcc/)**, the ladder editor, in Chrome or Edge.
+Edit rungs, simulate them in the browser, and watch a connected PLC live over
+USB. Projects stay in your browser. Source: [`studio/`](studio/).
+
 ## Quick Start
 
 ```bash
