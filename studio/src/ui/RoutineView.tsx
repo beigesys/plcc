@@ -76,13 +76,13 @@ function Toolbar() {
         </Button>
         <Tooltip>
           <TooltipTrigger asChild>
-            <span tabIndex={0} aria-label="ST view (needs plcc serve, phase 2)">
+            <span tabIndex={0} aria-label="ST view (coming soon)">
               <Button size="sm" variant="outline" disabled className="pointer-events-none">
                 <Code2 /> ST view
               </Button>
             </span>
           </TooltipTrigger>
-          <TooltipContent>needs plcc serve — phase 2</TooltipContent>
+          <TooltipContent>Coming soon: runs in your browser, no install</TooltipContent>
         </Tooltip>
       </span>
     </div>
@@ -341,7 +341,7 @@ function StRoutine({ routine }: { routine: Routine }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2 p-4">
       <p className="text-dense text-text-muted">
-        Structured Text routine. Editing works and is saved; checking, compiling and simulating ST needs plcc serve (phase 2).
+        Structured Text routine. Editing works and is saved; checking, compiling and simulating ST are coming soon.
       </p>
       <label htmlFor="st-editor" className="sr-only">
         {routine.name} source

@@ -140,14 +140,14 @@ export function TopBar() {
       <Tooltip>
         <TooltipTrigger asChild>
           {/* A disabled button gets no pointer events; the span carries the tooltip. */}
-          <span tabIndex={0} aria-label="Download (needs plcc serve, phase 2)">
+          <span tabIndex={0} aria-label="Download (coming soon: compiles and flashes from the browser)">
             <Button disabled className="pointer-events-none">
               <Download />
               Download
             </Button>
           </span>
         </TooltipTrigger>
-        <TooltipContent>needs plcc serve — phase 2</TooltipContent>
+        <TooltipContent>Coming soon: runs in your browser, no install</TooltipContent>
       </Tooltip>
     </header>
   )

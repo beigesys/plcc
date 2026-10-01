@@ -304,8 +304,8 @@ transport; the WebSerial transport itself is still untested against hardware.
 
 ## Placeholders in this phase
 
-- **Download**, the **ST view** of a ladder routine, and compiling are disabled.
-  Their tooltip says "needs plcc serve — phase 2".
+- **Download**, the **ST view** of a ladder routine, and compiling are disabled
+  until the browser packages below are wired in. Their tooltip says so.
 - ST routines and inline ST boxes are edited and saved but not simulated. An ST
   box passes power through and flags "ST box not simulated".
 - A project can list several devices, but Simulate and Online use the first
@@ -313,19 +313,20 @@ transport; the WebSerial transport itself is still untested against hardware.
 
 ## Phase 2 plan
 
-1. **`plcc serve`**: a local HTTP/WebSocket service around the plcc compiler.
-   The studio sends the project (the `plcc-ladder` JSON) and gets back
-   diagnostics with spans that map to rung and element ids, the generated ST
-   (the "ST view"), and compiled artifacts.
-2. **Real simulation from wasm32**: compile with
-   `plcc compile --target wasm32-unknown-unknown` and run the module in the
-   existing simulator worker in place of the TypeScript engine. The worker
-   protocol (snapshots of changed values plus power flow, the fixed-period loop
-   and the scan budget) stays the same. Power flow comes from the `_ld_*`
-   hidden variables or a trace table emitted by plcc.
-3. **Download over WebUSB DFU**: build the Opta runtime with the compiled
-   object on the server, then flash it from the browser with WebUSB DFU (the
-   Opta's STM32H747 bootloader). This replaces the `arduino-cli upload` step.
-4. **Swap the draft model** for the `plcc-ladder` crate's schema, which
-   converts to and from L5X, PLCopen XML and TwinCAT. That turns import and
-   export of those formats into studio features.
+Everything stays in the browser; there is no server. Projects live in OPFS, and
+plcc itself runs as WebAssembly (see [docs/studio-wasm.md](../docs/studio-wasm.md)).
+
+1. **Check, convert and the ST view** with
+   [`packages/plcc-wasm`](../packages/plcc-wasm): diagnostics with spans that map
+   to rung and element ids, the generated ST, and import/export of L5X, PLCopen
+   XML and TwinCAT through the `plcc-ladder` model.
+2. **Swap the draft model** for the `plcc-ladder` crate's schema.
+3. **Real simulation**: plcc compiles the project to wasm32 in the browser, and
+   [`packages/plc-wasm`](../packages/plc-wasm) runs it in the existing simulator
+   worker in place of the TypeScript engine. The worker protocol (snapshots of
+   changed values plus power flow, the fixed-period loop and the scan budget)
+   stays the same.
+4. **Download** with [`packages/webdfu`](../packages/webdfu) over WebUSB. The
+   Opta runtime is flashed once; after that the compiled program is a separate
+   image written to its own flash slot, so a download never relinks the whole
+   firmware.
