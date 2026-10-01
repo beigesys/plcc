@@ -5,6 +5,8 @@ import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
 export default defineConfig({
+  // GitHub Pages serves the app under /<repo>/; local and tailnet builds use /.
+  base: process.env.STUDIO_BASE ?? '/',
   plugins: [react(), tailwindcss()],
   resolve: { alias: { '@': path.resolve(import.meta.dirname, './src') } },
   // One app bundle (React, Radix, the editor) is ~560 kB before gzip; fine for a local tool.
