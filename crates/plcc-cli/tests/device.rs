@@ -82,7 +82,7 @@ fn check_reports_line_and_column() {
     let o = plcc(&["device", "check", f.to_str().unwrap()]);
     assert!(!o.status.success());
     let t = text(&o);
-    assert!(t.contains("bad.toml:30:11: error: io[0].address"), "{t}");
+    assert!(t.contains("bad.toml:31:11: error: io[0].address"), "{t}");
     assert!(t.contains("points live in %I"), "{t}");
 }
 
