@@ -32,6 +32,12 @@ fn text(o: &Output) -> String {
     format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
 }
 
+/// A diagnostic with miette's line wrapping undone: it wraps at the terminal
+/// width and draws a `│` gutter, so a long path can split a message in two.
+fn diag(o: &Output) -> String {
+    text(o).split_whitespace().filter(|w| *w != "│").collect::<Vec<_>>().join(" ")
+}
+
 fn tool(env: &str, default: &str) -> Option<PathBuf> {
     let p = std::env::var_os(env).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(default));
     Command::new(&p).arg("--version").output().ok().filter(|o| o.status.success()).map(|_| p)
@@ -139,7 +145,7 @@ fn image_cli_errors() {
     let out = dir.join("x.img");
     let o = plcc(&["image", obj.to_str().unwrap(), "--device", "simulator", "-o", out.to_str().unwrap()]);
     assert!(!o.status.success());
-    assert!(text(&o).contains("has no program slot"), "{}", text(&o));
+    assert!(diag(&o).contains("has no program slot"), "{}", text(&o));
     // An object for another target.
     let wasm = dir.join("blink-wasm.o");
     let o = plcc(&["compile", src.to_str().unwrap(), "-o", wasm.to_str().unwrap(), "--target", "wasm32-unknown-unknown"]);
