@@ -84,15 +84,22 @@ usb = [{ vid = 0x2341, pid = 0x0364 }, { vid = 0x35D1, pid = 0x0364 }]
 alt = 0
 layout = "Internal Flash"
 address = 0x08040000
-max_size = 0x1C0000
+max_size = 0x140000
 reboot = "1200-baud-touch"
 runtime_usb = [{ vid = 0x2341, pid = 0x0064 }, ...]
 protected = [{ start = 0x08000000, size = 0x40000, reason = "Arduino bootloader (sectors 0 and 1)" }]
 
+[flash.program]
+format = 1
+address = 0x08180000
+max_size = 0x80000
+ram = { start = 0x20010000, size = 0x10000 }
+services = 185
+
 [console]
 transport = "webserial"
 baud = 115200
-commands = ["info", "img", "mw"]
+commands = ["info", "img", "mw", "prog", "stop", "run"]
 img_format = "hex-areas"
 img_m_bytes = 64
 
@@ -164,6 +171,26 @@ LLVM and fixes the image sizes; see [Compiling for a device](#compiling-for-a-de
 
 TOML integers may be written in hex (`0x08040000`). See [Trust](#trust) for
 how the flasher bounds these values.
+
+### `[flash.program]` (optional)
+
+A runtime that loads **program images** ([program-image.md](program-image.md))
+is flashed once to the application area; each program is linked by
+`plcc image` for a fixed flash slot and RAM window and downloaded into the
+slot on its own.
+
+| Key | Type | | |
+|---|---|---|---|
+| `format` | integer | required | Program image format: `1`. |
+| `address` | integer | required | Flash address of the slot (32-byte aligned). The image's header is its first byte. |
+| `max_size` | integer | required | Slot size, bytes: the largest image. |
+| `ram` | `{ start, size }` | required | RAM the runtime reserves for the program's `.data` and `.bss` (`start` 8-byte aligned). |
+| `services` | integer | required | Entries in the runtime's service table (at least 3). A program that needs a later service is refused by `plcc image`. |
+
+The slot may not overlap the application area (`address` .. `address +
+max_size`) nor a `protected` region. webdfu's `programProfileFromManifest`
+builds a flashing profile for the slot alone, inside the same built-in limits
+as the application.
 
 ## `[console]` (optional)
 

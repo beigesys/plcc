@@ -277,12 +277,76 @@ impl Validator<'_, '_> {
         if f.usb.is_empty() {
             self.error(&p.key("usb"), "list the bootloader's USB ids");
         }
+        if let Some(prog) = &f.program {
+            self.program_slot(f, prog, end, &p.key("program"));
+        }
         for (i, u) in f.usb.iter().chain(&f.runtime_usb).enumerate() {
             if u.vid == 0 {
                 let key = if i < f.usb.len() { "usb" } else { "runtime_usb" };
                 let idx = if i < f.usb.len() { i } else { i - f.usb.len() };
                 self.error(&p.key(key).index(idx).key("vid"), "USB vendor id 0 is not valid");
             }
+        }
+    }
+
+    fn program_slot(&mut self, f: &Flash, prog: &ProgramSlot, app_end: u64, p: &Path) {
+        if prog.format != PROGRAM_IMAGE_FORMAT {
+            self.error(
+                &p.key("format"),
+                format!("program image format {} is not one plcc writes ({PROGRAM_IMAGE_FORMAT})", prog.format),
+            );
+        }
+        if prog.max_size < 256 {
+            self.error(&p.key("max_size"), "must be at least 256 bytes (the image header is 128)");
+        }
+        let end = prog.address as u64 + prog.max_size as u64;
+        if end > 1 << 32 {
+            self.error(
+                &p.key("max_size"),
+                format!("0x{:X} + 0x{:X} runs past the 32-bit address space", prog.address, prog.max_size),
+            );
+        }
+        if prog.address % 32 != 0 {
+            self.error(&p.key("address"), "must be 32-byte aligned (a flash word)");
+        }
+        if (f.address as u64) < end && (prog.address as u64) < app_end {
+            self.error(
+                &p.key("address"),
+                format!(
+                    "the program slot 0x{:08X}..0x{:08X} overlaps the application (runtime) area 0x{:08X}..0x{:08X}",
+                    prog.address, end, f.address, app_end
+                ),
+            );
+        }
+        for r in &f.protected {
+            if (prog.address as u64) < r.end() && (r.start as u64) < end {
+                self.error(
+                    &p.key("address"),
+                    format!(
+                        "the program slot 0x{:08X}..0x{:08X} overlaps protected region 0x{:08X}..0x{:08X}{}",
+                        prog.address,
+                        end,
+                        r.start,
+                        r.end(),
+                        if r.reason.is_empty() { String::new() } else { format!(" ({})", r.reason) }
+                    ),
+                );
+            }
+        }
+        if prog.ram.size < 64 {
+            self.error(&p.key("ram").key("size"), "must be at least 64 bytes");
+        }
+        if prog.ram.start as u64 + prog.ram.size as u64 > 1 << 32 {
+            self.error(&p.key("ram").key("size"), "runs past the 32-bit address space");
+        }
+        if prog.ram.start % 8 != 0 {
+            self.error(&p.key("ram").key("start"), "must be 8-byte aligned");
+        }
+        if prog.services < 3 {
+            self.error(
+                &p.key("services"),
+                "a runtime provides at least plcc_monotonic_ns, plcc_print and plcc_fault (3 services)",
+            );
         }
     }
 

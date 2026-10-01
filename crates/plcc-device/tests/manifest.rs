@@ -81,7 +81,14 @@ fn opta_manifest_matches_the_runtime() {
     assert_eq!(d.io.len(), 8 + 1 + 8 + 4 + 1 + 32);
     let f = d.flash.unwrap();
     assert_eq!((f.usb[0].vid, f.usb[0].pid, f.alt), (0x2341, 0x0364, 0));
-    assert_eq!((f.address, f.max_size), (0x0804_0000, 0x1C_0000));
+    // The runtime area ends where the program slot starts (docs/program-image.md).
+    assert_eq!((f.address, f.max_size), (0x0804_0000, 0x14_0000));
+    let p = f.program.unwrap();
+    assert_eq!((p.format, p.address, p.max_size), (1, 0x0818_0000, 0x8_0000));
+    assert_eq!((p.ram.start, p.ram.size), (0x2001_0000, 0x1_0000));
+    // runtimes/arduino-opta/loader/plcc_services.h: PLCC_SERVICE_COUNT.
+    assert_eq!(p.services, 185);
+    assert_eq!(f.address + f.max_size, p.address);
     let rtu = d.modbus.unwrap().rtu.unwrap();
     assert_eq!((rtu.unit, rtu.baud), (1, 19200));
     assert_eq!(d.console.unwrap().img_m_bytes, 64);
@@ -221,6 +228,29 @@ fn flash_may_not_cover_a_protected_region() {
     assert_one(&errors_of(&format!("{BASE}{touch}")), "needs the running application's USB ids");
     let over = ok.replace("max_size = 0x1C0000", "max_size = 0xFFFFFFFF");
     assert_one(&errors_of(&format!("{BASE}{over}")), "runs past the 32-bit address space");
+}
+
+#[test]
+fn program_slot_errors() {
+    let flash = "\n[flash]\nmethod = \"dfuse\"\nusb = [{ vid = 0x2341, pid = 0x0364 }]\naddress = 0x08040000\nmax_size = 0x140000\nprotected = [{ start = 0x08000000, size = 0x40000, reason = \"bootloader\" }]\n\n[flash.program]\nformat = 1\naddress = 0x08180000\nmax_size = 0x80000\nram = { start = 0x20010000, size = 0x10000 }\nservices = 185\n";
+    let ok = format!("{BASE}{flash}");
+    assert!(errors_of(&ok).is_empty(), "{:?}", errors_of(&ok));
+    let with = |from: &str, to: &str| {
+        assert!(ok.contains(from), "{from}");
+        errors_of(&ok.replacen(from, to, 1))
+    };
+    // The slot may not overlap the runtime, nor the bootloader.
+    let e = with("address = 0x08180000", "address = 0x08100000");
+    assert_one(&e, "flash.program.address: the program slot 0x08100000..0x08180000 overlaps the application (runtime) area 0x08040000..0x08180000");
+    let e = with("address = 0x08180000", "address = 0x08000000");
+    assert_one(&e, "overlaps protected region 0x08000000..0x08040000 (bootloader)");
+    assert_one(&with("format = 1", "format = 2"), "flash.program.format: program image format 2 is not one plcc writes (1)");
+    assert_one(&with("max_size = 0x80000", "max_size = 0xFFFFFFFF"), "flash.program.max_size: 0x8180000 + 0xFFFFFFFF");
+    assert_one(&with("address = 0x08180000", "address = 0x08180004"), "must be 32-byte aligned");
+    assert_one(&with("start = 0x20010000", "start = 0x20010004"), "flash.program.ram.start: must be 8-byte aligned");
+    assert_one(&with("size = 0x10000 }", "size = 0 }"), "flash.program.ram.size: must be at least 64 bytes");
+    assert_one(&with("services = 185", "services = 2"), "at least plcc_monotonic_ns, plcc_print and plcc_fault");
+    assert_one(&with("services = 185", "services = 185\nentry = 1"), "unknown field `entry`");
 }
 
 #[test]

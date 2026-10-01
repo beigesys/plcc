@@ -176,6 +176,38 @@ pub struct Flash {
     /// Flash that must never be erased or written (a bootloader).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub protected: Vec<Region>,
+    /// The program slot: where program images go when the runtime is flashed
+    /// once and programs are downloaded on their own (docs/program-image.md).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<ProgramSlot>,
+}
+
+/// The program image format plcc writes (docs/program-image.md).
+pub const PROGRAM_IMAGE_FORMAT: u32 = 1;
+
+/// `[flash.program]`: the flash slot and RAM window of program images.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProgramSlot {
+    /// Program image format (docs/program-image.md): 1.
+    pub format: u32,
+    /// Flash address the image is linked at and written to (the header's first byte).
+    pub address: u32,
+    /// Size of the slot, bytes: the largest image.
+    pub max_size: u32,
+    /// RAM the runtime reserves for the program's `.data` and `.bss`.
+    pub ram: RamWindow,
+    /// Number of entries in the runtime's service table (docs/program-image.md):
+    /// a program may import only services below this index.
+    pub services: u32,
+}
+
+/// A range of RAM.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RamWindow {
+    pub start: u32,
+    pub size: u32,
 }
 
 fn yes() -> bool {
@@ -256,6 +288,12 @@ pub enum ConsoleCommand {
     Img,
     /// `mw <n> <value>`: write `%MWn`.
     Mw,
+    /// `prog`: the header of the program in the program slot (docs/program-image.md).
+    Prog,
+    /// `stop`: stop the program, outputs off.
+    Stop,
+    /// `run`: cold-start the program in the slot.
+    Run,
 }
 
 impl ConsoleCommand {
@@ -264,6 +302,9 @@ impl ConsoleCommand {
             ConsoleCommand::Info => "info",
             ConsoleCommand::Img => "img",
             ConsoleCommand::Mw => "mw",
+            ConsoleCommand::Prog => "prog",
+            ConsoleCommand::Stop => "stop",
+            ConsoleCommand::Run => "run",
         }
     }
 }

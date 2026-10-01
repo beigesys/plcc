@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: CC0-1.0
-# Arduino Opta running the plcc generic runtime (opta_plcc/runtime/runtime.ino).
+# Arduino Opta running the plcc program-image runtime (runtimes/arduino-opta/loader
+# in the plcc repository): the runtime is flashed once, programs are downloaded
+# into the program slot ([flash.program]; docs/program-image.md).
 # Device manifest format: docs/device-manifest.md in the plcc repository.
 
 [device]
@@ -7,7 +9,7 @@ id = "arduino-opta"
 name = "Arduino Opta"
 vendor = "Arduino"
 description = "STM32H747 (Cortex-M7) PLC running the plcc generic runtime: 8 inputs (digital or 0-10 V analog), 4 relays, USER button and LED, Modbus RTU on RS485."
-version = 1
+version = 2
 schema = 1
 
 [target]
@@ -26,15 +28,17 @@ kind = "plcc-arduino"
 abi = 1
 
 # Arduino mbed_opta 4.6.0 boards.txt: upload.tool=dfu-util, vid 0x2341 pid 0x0364,
-# interface (alt) 0, address 0x08040000, use_1200bps_touch=true; the variant's
-# APPLICATION_SIZE is 0x1C0000 (to the end of the 2 MiB flash).
+# interface (alt) 0, address 0x08040000, use_1200bps_touch=true. The variant's
+# APPLICATION_SIZE is 0x1C0000 (to the end of the 2 MiB flash); the runtime is
+# limited to 1.25 MiB (sectors 2-11 of bank 1 and 0-3 of bank 2) so the last
+# 512 KiB stay the program slot.
 [flash]
 method = "dfuse"
 usb = [{ vid = 0x2341, pid = 0x0364 }, { vid = 0x35D1, pid = 0x0364 }]
 alt = 0
 layout = "Internal Flash"
 address = 0x08040000
-max_size = 0x1C0000
+max_size = 0x140000
 leave = true
 reboot = "1200-baud-touch"
 runtime_usb = [
@@ -43,10 +47,21 @@ runtime_usb = [
 ]
 protected = [{ start = 0x08000000, size = 0x40000, reason = "Arduino bootloader (sectors 0 and 1)" }]
 
+# Program images (docs/program-image.md): `plcc image` links a program for the
+# last four 128 KiB sectors of bank 2, with its .data/.bss in the upper 64 KiB
+# of the M7's DTCM (the Arduino core leaves DTCM unused above its vector table).
+# The runtime's service table has 185 entries (runtimes/arduino-opta/loader/plcc_services.h).
+[flash.program]
+format = 1
+address = 0x08180000
+max_size = 0x80000
+ram = { start = 0x20010000, size = 0x10000 }
+services = 185
+
 [console]
 transport = "webserial"
 baud = 115200
-commands = ["info", "img", "mw"]
+commands = ["info", "img", "mw", "prog", "stop", "run"]
 img_format = "hex-areas"
 img_m_bytes = 64
 

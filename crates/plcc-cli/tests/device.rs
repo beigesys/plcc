@@ -103,7 +103,7 @@ fn compile_takes_target_cpu_and_image_from_the_device() {
         "#define PLCC_TARGET_CPU \"cortex-m7\"",
         "#define PLCC_TARGET_FEATURES \"+fp-armv8d16\"",
         "#define PLCC_DEVICE_ID \"arduino-opta\"",
-        "#define PLCC_DEVICE_MANIFEST_VERSION 1u",
+        "#define PLCC_DEVICE_MANIFEST_VERSION 2u",
         "#define PLCC_IMAGE_I_SIZE 18u",
         "#define PLCC_IMAGE_Q_SIZE 1u",
         "#define PLCC_IMAGE_M_SIZE 64u",

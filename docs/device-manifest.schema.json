@@ -55,6 +55,21 @@
           "const": "mw",
           "description": "`mw <n> <value>`: write `%MWn`.",
           "type": "string"
+        },
+        {
+          "const": "prog",
+          "description": "`prog`: the header of the program in the program slot (docs/program-image.md).",
+          "type": "string"
+        },
+        {
+          "const": "stop",
+          "description": "`stop`: stop the program, outputs off.",
+          "type": "string"
+        },
+        {
+          "const": "run",
+          "description": "`run`: cold-start the program in the slot.",
+          "type": "string"
         }
       ]
     },
@@ -159,6 +174,10 @@
         },
         "method": {
           "$ref": "#/$defs/FlashMethod"
+        },
+        "program": {
+          "$ref": "#/$defs/ProgramSlot",
+          "description": "The program slot: where program images go when the runtime is flashed\nonce and programs are downloaded on their own (docs/program-image.md)."
         },
         "protected": {
           "description": "Flash that must never be erased or written (a bootloader).",
@@ -466,6 +485,69 @@
         "odd"
       ],
       "type": "string"
+    },
+    "ProgramSlot": {
+      "additionalProperties": false,
+      "description": "`[flash.program]`: the flash slot and RAM window of program images.",
+      "properties": {
+        "address": {
+          "description": "Flash address the image is linked at and written to (the header's first byte).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "format": {
+          "description": "Program image format (docs/program-image.md): 1.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_size": {
+          "description": "Size of the slot, bytes: the largest image.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ram": {
+          "$ref": "#/$defs/RamWindow",
+          "description": "RAM the runtime reserves for the program's `.data` and `.bss`."
+        },
+        "services": {
+          "description": "Number of entries in the runtime's service table (docs/program-image.md):\na program may import only services below this index.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "format",
+        "address",
+        "max_size",
+        "ram",
+        "services"
+      ],
+      "type": "object"
+    },
+    "RamWindow": {
+      "additionalProperties": false,
+      "description": "A range of RAM.",
+      "properties": {
+        "size": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start",
+        "size"
+      ],
+      "type": "object"
     },
     "Reboot": {
       "oneOf": [

@@ -51,9 +51,11 @@ export const OPTA: DeviceProfile = {
   layoutName: "Internal Flash",
   minAddress: 0x08040000,
   address: 0x08040000,
-  // 0x08040000-0x081FFFFF. (boards.txt says 1966080 = 2 MiB - 128 KiB, which
-  // would run 128 KiB past the end of flash from 0x08040000.)
-  maxSize: 0x1c0000,
+  // 0x08040000-0x0817FFFF: the runtime. The last 512 KiB (0x08180000-) are
+  // the program slot (OPTA_PROGRAM, docs/program-image.md), so flashing a
+  // runtime never touches a downloaded program. (boards.txt says 1966080 =
+  // 2 MiB - 128 KiB, which would run 128 KiB past the end of flash.)
+  maxSize: 0x140000,
   leave: true,
 };
 

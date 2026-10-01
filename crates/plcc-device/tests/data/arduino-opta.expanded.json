@@ -4,7 +4,7 @@
     "name": "Arduino Opta",
     "vendor": "Arduino",
     "description": "STM32H747 (Cortex-M7) PLC running the plcc generic runtime: 8 inputs (digital or 0-10 V analog), 4 relays, USER button and LED, Modbus RTU on RS485.",
-    "version": 1,
+    "version": 2,
     "schema": 1
   },
   "target": {
@@ -39,7 +39,7 @@
     "alt": 0,
     "layout": "Internal Flash",
     "address": 134479872,
-    "max_size": 1835008,
+    "max_size": 1310720,
     "leave": true,
     "reboot": "1200-baud-touch",
     "runtime_usb": [
@@ -74,7 +74,17 @@
         "size": 262144,
         "reason": "Arduino bootloader (sectors 0 and 1)"
       }
-    ]
+    ],
+    "program": {
+      "format": 1,
+      "address": 135790592,
+      "max_size": 524288,
+      "ram": {
+        "start": 536936448,
+        "size": 65536
+      },
+      "services": 185
+    }
   },
   "console": {
     "transport": "webserial",
@@ -82,7 +92,10 @@
     "commands": [
       "info",
       "img",
-      "mw"
+      "mw",
+      "prog",
+      "stop",
+      "run"
     ],
     "img_format": "hex-areas",
     "img_m_bytes": 64

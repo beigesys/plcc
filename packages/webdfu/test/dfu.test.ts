@@ -141,9 +141,10 @@ describe("bootloader protection", () => {
     expect(() => dev.plan(0x08040000, OPTA.maxSize + 1)).toThrow(/at most|past 0x08200000/);
     expect(() => dev.plan(0x90000000, 4)).toThrow(SafetyError);
     expect(() => dev.plan(0x08040000, 0)).toThrow(SafetyError);
-    // The 14 sectors above the bootloader: 0x08040000-0x081FFFFF.
-    expect(OPTA.maxSize).toBe(14 * 128 * 1024);
-    expect(dev.plan(0x08040000, OPTA.maxSize).sectors).toHaveLength(14);
+    // The 10 sectors between the bootloader and the program slot: 0x08040000-0x0817FFFF.
+    expect(OPTA.maxSize).toBe(10 * 128 * 1024);
+    expect(dev.plan(0x08040000, OPTA.maxSize).sectors).toHaveLength(10);
+    expect(() => dev.plan(0x08180000, 4)).toThrow(/past Arduino Opta's application area/);
   });
 
   it("refuses a device or alternate the profile does not describe", async () => {
