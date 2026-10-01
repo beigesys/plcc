@@ -1,0 +1,28 @@
+{
+  "name": "@plcc/plcc-compiler-wasm",
+  "version": "0.1.0",
+  "description": "plcc's compiler (front end, LLVM code generation for Arm and WebAssembly, wasm linker) as a WASI module for the browser",
+  "license": "MPL-2.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./worker": "./src/worker.ts"
+  },
+  "files": [
+    "src",
+    "dist"
+  ],
+  "scripts": {
+    "build": "sh build.sh",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.2"
+  }
+}

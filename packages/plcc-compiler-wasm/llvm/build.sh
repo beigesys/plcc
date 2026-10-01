@@ -1,16 +1,20 @@
 #!/bin/sh
 # SPDX-License-Identifier: MPL-2.0
-# Spike: LLVM 21.1.8 libraries for wasm32-wasip1 with only the ARM and
-# WebAssembly backends — what inkwell/plcc-codegen link against — so plcc's
-# code generator can run in a browser (docs/studio-wasm.md).
+# LLVM 21.1.8 libraries for wasm32-wasip1 with only the ARM and WebAssembly
+# backends: what inkwell / plcc-codegen link against in the browser compiler
+# (docs/studio-wasm.md).
 #
-#   WORK=/some/scratch sh build.sh
+#   WORK=/some/scratch sh build.sh            # build into $WORK
+#   WORK=/some/scratch sh build.sh package    # and pack $WORK/llvm-21.1.8-wasi.tar.xz
 #
 # Downloads wasi-sdk 34 and the LLVM 21.1.8 source into $WORK, applies
 # llvm-21.1.8-wasi.patch (YoWASP's "Conditionalize use of POSIX features missing
 # on WASI/WebAssembly", Apache-2.0 WITH LLVM-exception like LLVM itself,
 # rebased onto 21.1.8 plus two fixes), configures with the host's llvm-tblgen
 # (LLVM 21) and builds the libraries. ~1.2k compile steps; ~60 min on 3 cores.
+#
+# The package is the prefix ../build.sh wants (LLVM_WASI): lib/libLLVM*.a and
+# the headers llvm-sys compiles against (include/llvm-c, include/llvm/Config).
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
 WORK=${WORK:?set WORK to a scratch directory}
@@ -42,6 +46,7 @@ set(CMAKE_RANLIB $W/bin/ranlib)
 set(CMAKE_C_FLAGS "--sysroot $W/share/wasi-sysroot $EMU")
 set(CMAKE_CXX_FLAGS "--sysroot $W/share/wasi-sysroot $EMU")
 END
+if [ ! -f llvm-build/build.ninja ]; then
 cmake -G Ninja -B llvm-build -S llvm-project-21.1.8.src/llvm \
   -DCMAKE_TOOLCHAIN_FILE="$WORK/Toolchain-WASI.cmake" \
   -DLLVM_TABLEGEN="$TBLGEN" -DLLVM_NATIVE_TOOL_DIR="$(dirname "$TBLGEN")" \
@@ -54,10 +59,22 @@ cmake -G Ninja -B llvm-build -S llvm-project-21.1.8.src/llvm \
   -DLLVM_ENABLE_CRASH_OVERRIDES=OFF -DLLVM_ENABLE_UNWIND_TABLES=OFF \
   -DLLVM_TARGETS_TO_BUILD="ARM;WebAssembly" \
   -DLLVM_HOST_TRIPLE=wasm32-wasip1 -DLLVM_DEFAULT_TARGET_TRIPLE=thumbv7em-none-eabi
+fi
 # A cap per compiler process (CLAUDE.md, "Memory discipline").
-ulimit -v $((4 * 1024 * 1024))
-ninja -C llvm-build -j"${JOBS:-3}" \
-  LLVMARMCodeGen LLVMARMAsmParser LLVMARMDisassembler LLVMARMDesc LLVMARMInfo LLVMARMUtils \
-  LLVMWebAssemblyCodeGen LLVMWebAssemblyAsmParser LLVMWebAssemblyDisassembler LLVMWebAssemblyDesc \
-  LLVMWebAssemblyInfo LLVMWebAssemblyUtils \
-  LLVMPasses LLVMBitWriter LLVMIRReader LLVMLinker LLVMExecutionEngine LLVMMCJIT LLVMInterpreter
+( ulimit -v $((4 * 1024 * 1024))
+  ninja -C llvm-build -j"${JOBS:-3}" \
+    LLVMARMCodeGen LLVMARMAsmParser LLVMARMDisassembler LLVMARMDesc LLVMARMInfo LLVMARMUtils \
+    LLVMWebAssemblyCodeGen LLVMWebAssemblyAsmParser LLVMWebAssemblyDisassembler LLVMWebAssemblyDesc \
+    LLVMWebAssemblyInfo LLVMWebAssemblyUtils \
+    LLVMPasses LLVMBitWriter LLVMIRReader LLVMLinker LLVMExecutionEngine LLVMMCJIT LLVMInterpreter )
+
+[ "$1" = package ] || exit 0
+P=$WORK/llvm-21.1.8-wasi
+rm -rf "$P" && mkdir -p "$P/lib" "$P/include/llvm"
+cp llvm-build/lib/libLLVM*.a "$P/lib/"
+cp -r llvm-project-21.1.8.src/llvm/include/llvm-c "$P/include/"
+cp -r llvm-project-21.1.8.src/llvm/include/llvm/Config "$P/include/llvm/"
+cp -r llvm-build/include/llvm/Config/. "$P/include/llvm/Config/"
+cp "$here/llvm-21.1.8-wasi.patch" "$P/"
+tar -C "$WORK" -cJf "$WORK/llvm-21.1.8-wasi.tar.xz" llvm-21.1.8-wasi
+ls -l "$WORK/llvm-21.1.8-wasi.tar.xz"

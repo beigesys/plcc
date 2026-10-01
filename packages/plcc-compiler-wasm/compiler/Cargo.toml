@@ -1,0 +1,26 @@
+[package]
+name = "plcc-compiler-wasm"
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+publish = false
+description = "plcc's compiler (front end + LLVM code generation + wasm linker) as a WASI program for the browser"
+
+# Built for wasm32-wasip1 against LLVM compiled to WebAssembly (../build.sh),
+# so it is kept out of the plcc workspace, whose crates link the host's LLVM.
+[workspace]
+
+[dependencies]
+inkwell = { version = "0.8.0", default-features = false, features = ["llvm21-1", "llvm21-1-force-static", "target-arm", "target-webassembly"] }
+plcc-build = { version = "0.1.0", path = "../../../crates/plcc-build" }
+plcc-driver = { version = "0.1.0", path = "../../../crates/plcc-driver" }
+plcc-wasm-link = { version = "0.1.0", path = "../../../crates/plcc-wasm-link" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
