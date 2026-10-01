@@ -68,17 +68,35 @@ export interface WritePlan {
 
 /** One claimed DfuSe interface, ready to flash within a profile's limits. */
 export class DfuseDevice {
+  readonly device: UsbDeviceLike;
+  readonly dfu: DfuInterface;
+  readonly profile: DeviceProfile;
+  readonly layout: MemoryLayout;
+  readonly layoutText: string;
+  readonly transferSize: number;
+  readonly functional: FunctionalDescriptor | null;
+  /** The built-in limits for this bootloader, which no profile can widen. */
+  readonly floor: Floor;
+
   private constructor(
-    readonly device: UsbDeviceLike,
-    readonly dfu: DfuInterface,
-    readonly profile: DeviceProfile,
-    readonly layout: MemoryLayout,
-    readonly layoutText: string,
-    readonly transferSize: number,
-    readonly functional: FunctionalDescriptor | null,
-    /** The built-in limits for this bootloader, which no profile can widen. */
-    readonly floor: Floor,
-  ) {}
+    device: UsbDeviceLike,
+    dfu: DfuInterface,
+    profile: DeviceProfile,
+    layout: MemoryLayout,
+    layoutText: string,
+    transferSize: number,
+    functional: FunctionalDescriptor | null,
+    floor: Floor,
+  ) {
+    this.device = device;
+    this.dfu = dfu;
+    this.profile = profile;
+    this.layout = layout;
+    this.layoutText = layoutText;
+    this.transferSize = transferSize;
+    this.functional = functional;
+    this.floor = floor;
+  }
 
   /**
    * Open `device` (a USBDevice in DFU mode), claim the profile's DFU

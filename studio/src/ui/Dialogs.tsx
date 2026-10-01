@@ -14,6 +14,7 @@ import { importKind, ImportError, lastExportReport, mergeImport, readImport, typ
 import { useEditor } from '@/state/editor'
 import { createProject } from '@/state/persistence'
 import { AddDeviceDialog, ManifestUpdateDialog } from './DeviceDialogs'
+import { DownloadDialog } from './DownloadDialog'
 
 function DiagList({ diagnostics, label }: { diagnostics: Diagnostic[]; label: string }) {
   if (!diagnostics.length) return null
@@ -271,6 +272,7 @@ export function DialogHost() {
       <ImportDialog />
       <ExportDialog />
       <ManifestDialog />
+      <DownloadDialog />
       {dialog?.kind === 'addDevice' && (
         <AddDeviceDialog key={dialog.pane ?? 'catalog'} open initialTab={dialog.pane} onOpenChange={(o) => !o && setDialog(null)} />
       )}

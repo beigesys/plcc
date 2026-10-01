@@ -65,13 +65,14 @@ export interface DfuStatus {
 
 /** A failure the device reported, or a transfer that failed. */
 export class DfuError extends Error {
-  constructor(
-    message: string,
-    readonly status?: number,
-    readonly state?: number,
-  ) {
+  readonly status?: number;
+  readonly state?: number;
+
+  constructor(message: string, status?: number, state?: number) {
     super(message);
     this.name = "DfuError";
+    this.status = status;
+    this.state = state;
   }
 }
 
@@ -97,11 +98,15 @@ export const realSleep: Sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** Class requests on one DFU interface. */
 export class DfuInterface {
-  constructor(
-    readonly device: UsbDeviceLike,
-    readonly interfaceNumber: number,
-    readonly sleep: Sleep = realSleep,
-  ) {}
+  readonly device: UsbDeviceLike;
+  readonly interfaceNumber: number;
+  readonly sleep: Sleep;
+
+  constructor(device: UsbDeviceLike, interfaceNumber: number, sleep: Sleep = realSleep) {
+    this.device = device;
+    this.interfaceNumber = interfaceNumber;
+    this.sleep = sleep;
+  }
 
   private setup(request: number, value = 0): UsbSetup {
     return { requestType: "class", recipient: "interface", request, value, index: this.interfaceNumber };

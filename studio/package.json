@@ -19,6 +19,7 @@
     "@fontsource-variable/manrope": "^5.3.0",
     "@fontsource/ibm-plex-mono": "^5.3.0",
     "@fontsource/ibm-plex-sans": "^5.3.0",
+    "@plcc/plc-image": "file:../packages/plc-image",
     "@plcc/plc-wasm": "file:../packages/plc-wasm",
     "@plcc/plcc-compiler-wasm": "file:../packages/plcc-compiler-wasm",
     "@plcc/plcc-wasm": "file:../packages/plcc-wasm",

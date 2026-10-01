@@ -59,7 +59,10 @@ export class FakeDfuDevice implements UsbDeviceLike {
   private readonly sectors: { start: number; size: number; type: string }[] = [];
   readonly transferSize: number;
 
-  constructor(readonly opts: FakeOptions = {}) {
+  readonly opts: FakeOptions;
+
+  constructor(opts: FakeOptions = {}) {
+    this.opts = opts;
     this.vendorId = opts.vendorId ?? 0x2341;
     this.productId = opts.productId ?? 0x0364;
     this.transferSize = opts.transferSize ?? 2048;
