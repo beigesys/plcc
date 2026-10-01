@@ -2,6 +2,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { cursorText, useEditor } from '@/state/editor'
 import { useLive } from '@/state/live'
+import { useCompiler } from '@/plcc/compiler'
+import { useSimBuild } from '@/state/simulate'
 import { ProblemsButton } from './ProblemsPanel'
 import { StateDot } from './StateDot'
 
@@ -76,6 +78,48 @@ function SaveText() {
   )
 }
 
+function mb(n: number) {
+  return `${(n / 1e6).toFixed(1)} MB`
+}
+
+/** What runs the simulation, and why the preview engine runs when it does. */
+export function SimStatus() {
+  const stats = useLive((s) => s.stats)
+  const engine = useLive((s) => s.engine)
+  const fault = useLive((s) => s.fault)
+  const build = useSimBuild()
+  const compiler = useCompiler()
+  const p = compiler.progress
+  let note = ''
+  if (compiler.status === 'loading' && p) {
+    note =
+      p.phase === 'download'
+        ? `downloading plcc's compiler ${p.total ? `${Math.round((100 * p.loaded) / p.total)}% of ${mb(p.total)}` : mb(p.loaded)}`
+        : p.phase === 'compile'
+          ? "starting plcc's compiler"
+          : p.phase === 'cache'
+            ? "plcc's compiler from the cache"
+            : "fetching plcc's compiler"
+  } else if (build.state === 'compiling') note = engine === 'plcc' ? 'rebuilding…' : 'compiling with plcc…'
+  else if (build.state === 'failed') note = engine === 'plcc' ? `edit not built: ${build.message ?? ''}` : `plcc could not build it: ${build.message ?? ''}`
+  else if (build.state === 'unavailable') note = "plcc's compiler is not part of this build"
+  const plccRuns = engine === 'plcc'
+  return (
+    <span className="flex min-w-0 items-center gap-1.5" data-testid="sim-status" data-engine={engine ?? ''}>
+      <StateDot state={fault ? 'fault' : stats?.running ? 'power' : 'idle'} />
+      {plccRuns ? (
+        <span>Simulator · plcc wasm32 build{build.buildMs !== null ? ` (${Math.round(build.buildMs)} ms)` : ''}</span>
+      ) : (
+        <span>
+          Preview engine <span className="rounded-control bg-alarm-bg px-1 text-[11px] text-alarm">preview</span>
+        </span>
+      )}
+      {fault && <span className="text-fault">PLC fault: {fault.message}</span>}
+      {note && <span className={`truncate ${build.state === 'failed' ? 'text-alarm' : 'text-text-muted'}`}>{note}</span>}
+    </span>
+  )
+}
+
 export function StatusBar() {
   const mode = useEditor((s) => s.mode)
   const cursor = useEditor(cursorText)
@@ -100,13 +144,7 @@ export function StatusBar() {
 
   let comms: React.ReactNode = <span className="text-text-muted">Offline — editing only</span>
   if (mode === 'simulate') {
-    comms = (
-      <span className="flex items-center gap-1.5">
-        <StateDot state={stats?.running ? 'power' : 'idle'} />
-        <span>Preview simulator</span>
-        <span className="text-text-muted">(browser, not plcc output)</span>
-      </span>
-    )
+    comms = <SimStatus />
   } else if (mode === 'online') {
     const age = online.lastUpdate ? now - online.lastUpdate : undefined
     const dot = online.state === 'online' ? (online.fault ? 'fault' : 'power') : online.state === 'error' ? 'alarm' : 'idle'

@@ -251,7 +251,7 @@ function DevicePanel() {
         </button>
       }
     >
-      {mode === 'simulate' && <p className="mb-1 text-[11px] text-text-muted">Preview simulator: toggle inputs and drag analog values.</p>}
+      {mode === 'simulate' && <p className="mb-1 text-[11px] text-text-muted">Simulator: toggle inputs and drag analog values.</p>}
       {mode === 'offline' && <p className="mb-1 text-[11px] text-text-muted">States appear in Simulate and Online.</p>}
       <ul className="text-dense">
         {points.map((p) => (

@@ -66,10 +66,12 @@ export class PlcModule {
   readonly tags: TagCodec | null;
   readonly abiVersion: number = 0;
 
-  private constructor(
-    readonly module: WebAssembly.Module,
-    private readonly options: PlcOptions,
-  ) {
+  readonly module: WebAssembly.Module;
+  private readonly options: PlcOptions;
+
+  private constructor(module: WebAssembly.Module, options: PlcOptions) {
+    this.module = module;
+    this.options = options;
     this.tags = options.symbols ? new TagCodec(options.symbols, this) : null;
   }
 

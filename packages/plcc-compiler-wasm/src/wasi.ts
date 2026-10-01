@@ -12,8 +12,10 @@ const ENOTCAPABLE = 76;
 
 /** Thrown by `proc_exit`; `run` turns it into the exit code. */
 export class WasiExit extends Error {
-  constructor(readonly code: number) {
+  readonly code: number;
+  constructor(code: number) {
     super(`exit ${code}`);
+    this.code = code;
   }
 }
 

@@ -196,7 +196,9 @@ export async function loadCompiler(opts: LoadOptions): Promise<LoadedCompiler> {
     if (!res.ok) throw new Error(`downloading the compiler failed (${res.status})`);
     const total = manifest.gzip_bytes;
     const gz = await readAll(res, total, (n) => progress({ phase: "download", loaded: n, total }));
-    wasm = await gunzip(gz);
+    // A server that sends .gz files with Content-Encoding: gzip has already
+    // decompressed it.
+    wasm = gz[0] === 0x1f && gz[1] === 0x8b ? await gunzip(gz) : gz;
     if ((await sha256(wasm)) !== manifest.sha256) throw new Error("the downloaded compiler is corrupt (SHA-256 mismatch)");
     if (cache) {
       try {

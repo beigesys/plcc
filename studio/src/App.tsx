@@ -6,6 +6,7 @@ import { startSimulator, stopSimulator, simSend } from '@/state/live'
 import { disconnectOnline, setOnlineProject } from '@/state/online'
 import { initPersistence } from '@/state/persistence'
 import { runCheck, scheduleCheck } from '@/state/problems'
+import { buildForSimulator, resetSimBuild } from '@/state/simulate'
 import { DialogHost } from '@/ui/Dialogs'
 import { ProblemsPanel } from '@/ui/ProblemsPanel'
 import { CommandPalette } from '@/ui/CommandPalette'
@@ -36,8 +37,11 @@ export function App() {
   useEffect(() => {
     if (mode !== 'simulate') return
     const { project } = useEditor.getState()
+    // The preview engine runs at once; plcc's build replaces it when it is ready.
     startSimulator(project, primaryDevice(project), project.tasks[0]?.interval_ms ?? 10)
+    void buildForSimulator(project, primaryDevice(project))
     let timer: ReturnType<typeof setTimeout> | undefined
+    let rebuild: ReturnType<typeof setTimeout> | undefined
     let prev = project
     const unsub = useEditor.subscribe((s) => {
       if (s.project === prev) return
@@ -47,10 +51,15 @@ export function App() {
         simSend({ type: 'project', project: s.project })
         simSend({ type: 'period', periodMs: s.project.tasks[0]?.interval_ms ?? 10 })
       }, 80)
+      // Edits rebuild the program once typing settles (a cold restart, forces kept).
+      clearTimeout(rebuild)
+      rebuild = setTimeout(() => void buildForSimulator(s.project, primaryDevice(s.project)), 700)
     })
     return () => {
       unsub()
       clearTimeout(timer)
+      clearTimeout(rebuild)
+      resetSimBuild()
       stopSimulator()
     }
   }, [mode, projectId, deviceText])

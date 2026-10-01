@@ -146,6 +146,8 @@ export class SimHost {
     for (const [k, v] of sim.tags.forces) forces[k] = v
     this.post({
       type: 'snapshot',
+      engine: 'preview',
+      fault: null,
       trace: sim.snapshotTrace(),
       values,
       removed,

@@ -35,11 +35,14 @@ export class ScanCycle {
   /** Passes that ran at least one task, per task. */
   readonly runs: number[] = [];
 
-  constructor(
-    readonly plc: PlcModule,
-    readonly clock: Clock,
-    private readonly hooks: ScanHooks = {},
-  ) {
+  readonly plc: PlcModule;
+  readonly clock: Clock;
+  private readonly hooks: ScanHooks;
+
+  constructor(plc: PlcModule, clock: Clock, hooks: ScanHooks = {}) {
+    this.plc = plc;
+    this.clock = clock;
+    this.hooks = hooks;
     this.reset();
   }
 
@@ -158,10 +161,13 @@ export class ScanCycle {
 export class Runner {
   private timer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(
-    readonly cycle: ScanCycle,
-    private readonly opts: { minSleepMs?: number; pollMs?: number } = {},
-  ) {}
+  readonly cycle: ScanCycle;
+  private readonly opts: { minSleepMs?: number; pollMs?: number };
+
+  constructor(cycle: ScanCycle, opts: { minSleepMs?: number; pollMs?: number } = {}) {
+    this.cycle = cycle;
+    this.opts = opts;
+  }
 
   get running(): boolean {
     return this.timer !== null;

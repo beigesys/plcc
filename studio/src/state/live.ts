@@ -9,7 +9,7 @@ import type { DeviceIdentity } from '@/serial/protocol'
 import { create } from 'zustand'
 import { unpackTrace, type Trace } from '@/engine'
 import { parseAddress, ProcessImage, type Project } from '@/model'
-import type { FromWorker, Scalar, SimStats, Snapshot, TagValue, ToWorker } from '@/runtime/messages'
+import type { Engine, FromWorker, Scalar, SimStats, Snapshot, TagValue, ToWorker } from '@/runtime/messages'
 
 export type LiveSource = 'none' | 'sim' | 'online'
 export type OnlineState = 'disconnected' | 'connecting' | 'online' | 'error'
@@ -24,6 +24,12 @@ export interface LiveState {
   image: { I: Uint8Array; Q: Uint8Array; M: Uint8Array } | null
   stats: SimStats | null
   overrun: boolean
+  /** Simulate: what runs the project (plcc's compiled program, or the preview engine). */
+  engine: Engine | null
+  /** Simulate with plcc: the fault that stopped the program. */
+  fault: Snapshot['fault']
+  /** PRINT output of the program (the last 50 lines). */
+  prints: string[]
   online: {
     state: OnlineState
     error?: string
@@ -49,6 +55,9 @@ const initial: LiveState = {
   image: null,
   stats: null,
   overrun: false,
+  engine: null,
+  fault: null,
+  prints: [],
   online: { state: 'disconnected', lastUpdate: 0, transport: null, mKnown: 0 },
 }
 
@@ -109,6 +118,8 @@ function mergeSnapshot() {
     image: s.image,
     stats: s.stats,
     overrun: s.overrun,
+    engine: s.engine,
+    fault: s.fault,
   })
 }
 
@@ -118,6 +129,11 @@ function onWorkerMessage(e: MessageEvent<FromWorker>) {
     console.error('simulator:', m.message)
     return
   }
+  if (m.type === 'print') {
+    useLive.setState((st) => ({ prints: [...st.prints.slice(-49), m.message] }))
+    return
+  }
+  if (m.type === 'fault' || m.type === 'loaded') return
   // Values are diffs: fold an unrendered snapshot's changes into the next one.
   if (pending) m.values = { ...pending.values, ...m.values }
   pending = m

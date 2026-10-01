@@ -90,10 +90,12 @@ export class TagCodec {
   private readonly byPath = new Map<string, SymbolVariable>();
   private readonly little: boolean;
 
-  constructor(
-    readonly symbols: SymbolTable,
-    private readonly host: Host,
-  ) {
+  readonly symbols: SymbolTable;
+  private readonly host: Host;
+
+  constructor(symbols: SymbolTable, host: Host) {
+    this.symbols = symbols;
+    this.host = host;
     if (symbols.pointer_size !== 4 || !symbols.target.startsWith("wasm32")) {
       throw new Error(`the symbol table is for ${symbols.target}, not a wasm32 module`);
     }

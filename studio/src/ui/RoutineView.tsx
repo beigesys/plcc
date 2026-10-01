@@ -11,6 +11,7 @@ import { toggleTag } from '@/state/force'
 import { useLiveRead, useTagMap, useTrace } from '@/state/hooks'
 import { useLive } from '@/state/live'
 import { elementMarks, useProblems, type Problem } from '@/state/problems'
+import { useSimBuild } from '@/state/simulate'
 import { commandForKey, keyName, menuFor, type Target } from '@/state/registry'
 import { CommandMenuContent } from './CommandMenu'
 import { PALETTE_MIME, describeElement, type Mark } from './ladder/Ladder'
@@ -165,6 +166,8 @@ function LadderList({ routine, program }: { routine: Routine; program: string })
   const read = useLiveRead()
   const runtimeErrors = useLive((s) => s.errors)
   const problems = useProblems((s) => s.problems)
+  const faultAt = useSimBuild((s) => s.faultAt)
+  const fault = useLive((s) => s.fault)
   const live = mode !== 'offline' && trace !== null
 
   const marks = useMemo(() => {
@@ -176,9 +179,14 @@ function LadderList({ routine, program }: { routine: Routine; program: string })
       for (const [id, message] of Object.entries(runtimeErrors)) {
         if (!out.has(Number(id))) out.set(Number(id), { severity: 'warning', message })
       }
+      // The fault that stopped plcc's program, at its element.
+      if (fault && faultAt && faultAt.program === program && faultAt.routine === routine.name) {
+        const id = faultAt.element ?? faultAt.rung
+        if (id !== undefined) out.set(id, { severity: 'error', message: `PLC fault: ${fault.message}` })
+      }
     }
     return out
-  }, [problems, program, routine.name, runtimeErrors, mode])
+  }, [problems, program, routine.name, runtimeErrors, mode, fault, faultAt])
 
   const rungProblems = useMemo(() => {
     const by = new Map<Id, Problem[]>()

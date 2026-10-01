@@ -9,13 +9,15 @@
 
 /** Thrown out of `plcc_fault`, unwinding the scan that faulted. */
 export class PlcFault extends Error {
-  constructor(
-    /** `PLCC_FAULT_*`: 1 division by zero, 2 array bounds, 3 null reference; 0 a wasm trap. */
-    readonly code: number,
-    /** `"file:line:col: POU"`, or the trap's message. */
-    readonly where: string,
-  ) {
+  /** `PLCC_FAULT_*`: 1 division by zero, 2 array bounds, 3 null reference; 0 a wasm trap. */
+  readonly code: number;
+  /** `"file:line:col: POU"`, or the trap's message. */
+  readonly where: string;
+
+  constructor(code: number, where: string) {
     super(`PLC fault ${code} (${describeFault(code)}) at ${where}`);
+    this.code = code;
+    this.where = where;
     this.name = "PlcFault";
   }
 }
