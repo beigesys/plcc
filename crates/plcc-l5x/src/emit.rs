@@ -41,7 +41,8 @@ impl Out {
         self.ctx.pop();
     }
 
-    fn ctx_span(&self) -> Span {
+    /// The element synthesized text currently maps to.
+    pub fn ctx_span(&self) -> Span {
         self.ctx.last().copied().unwrap_or(Span::new(0, 0))
     }
 

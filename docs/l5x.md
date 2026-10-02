@@ -107,18 +107,44 @@ resets a TON, clears an ONS storage bit, clears a counter's CU. A branch starts
 each leg with the condition at the branch and ORs the legs where they join.
 Instructions execute in the order they appear, legs top to bottom, so a later
 instruction sees what an earlier one on the same rung wrote. The generated code
-is a straight sequence of statements over a rung-condition variable:
+is a straight sequence of statements over a rung-condition variable `lx__rc`.
+Input instructions that only AND a condition into the rung (XIC, XIO, the
+compares, LIM, MEQ, CMP), and branches made of nothing else, fold into one
+expression, stored in `lx__rc` before the next instruction that acts on the
+rung:
 
 ```iec
-lx__rc := TRUE;                          (* [XIC(Start),XIC(Motor)]XIO(Stop)OTE(Motor); *)
-lx__bs1 := lx__rc; lx__bo1 := FALSE;
-lx__rc := lx__rc AND Start;       lx__bo1 := lx__bo1 OR lx__rc;
-lx__rc := lx__bs1;
-lx__rc := lx__rc AND Motor;       lx__bo1 := lx__bo1 OR lx__rc;
-lx__rc := lx__bo1;
-lx__rc := lx__rc AND NOT Stop;
+(* [XIC(Start) ,XIC(Motor) ]XIO(Stop)OTE(Motor); *)
+lx__rc := (Start OR Motor) AND NOT Stop;
 Motor := lx__rc;
 ```
+
+Every instruction that reads or changes the rung condition, or acts on a
+false rung, runs on `lx__rc` as in the manual: outputs (`Motor := lx__rc`),
+one-shots (`IF lx__rc THEN lx__rc := NOT OnsBit; ...`), timers and counters
+(`lx__ton(T1, lx__rc)`), AOIs (`EnableIn := lx__rc`), JMP, MCR, AFI. A branch
+with such an instruction in a leg keeps the condition at the branch in
+`lx__bs<n>` and ORs the legs into `lx__bo<n>`:
+
+```iec
+(* [XIC(A)OTE(Out1) ,XIC(B) ]OTE(Out2); *)
+lx__bo1 := FALSE;
+lx__rc := A;
+Out1 := lx__rc;
+lx__bo1 := lx__bo1 OR lx__rc;
+lx__bo1 := lx__bo1 OR B;
+lx__rc := lx__bo1;
+Out2 := lx__rc;
+```
+
+The operands are evaluated in the same order as instruction by instruction
+(`AND` and `OR` evaluate both sides), so a status flag set by one compare's
+expression is seen by the next. `plcc_l5x::Options::long_rungs` lowers each
+instruction on its own (`lx__rc := lx__rc AND Start;` ...), the form before
+the folding; `crates/plcc-cli/tests/l5x_compact.rs` runs both forms side by
+side (JIT, fake clock, randomized tags) on every L5X fixture and on 40
+generated programs of random rungs, comparing every variable after every
+scan.
 
 **Prescan.** On the transition to Run a Logix controller prescans every routine
 before the first scan; each instruction's *Prescan* row says what that does (OTE
@@ -261,16 +287,15 @@ to (`--prelude` appends the Logix prelude, so the file compiles on its own:
   `METHOD R_<Routine>` per routine and a `lx__prescan` method (the prescan
   actions, above); a `PROGRAM lx__run_<Program>` and a `CONFIGURATION`
   schedule them like the L5X tasks.
-- **Rungs** are separated by a comment with the rung number, its
-  documentation and its neutral text, then the rung-condition sequence
-  described under "Ladder (RLL) routines":
+- **Rungs** are separated by a comment with the rung number (from 0, as in
+  Studio 5000), its documentation and its neutral text, then the
+  rung-condition sequence described under "Ladder (RLL) routines":
 
   ```iec
   (* rung 0: Seal-in: Start latches the motor through its own contact, Stop breaks it.
      [XIC(Start) ,XIC(Motor) ]XIO(Stop)OTE(Motor);
   *)
-  lx__rc := TRUE;
-  ...
+  lx__rc := (Start OR Motor) AND NOT Stop;
   Motor := lx__rc;
   ```
 

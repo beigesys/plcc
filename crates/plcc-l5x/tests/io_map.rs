@@ -10,6 +10,7 @@ fn opts() -> plcc_l5x::Options {
     let text = std::fs::read_to_string(fixture("opta_io.toml")).expect("map");
     plcc_l5x::Options {
         io_map: plcc_l5x::IoMap::parse(&text).expect("valid map"),
+        ..Default::default()
     }
 }
 
@@ -50,7 +51,7 @@ fn seal_in_on_process_image() {
 fn bad_map_entries_are_reported() {
     let src = read_fixture("opta_io.L5X");
     let map = plcc_l5x::IoMap::parse("\"Nope\" = \"%IX0.0\"\n\"Level\" = \"%IX0.1\"\n").unwrap();
-    let (_, errs) = plcc_l5x::parse_with(&src, &plcc_l5x::Options { io_map: map });
+    let (_, errs) = plcc_l5x::parse_with(&src, &plcc_l5x::Options { io_map: map, ..Default::default() });
     let msgs: Vec<String> = errs.iter().map(|e| e.to_string()).collect();
     assert!(
         msgs.iter()

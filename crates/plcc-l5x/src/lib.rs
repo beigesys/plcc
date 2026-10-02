@@ -41,6 +41,11 @@ pub struct Options {
     /// Bindings of Logix tags (module tags, aliases, base tags) to process-image
     /// addresses (`--io-map`).
     pub io_map: IoMap,
+    /// Lower every ladder instruction on its own through the rung-condition
+    /// variable (`lx__rc := lx__rc AND Start;` ...), instead of folding runs
+    /// of input instructions into one expression. Both run the same; the
+    /// long form is kept for the tests that prove it.
+    pub long_rungs: bool,
 }
 
 /// Name under which the prelude is reported in diagnostics.
@@ -174,6 +179,7 @@ fn lower(source: &str, opts: &Options, annotate: bool) -> Result<Lowered, Vec<L5
     let mut lw = lower::Lower::new(source, opts.io_map.clone());
     lw.errors = reader.errors;
     lw.annotate = annotate;
+    lw.long_rungs = opts.long_rungs;
     let out = lw.project(&project);
     let comments = lw.comments.take();
     Ok((out, lw.errors, lw.env, lw.strings, comments))

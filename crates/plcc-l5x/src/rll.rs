@@ -11,7 +11,19 @@
 //! storage bit. A branch `[a, b]` starts every leg with the condition at the
 //! branch and ORs the legs' results where they join.
 //!
-//! Generated code, per rung:
+//! Generated code, per rung: input instructions that only AND a condition
+//! into the rung (XIC, XIO, compares) and branches of nothing else are
+//! collected and stored in the rung-condition variable when an instruction
+//! that acts on the rung comes:
+//!
+//! ```text
+//! lx__rc := (Start OR Motor) AND NOT Stop;  (* [XIC(Start) ,XIC(Motor) ]XIO(Stop) *)
+//! Motor := lx__rc;                          (* OTE(Motor) *)
+//! ```
+//!
+//! A branch with such an instruction in a leg keeps the condition at the
+//! branch in `lx__bs<n>` and the legs' OR in `lx__bo<n>`. With
+//! [`crate::Options::long_rungs`] every instruction is lowered on its own:
 //!
 //! ```text
 //! lx__rc := TRUE;                       (* rung-condition *)
@@ -49,6 +61,8 @@ pub(crate) struct Shared<'a> {
     /// a `__PLCC_COMMENT(k);` marker whose text is entry `k`, turned into a
     /// comment statement after parsing.
     pub comments: Option<&'a std::cell::RefCell<Vec<String>>>,
+    /// [`crate::Options::long_rungs`].
+    pub long_rungs: bool,
 }
 
 pub(crate) struct RoutineOut {
@@ -159,6 +173,166 @@ struct R<'a, 'x> {
     subs: &'a Subs,
     /// This routine's method (RET return values are stored per routine).
     method: String,
+    /// The rung condition not yet stored in `lx__rc`: the input
+    /// instructions since the last store, ANDed (empty: TRUE). `None`:
+    /// `lx__rc` holds it.
+    rc: Option<Vec<Term>>,
+}
+
+/// A term of a pending rung condition.
+enum Term {
+    /// An input instruction's condition (or `lx__rc`, `lx__bs1`, ...):
+    /// `paren` when it needs parentheses as an operand of AND.
+    Leaf { st: String, span: Span, paren: bool },
+    /// A branch whose legs hold only input instructions: the legs ORed.
+    Or { legs: Vec<Vec<Term>>, span: Span },
+}
+
+/// Scan `s` outside string literals, calling `f(byte index, char, depth)`
+/// for each character at parenthesis depth `depth`; stop when `f` is true.
+/// Returns whether `f` stopped the scan, and the final depth.
+fn scan(s: &str, mut f: impl FnMut(usize, char, i32) -> bool) -> (bool, i32) {
+    let mut depth = 0i32;
+    let mut quote = None;
+    for (i, c) in s.char_indices() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '\'' | '"') => quote = Some(c),
+            (None, '(') => depth += 1,
+            (None, ')') => {
+                depth -= 1;
+                if f(i, c, depth) {
+                    return (true, depth);
+                }
+            }
+            (None, c) => {
+                if f(i, c, depth) {
+                    return (true, depth);
+                }
+            }
+        }
+    }
+    (false, depth)
+}
+
+/// `s` without one pair of parentheses around all of it, if it has one.
+fn unwrap_parens(s: &str) -> Option<&str> {
+    let inner = s.strip_prefix('(')?.strip_suffix(')')?;
+    let (closed_early, depth) = scan(inner, |_, _, d| d < 0);
+    (!closed_early && depth == 0).then_some(inner)
+}
+
+/// Does `s` have an OR or XOR outside parentheses and string literals (so it
+/// needs parentheses as an operand of AND)?
+fn has_top_level_or(s: &str) -> bool {
+    let b = s.as_bytes();
+    let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    scan(s, |i, _, depth| {
+        depth == 0
+            && ["OR", "XOR"].iter().any(|w| {
+                s.get(i..i + w.len()).is_some_and(|x| x.eq_ignore_ascii_case(w))
+                    && (i == 0 || !ident(b[i - 1]))
+                    && b.get(i + w.len()).is_none_or(|&n| !ident(n))
+            })
+    })
+    .0
+}
+
+/// A condition as a term: one pair of outer parentheses moves to `paren`.
+fn leaf(st: &str, span: Span) -> Term {
+    match unwrap_parens(st) {
+        Some(inner) => Term::Leaf {
+            st: inner.to_string(),
+            span,
+            paren: true,
+        },
+        None => Term::Leaf {
+            st: st.to_string(),
+            span,
+            paren: has_top_level_or(st),
+        },
+    }
+}
+
+/// Write `terms` ANDed (TRUE when there are none).
+fn render_and(terms: &[Term], out: &mut Out) {
+    if terms.is_empty() {
+        out.s("TRUE");
+    }
+    let alone = terms.len() == 1;
+    for (k, t) in terms.iter().enumerate() {
+        if k > 0 {
+            out.s(" AND ");
+        }
+        match t {
+            Term::Leaf { st, span, paren } => {
+                out.push_ctx(*span);
+                if *paren && !alone {
+                    out.s("(").s(st).s(")");
+                } else {
+                    out.s(st);
+                }
+                out.pop_ctx();
+            }
+            Term::Or { legs, span } => {
+                out.push_ctx(*span);
+                let wrap = !alone && legs.len() > 1;
+                if wrap {
+                    out.s("(");
+                }
+                for (j, leg) in legs.iter().enumerate() {
+                    if j > 0 {
+                        out.s(" OR ");
+                    }
+                    // AND binds tighter than OR: a leg needs no parentheses.
+                    render_and(leg, out);
+                }
+                if wrap {
+                    out.s(")");
+                }
+                out.pop_ctx();
+            }
+        }
+    }
+}
+
+/// Input instructions: they only AND a condition into the rung, so a run of
+/// them (and branches made of them) folds into one expression.
+fn is_condition(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "XIC"
+            | "XIO"
+            | "EQU"
+            | "EQ"
+            | "NEQ"
+            | "NE"
+            | "LES"
+            | "LT"
+            | "LEQ"
+            | "LE"
+            | "GRT"
+            | "GT"
+            | "GEQ"
+            | "GE"
+            | "LIM"
+            | "LIMIT"
+            | "MEQ"
+            | "CMP"
+    )
+}
+
+/// Is `seq` made of input instructions only (branches included, none with
+/// an empty leg)?
+fn only_conditions(seq: &[Element]) -> bool {
+    seq.iter().all(|e| match e {
+        Element::Branch(b) => b
+            .legs
+            .iter()
+            .all(|l| !l.is_empty() && only_conditions(l)),
+        _ => rung::instr_of(e).is_some_and(|i| is_condition(&i.name)),
+    })
 }
 
 /// Subroutine parameters of a program's routines (1756-RM003 JSR/SBR/RET): the
@@ -218,6 +392,7 @@ pub(crate) fn routine_with(
         guards: 0,
         subs,
         method,
+        rc: None,
     };
     w.temps.insert("lx__rc : BOOL".into());
     // Parse every rung first: labels and MCR/JMP use are routine-wide.
@@ -286,12 +461,22 @@ pub(crate) fn routine_with(
                 }
                 w.body.s("IF lx__jmp = 0 THEN\n");
             }
-            if w.mcr {
-                w.body.s("lx__rc := NOT lx__mcr;\n");
+            if sh.long_rungs {
+                if w.mcr {
+                    w.body.s("lx__rc := NOT lx__mcr;\n");
+                } else {
+                    w.body.s("lx__rc := TRUE;\n");
+                }
             } else {
-                w.body.s("lx__rc := TRUE;\n");
+                let start = text.whole();
+                w.rc = Some(if w.mcr {
+                    vec![leaf("NOT lx__mcr", start)]
+                } else {
+                    Vec::new()
+                });
             }
             w.seq(&g.elements, text);
+            w.flush();
             for _ in 0..w.guards {
                 w.body.s("END_IF;\n");
             }
@@ -488,9 +673,97 @@ impl<'a, 'x> R<'a, 'x> {
         }
     }
 
+    /// AND a condition into the rung: `lx__rc := lx__rc AND <c>;` in the long
+    /// form, otherwise a term of the pending rung condition.
+    fn cond(&mut self, c: &str) {
+        if self.sh.long_rungs {
+            self.line(&format!("lx__rc := lx__rc AND {c};"));
+            return;
+        }
+        let span = self.body.ctx_span();
+        self.rc
+            .get_or_insert_with(|| vec![leaf("lx__rc", span)])
+            .push(leaf(c, span));
+    }
+
+    /// Store the pending rung condition in `lx__rc`.
+    fn flush(&mut self) {
+        if let Some(terms) = self.rc.take() {
+            self.body.s("lx__rc := ");
+            render_and(&terms, &mut self.body);
+            self.body.s(";\n");
+        }
+    }
+
     fn seq(&mut self, seq: &[Element], text: &Text) {
         for e in seq {
             match e {
+                Element::Branch(b)
+                    if !self.sh.long_rungs && only_conditions(std::slice::from_ref(e)) =>
+                {
+                    // Legs of input instructions only: nothing acts on the
+                    // rung inside the branch, so it is the legs' conditions
+                    // ORed, ANDed into the rung.
+                    let r = b.src.as_ref().map(|s| s.span.clone()).unwrap_or(0..0);
+                    let span = text.span(r);
+                    let outer = self.rc.take();
+                    let mut legs = Vec::new();
+                    for leg in &b.legs {
+                        self.rc = Some(Vec::new());
+                        self.seq(leg, text);
+                        legs.push(self.rc.take().unwrap_or_default());
+                    }
+                    self.rc = outer;
+                    self.rc
+                        .get_or_insert_with(|| vec![leaf("lx__rc", span)])
+                        .push(Term::Or { legs, span });
+                }
+                Element::Branch(b) if !self.sh.long_rungs => {
+                    // A leg acts on the rung: the condition at the branch
+                    // (unless it is TRUE) and the legs' OR are kept in
+                    // lx__bs<n> / lx__bo<n>. Every leg starts from the
+                    // condition at the branch, and lx__rc is only read after
+                    // a store, so it need not hold that condition itself.
+                    let r = b.src.as_ref().map(|s| s.span.clone()).unwrap_or(0..0);
+                    self.depth += 1;
+                    let d = self.depth;
+                    let span = text.span(r);
+                    self.body.push_ctx(span);
+                    let start = self.rc.take();
+                    let at_true = start.as_ref().is_some_and(|t| t.is_empty());
+                    if !at_true {
+                        self.temps.insert(format!("lx__bs{d} : BOOL"));
+                        self.body.s(&format!("lx__bs{d} := "));
+                        match start {
+                            Some(terms) => render_and(&terms, &mut self.body),
+                            None => {
+                                self.body.s("lx__rc");
+                            }
+                        }
+                        self.body.s(";\n");
+                    }
+                    self.temps.insert(format!("lx__bo{d} : BOOL"));
+                    self.body.s(&format!("lx__bo{d} := FALSE;\n"));
+                    for leg in &b.legs {
+                        self.rc = Some(if at_true {
+                            Vec::new()
+                        } else {
+                            vec![leaf(&format!("lx__bs{d}"), span)]
+                        });
+                        self.seq(leg, text);
+                        self.body.s(&format!("lx__bo{d} := lx__bo{d} OR "));
+                        match self.rc.take() {
+                            Some(terms) => render_and(&terms, &mut self.body),
+                            None => {
+                                self.body.s("lx__rc");
+                            }
+                        }
+                        self.body.s(";\n");
+                    }
+                    self.rc = Some(vec![leaf(&format!("lx__bo{d}"), span)]);
+                    self.body.pop_ctx();
+                    self.depth -= 1;
+                }
                 Element::Branch(b) => {
                     let legs = &b.legs;
                     let r = b.src.as_ref().map(|s| s.span.clone()).unwrap_or(0..0);
@@ -528,7 +801,10 @@ impl<'a, 'x> R<'a, 'x> {
         }
     }
 
+    /// A statement acting on the rung: the pending rung condition is stored
+    /// in `lx__rc` first.
     fn line(&mut self, s: &str) {
+        self.flush();
         self.body.s(s).s("\n");
     }
 
@@ -682,12 +958,12 @@ impl<'a, 'x> R<'a, 'x> {
             "XIC" => {
                 self.arity(ins, 1, t)?;
                 let b = self.bit(ins, 0, t)?;
-                self.line(&format!("lx__rc := lx__rc AND {b};"));
+                self.cond(&b);
             }
             "XIO" => {
                 self.arity(ins, 1, t)?;
                 let b = self.bit(ins, 0, t)?;
-                self.line(&format!("lx__rc := lx__rc AND NOT {b};"));
+                self.cond(&format!("NOT {b}"));
             }
             "OTE" => {
                 self.arity(ins, 1, t)?;
@@ -789,7 +1065,7 @@ impl<'a, 'x> R<'a, 'x> {
                         "GRT" | "GT" => ">",
                         _ => ">=",
                     };
-                    self.line(&format!("lx__rc := lx__rc AND ({f}({sa}, {sb}) {op} 0);"));
+                    self.cond(&format!("({f}({sa}, {sb}) {op} 0)"));
                     return Ok(());
                 }
                 let a = self.val(ins, 0, t)?;
@@ -803,7 +1079,7 @@ impl<'a, 'x> R<'a, 'x> {
                     _ => operand::BinOp::Ge,
                 };
                 let c = self.ctx.binary(op, &a, &b);
-                self.line(&format!("lx__rc := lx__rc AND {};", c.st));
+                self.cond(&c.st);
             }
             "LIM" | "LIMIT" => {
                 // Low <= High: Low <= Test <= High. Low > High: the circular
@@ -814,8 +1090,8 @@ impl<'a, 'x> R<'a, 'x> {
                 let hi = self.val(ins, 2, t)?;
                 let d = widest(&[lo.dom, te.dom, hi.dom]);
                 let (lo, te, hi) = (conv(&lo, d), conv(&te, d), conv(&hi, d));
-                self.line(&format!(
-                    "lx__rc := lx__rc AND (({lo} <= {hi} AND {lo} <= {te} AND {te} <= {hi}) OR ({lo} > {hi} AND ({te} >= {lo} OR {te} <= {hi})));"
+                self.cond(&format!(
+                    "(({lo} <= {hi} AND {lo} <= {te} AND {te} <= {hi}) OR ({lo} > {hi} AND ({te} >= {lo} OR {te} <= {hi})))"
                 ));
             }
             "MEQ" => {
@@ -824,14 +1100,12 @@ impl<'a, 'x> R<'a, 'x> {
                 let m = self.val(ins, 1, t)?;
                 let c = self.val(ins, 2, t)?;
                 let (s, m, c) = (zero_fill(&s), zero_fill(&m), zero_fill(&c));
-                self.line(&format!(
-                    "lx__rc := lx__rc AND (({s} AND {m}) = ({c} AND {m}));"
-                ));
+                self.cond(&format!("(({s} AND {m}) = ({c} AND {m}))"));
             }
             "CMP" => {
                 self.arity(ins, 1, t)?;
                 let v = self.val(ins, 0, t)?;
-                self.line(&format!("lx__rc := lx__rc AND {};", conv(&v, Dom::Bool)));
+                self.cond(&conv(&v, Dom::Bool));
             }
             // ── Math (1756-RM003 "Compute/Math Instructions") ──
             "ADD" | "SUB" | "MUL" | "DIV" | "MOD" | "XPY" => {
@@ -1033,7 +1307,14 @@ impl<'a, 'x> R<'a, 'x> {
             "FLL" => self.fll(ins, t)?,
             // ── Program control (1756-RM003 "Program Control Instructions") ──
             "NOP" | "SBR" => {}
-            "AFI" => self.line("lx__rc := FALSE;"),
+            // Always false. The rung so far is stored first, as in the long
+            // form, unless it is TRUE (nothing to evaluate).
+            "AFI" => {
+                if self.rc.as_ref().is_some_and(|t| t.is_empty()) {
+                    self.rc = None;
+                }
+                self.line("lx__rc := FALSE;");
+            }
             "MCR" => {
                 // "Each time the MCR instruction is executed with
                 // rung-condition-in false, the override behavior is toggled."

@@ -62,6 +62,8 @@ pub(crate) struct Lower<'s> {
     globals: HashMap<String, Span>,
     /// Emit a comment before each rung (`plcc convert`).
     pub annotate: bool,
+    /// [`crate::Options::long_rungs`].
+    pub long_rungs: bool,
     /// Texts of the rung comments, by marker number.
     pub comments: std::cell::RefCell<Vec<String>>,
 }
@@ -89,6 +91,7 @@ impl<'s> Lower<'s> {
             strings: Default::default(),
             globals: HashMap::new(),
             annotate: false,
+            long_rungs: false,
             comments: Default::default(),
         }
     }
@@ -900,6 +903,7 @@ impl<'s> Lower<'s> {
                 aois: &self.aois,
                 strings: &self.strings,
                 comments: self.annotate.then_some(&self.comments),
+                long_rungs: self.long_rungs,
             };
             let sbr = rll::subroutines(&ctx, &pr.routines, &routines);
             for (method, tys) in &sbr.ret {
@@ -1141,6 +1145,7 @@ impl<'s> Lower<'s> {
             aois: &self.aois,
             strings: &self.strings,
             comments: self.annotate.then_some(&self.comments),
+            long_rungs: self.long_rungs,
         };
         let mut lowered: Vec<(&str, RoutineOut)> = Vec::new();
         let mut errs = Vec::new();
