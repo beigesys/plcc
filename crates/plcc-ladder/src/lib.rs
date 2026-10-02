@@ -96,7 +96,7 @@ pub fn to_unit(project: &Project, annotate: bool) -> (CompilationUnit, Vec<lower
         decls.extend(u.declarations);
     }
     for pou in &project.pous {
-        let (d, errs) = pou_decl(pou, annotate);
+        let (d, errs) = pou_decl_in(pou, annotate, &project.globals);
         errors.extend(errs);
         decls.extend(d);
     }
@@ -130,6 +130,18 @@ fn push_parse_errors(
 
 /// One POU as a declaration.
 pub fn pou_decl(pou: &Pou, annotate: bool) -> (Option<Declaration>, Vec<lower::LowerError>) {
+    pou_decl_in(pou, annotate, &[])
+}
+
+/// [`pou_decl`] for a POU of a project with `globals`: a block whose
+/// instance is a global (a Logix controller-scoped TIMER translated to a TON)
+/// calls that global, not a hidden local of the same name that would shadow
+/// it.
+pub fn pou_decl_in(
+    pou: &Pou,
+    annotate: bool,
+    globals: &[Variable],
+) -> (Option<Declaration>, Vec<lower::LowerError>) {
     let mut errors = Vec::new();
     let (kw, end) = match pou.kind {
         PouKind::Program => ("PROGRAM", "END_PROGRAM"),
@@ -151,7 +163,12 @@ pub fn pou_decl(pou: &Pou, annotate: bool) -> (Option<Declaration>, Vec<lower::L
     let Some(mut decl) = u.declarations.into_iter().next() else {
         return (None, errors);
     };
-    let declared = pou.variables.iter().map(|v| v.name.clone()).collect();
+    let declared = pou
+        .variables
+        .iter()
+        .chain(globals)
+        .map(|v| v.name.clone())
+        .collect();
     let opts = lower::Options {
         annotate,
         in_function: pou.kind == PouKind::Function,

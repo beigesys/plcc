@@ -318,3 +318,132 @@ fn logix_math_differences_are_reported() {
     let (_, errs) = plcc_ladder::to_unit(&iec, false);
     assert!(errs.is_empty(), "{errs:?}");
 }
+
+/// Controller-scoped TIMER / COUNTER tags used by one program and read by
+/// another, and a program-scoped TIMER, for the scope test below.
+const SCOPES_L5X: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="33.01" TargetName="Scopes" TargetType="Controller">
+<Controller Use="Target" Name="Scopes" ProcessorType="1769-L33ER" MajorRev="33" MinorRev="11">
+<DataTypes/><Modules/><AddOnInstructionDefinitions/>
+<Tags>
+<Tag Name="Start" TagType="Base" DataType="BOOL"/>
+<Tag Name="Pulse" TagType="Base" DataType="BOOL"/>
+<Tag Name="RunTimer" TagType="Base" DataType="TIMER"/>
+<Tag Name="Parts" TagType="Base" DataType="COUNTER"/>
+<Tag Name="Done" TagType="Base" DataType="BOOL"/>
+<Tag Name="Full" TagType="Base" DataType="BOOL"/>
+<Tag Name="LocalDone" TagType="Base" DataType="BOOL"/>
+</Tags>
+<Programs>
+<Program Name="Run" MainRoutineName="Main">
+<Tags>
+<Tag Name="Delay" TagType="Base" DataType="TIMER"/>
+</Tags>
+<Routines>
+<Routine Name="Main" Type="RLL">
+<RLLContent>
+<Rung Number="0" Type="N"><Text><![CDATA[XIC(Start)TON(RunTimer,40,0);]]></Text></Rung>
+<Rung Number="1" Type="N"><Text><![CDATA[XIC(Pulse)CTU(Parts,3,0);]]></Text></Rung>
+<Rung Number="2" Type="N"><Text><![CDATA[XIC(Start)TON(Delay,20,0);]]></Text></Rung>
+<Rung Number="3" Type="N"><Text><![CDATA[XIC(Delay.DN)OTE(LocalDone);]]></Text></Rung>
+</RLLContent>
+</Routine>
+</Routines>
+</Program>
+<Program Name="Watch" MainRoutineName="Main">
+<Tags/>
+<Routines>
+<Routine Name="Main" Type="RLL">
+<RLLContent>
+<Rung Number="0" Type="N"><Text><![CDATA[XIC(RunTimer.DN)OTE(Done);]]></Text></Rung>
+<Rung Number="1" Type="N"><Text><![CDATA[XIC(Parts.DN)OTE(Full);]]></Text></Rung>
+</RLLContent>
+</Routine>
+</Routines>
+</Program>
+</Programs>
+<Tasks>
+<Task Name="MainTask" Type="CONTINUOUS" Priority="10"><ScheduledPrograms><ScheduledProgram Name="Run"/><ScheduledProgram Name="Watch"/></ScheduledPrograms></Task>
+</Tasks>
+</Controller>
+</RSLogix5000Content>
+"#;
+
+/// A Logix TIMER / COUNTER tag becomes exactly one IEC instance, in the
+/// scope of the tag: a controller tag is a VAR_GLOBAL that every program
+/// sees (not shadowed by a program-local instance of the same name), a
+/// program tag a VAR of that program.
+#[test]
+fn logix_tags_keep_their_scope_in_iec() {
+    let _clock = jit::clock();
+    let (logix, errs) = plcc_l5x::ladder::read(SCOPES_L5X);
+    assert!(errs.iter().all(|e| e.is_warning()), "{errs:?}");
+    let logix = logix.unwrap();
+    let (iec, _) = plcc_l5x::ladder::translate(&logix, Dialect::Iec);
+    let unit = iec_unit(&iec);
+    let st = plcc_st::print_unit(&unit);
+    let declared = |name: &str| -> Vec<String> {
+        let mut at = Vec::new();
+        for d in &unit.declarations {
+            let (scope, blocks) = match d {
+                plcc_st::Declaration::GlobalVarDecl(b) => {
+                    ("global".to_string(), std::slice::from_ref(b))
+                }
+                plcc_st::Declaration::Program(p) => (p.name.name.clone(), p.var_blocks.as_slice()),
+                _ => continue,
+            };
+            for b in blocks {
+                for v in &b.declarations {
+                    if v.name.name.eq_ignore_ascii_case(name) {
+                        at.push(scope.clone());
+                    }
+                }
+            }
+        }
+        at
+    };
+    assert_eq!(declared("RunTimer"), ["global"], "{st}");
+    assert_eq!(declared("Parts"), ["global"], "{st}");
+    assert_eq!(declared("Delay"), ["Run"], "{st}");
+    // Watch reads the timer and the counter Run drives.
+    let (original, _) = plcc_l5x::parse(SCOPES_L5X);
+    let ctx_a = inkwell::context::Context::create();
+    let ctx_b = inkwell::context::Context::create();
+    let a = jit::load(&ctx_a, "logix", &jit::with_libs(original, true)).unwrap();
+    let b = jit::load(&ctx_b, "iec", &jit::with_libs(unit, false))
+        .unwrap_or_else(|e| panic!("{e}\n{st}"));
+    let o = jit::Diff {
+        only: Some(vec!["Done".into(), "Full".into(), "LocalDone".into()]),
+        ..opts(&logix)
+    };
+    jit::differential_with(&a, &b, &["Start".into(), "Pulse".into()], 300, 17, 15, &o)
+        .unwrap_or_else(|e| panic!("{e}\n{st}"));
+    // The outputs do come on: the comparison is not of two dead timers.
+    let var = |p: &jit::Plc, name: &str| {
+        p.contract
+            .variables
+            .iter()
+            .find(|v| {
+                jit::observable(v)
+                    && v.path
+                        .rsplit('.')
+                        .next()
+                        .is_some_and(|l| l.eq_ignore_ascii_case(name))
+            })
+            .unwrap_or_else(|| panic!("no variable {name}"))
+            .clone()
+    };
+    for p in [&a, &b] {
+        p.set_var(&var(p, "Start"), 1);
+        for _ in 0..4 {
+            p.set_var(&var(p, "Pulse"), 1);
+            p.scan();
+            p.set_var(&var(p, "Pulse"), 0);
+            jit::advance(20 * jit::MS);
+            p.scan();
+        }
+        for out in ["Done", "Full", "LocalDone"] {
+            assert_eq!(p.get_var(&var(p, out)), Some(1), "{out}\n{st}");
+        }
+    }
+}

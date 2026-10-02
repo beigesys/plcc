@@ -250,7 +250,7 @@ Instructions*, *Compute/Math Instructions*, *Move/Logical Instructions* and
 | S:FS | the program variable S_FS, TRUE until a last rung `S_FS := FALSE` | yes | |
 | S:V S:Z S:N, module tags `Local:1:I`, writes to `x.[i]` | — | NOT TRANSLATED | |
 | MCR, UID/UIE, GSV/SSV, MSG, EVENT, FOR/BRK, SBR/RET with parameters, COP/CPS/FLL, BSL/BSR, FIFO/LIFO, BTD, MVM, SWPB, string instructions, SIZE, TOD/FRD, AOIs | — | NOT TRANSLATED | no IEC ladder counterpart |
-| TIMER / COUNTER tags; `DINT[10]`; STRING; alias tags; UDTs | TON/TOF/RTO, CTU/CTD/CTUD instances (by use); `ARRAY[0..9] OF DINT`; STRING[82]; — ; the type name | | |
+| TIMER / COUNTER tags; `DINT[10]`; STRING; alias tags; UDTs | TON/TOF/RTO, CTU/CTD/CTUD instances (by use), one per tag, in the tag's scope (a controller tag is a VAR_GLOBAL every program calls, a program tag a VAR of its program); `ARRAY[0..9] OF DINT`; STRING[82]; — ; the type name | | |
 
 **Tested** (`crates/plcc-cli/tests/ladder_translate.rs`): an IEC model with
 every mapped element (seal-in, set/reset, edge contact and coils, negated coil,
@@ -259,7 +259,9 @@ TON, TOF, RTO and CTU with resets, ADD, MOVE, GT) and the PLCopen fixtures
 compiled with Logix semantics and run against the IEC originals over 300–400
 randomized scans; the same model taken IEC → Logix → IEC runs like the
 original; the L5X fixtures `seal_in`, `bits_branches` and `timers_counters`
-are translated to IEC and run against the Logix originals.
+are translated to IEC and run against the Logix originals, and controller-
+scoped TIMER and COUNTER tags driven by one program and read by another stay
+one global instance each (`logix_tags_keep_their_scope_in_iec`).
 Variables are compared by name after every scan from the second on (inputs
 stay FALSE during the first, so prescan effects do not set the runs apart).
 The `math` fixture, which exists to exercise Logix-only arithmetic, is checked
