@@ -3,10 +3,11 @@
 # plcc studio
 
 A web ladder editor for PLC programs, built on plcc. Everything runs in the
-browser, with no server of any kind: projects are stored in the browser's
-Origin Private File System (OPFS), plcc itself (its front end, its LLVM code
-generator and its linkers) runs as WebAssembly in Web Workers, the simulator
-runs plcc's own build of the project, and an Arduino Opta is watched over
+browser, with no server of any kind: a project is a folder on your disk
+(opened like in a desktop IDE, so it can live in git, be edited by other
+tools and be backed up), plcc itself (its front end, its LLVM code generator
+and its linkers) runs as WebAssembly in Web Workers, the simulator runs
+plcc's own build of the project, and an Arduino Opta is watched over
 WebSerial and flashed over WebUSB.
 
 ![Simulate: plcc's wasm32 build of the demo running in the browser](docs/screenshots/simulate.png)
@@ -30,7 +31,7 @@ copied (`.npmrc`). Two of them carry WebAssembly that is built, not committed:
 
 | Script | What it does |
 |---|---|
-| `npm test` | vitest: model and rung text, golden tests against plcc-wasm (the model round-trips through plcc, rung text reads as plcc reads it, the catalog is plcc's), migration of old projects, the command registry, the preview engine, the simulator worker running plcc's real build, Download against a fake bootloader, the serial protocol and the WebSerial transport, the store. Tests that need a built wasm package skip without it. |
+| `npm test` | vitest: model and rung text, golden tests against plcc-wasm (the model round-trips through plcc, rung text reads as plcc reads it, the catalog is plcc's), migration of old projects, the command registry, the preview engine, the simulator worker running plcc's real build, Download against a fake bootloader, the serial protocol and the WebSerial transport, the store, and projects in folders against an in-memory FileSystemDirectoryHandle (new / open / recent, permission prompts and denials, moved folders, changes on disk, conflicts). Tests that need a built wasm package skip without it. |
 | `npm run lint` | ESLint (typescript-eslint, react-hooks) |
 | `npm run build` | type check (`tsc -b`, strict), then the production bundle in `dist/` (with the compiler in `dist/plcc-compiler/` when it is built) |
 | `npm run screenshots` | builds the app, drives it in headless Chromium, checks the flows end to end (below) and writes `docs/screenshots/*.png` and `perf.json`. `STUDIO_BASE=/plcc/` runs it as GitHub Pages serves it. Run `npx playwright install chromium` once first |
@@ -43,6 +44,9 @@ from `localhost` or `https`. GitHub Pages builds it all in CI
 
 | | |
 |---|---|
+| Start screen | ![start](docs/screenshots/start-screen-recent.png) |
+| A project in a folder | ![folder](docs/screenshots/project-folder.png) |
+| Changed on disk while editing | ![conflict](docs/screenshots/disk-conflict.png) |
 | Offline editing | ![offline](docs/screenshots/offline.png) |
 | Simulate (plcc's wasm32 build) | ![simulate](docs/screenshots/simulate.png) |
 | plcc's diagnostics on a broken rung, Problems | ![diagnostics](docs/screenshots/diagnostics.png) |
@@ -57,9 +61,11 @@ from `localhost` or `https`. GitHub Pages builds it all in CI
 
 The layout has five parts:
 
-- **Top bar (52 px):** logo, File (projects, import, export), a project /
-  program / routine breadcrumb, the Offline | Simulate | Online switch, a
-  device status chip, the theme menu, and Download.
+- **Top bar (52 px):** logo, File (New project…, Open project…, Open
+  recent, Save to folder…, import, export, Close project), a folder /
+  project / program / routine breadcrumb, the Offline | Simulate | Online
+  switch, a device status chip, the theme menu, and Download. Under it, a
+  banner when the project's folder needs you (below).
 - **Left nav (232 px):** devices, programs and their routines (with their
   problem counts), then the project views: Tags, I/O mapping and Tasks.
 - **Center:** the rung list. Each rung is a card with a number gutter, a
@@ -71,7 +77,8 @@ The layout has five parts:
   virtual I/O panel.
 - **Problems panel** (from the status bar's counter) and the **status bar
   (30 px):** what runs the simulation, scan time, period, jitter, the
-  problem counts, the cursor position, and the save state.
+  problem counts, the cursor position, and the save state (`Saved to
+  <folder>`, `Unsaved`, `Not saved` while a banner is up).
 
 ## Editing
 
@@ -153,8 +160,10 @@ src/
               project's devices
   serial/     console protocol, OnlineSession (info, img polling, mw, prog /
               stop / run, the traffic log), WebSerial transport, fake console
-  store/      FileStore (OPFS or memory), project <-> files, ProjectRepo,
-              zip export / import, autosave
+  store/      FileStore over a directory handle (a folder on disk, or OPFS)
+              or memory, project <-> files, ProjectFolder (one project's
+              files, change detection), ProjectRepo (browser storage), recent
+              folders (IndexedDB), the folder watcher, zip, autosave
   state/      zustand stores: editor, live values, problems (plcc check),
               simulate (builds), download, convert (import / export), the
               command registry and its commands, persistence, theme
@@ -165,7 +174,7 @@ What runs where (docs/studio-wasm.md has the details and the numbers):
 
 | Thread | What |
 |---|---|
-| page | the editor, OPFS, WebSerial (Online), WebUSB (Download) |
+| page | the editor, project folders and OPFS, WebSerial (Online), WebUSB (Download) |
 | front-end worker | `@plcc/plcc-wasm` (765 KB gzip): check after edits (debounced 400 ms), the ST view and import / export (convert), manifest validation, fault sites |
 | compiler worker | `@plcc/plcc-compiler-wasm` (10.2 MB gzip, fetched on the first Simulate or Download, cached in Cache Storage by its SHA-256): a fresh instance per build |
 | simulator worker | the preview engine, then plcc's wasm32 build run by `@plcc/plc-wasm` |
@@ -216,13 +225,27 @@ plcc compiles the model as it compiles an L5X export: each variable's
 `address` binds it to the process image (the L5X I/O map, docs/l5x.md), and
 each task is a periodic (or continuous) Logix task.
 
-### On disk (OPFS)
+### On disk
+
+A project is a folder:
 
 ```
-projects/<id>/project.toml             format = 2, name, [[devices]] (name, manifest)
-projects/<id>/project.json             the plcc-ladder model: `plcc convert project.json --to l5x` works on it
-projects/<id>/devices/<device-id>.toml the project's copy of each device manifest (docs/device-manifest.md)
+project.toml             format = 2, name, [[devices]] (name, manifest)
+project.json             the plcc-ladder model: `plcc convert project.json --to l5x` works on it
+devices/<device-id>.toml the project's copy of each device manifest (docs/device-manifest.md)
+README.md                written once, by New project: the name, and how to open it
+.gitignore               written once, by New project: lists .plcc/ (local, untracked state)
 ```
+
+The files are meant for version control: JSON is two-space indented with a
+stable key order, TOML is smol-toml's stable output, every file ends in a
+newline, and none of them holds a timestamp or UI state. Saving the same
+project twice writes the same bytes, and a save writes only the files whose
+contents changed. What the studio remembers for you (the last view per
+project, the theme, recent folders) stays in the browser: localStorage and
+IndexedDB. The studio reads and writes only the files above, so a folder
+can hold anything else (docs, a `.git`), and New project leaves an existing
+README.md or .gitignore alone.
 
 Projects saved by the first studio (`tags.toml`, `routines/*.ladder.json` in
 its draft model) are migrated when opened and saved in format 2. Its
@@ -232,9 +255,66 @@ before and `XIC(edgeN)` in place; an edge coil `OSR` / `OSF`; a negated coil
 an `OTE` of a helper and `XIO(helper)OTE(x)` in a rung after.
 
 Export and import produce the same files inside a `.zip`. TOML is handled by
-smol-toml and zip by fflate, both MIT. If OPFS is unavailable (a private
-window, an old browser), projects are kept in memory and the status bar says
-so.
+smol-toml and zip by fflate, both MIT.
+
+### Projects, folders and the browser
+
+With no project open, the studio shows a start screen:
+
+- **New project…** opens the browser's folder picker. Pick an empty folder
+  (the picker can create one); the project, a README.md and a .gitignore are
+  written into it, and it opens. A folder that already holds a project is
+  offered for opening instead; any other non-empty folder is refused
+  (hidden entries such as `.git` do not count, so initializing a repository
+  first is fine).
+- **Open project…** opens a folder with `project.toml`; any other folder
+  gets an error that says what to pick.
+- **Recent folders** (also File > Open recent) reopen with a click. The
+  browser keeps a handle to each folder (in IndexedDB), not its path. In a
+  later visit the browser usually asks again for permission to edit the
+  folder; the click is what lets it ask. If you say no, or the folder was
+  moved or deleted, the studio says so and offers to remove the entry
+  (Open project… finds a moved folder again). At startup the last folder
+  reopens by itself only while the browser still grants access (Chrome's
+  "Allow on every visit"); otherwise the start screen marks it "click to
+  reopen".
+- **Try the demo** opens the demo project in browser storage, picking
+  nothing.
+- **Browser storage (no folder)** keeps projects inside the browser's
+  Origin Private File System, as the studio did before: for quick
+  experiments, and for browsers without folder access. **Save to folder…**
+  copies one into a picked folder and switches to it (the browser copy
+  stays until you delete it).
+- **Close project** (File) goes back to the start screen.
+
+While a project is open:
+
+- **Autosave** writes to its folder 600 ms after an edit settles. Each file
+  is written through `createWritable()`, which writes a swap file and moves
+  it into place on close, so another program never reads half a file.
+- **Changes on disk** made by other programs (a checkout, an editor, a sync
+  tool) are noticed: with `FileSystemObserver` where the browser has it
+  (feature-detected), otherwise by checking the project files' size and
+  modification time every 2 s while the tab is visible, and when it becomes
+  visible again. A touch that leaves the contents alone is ignored. With no
+  unsaved edits the project reloads, with a notice in the status bar. With
+  unsaved edits a banner asks: **Reload from disk** (drop your edits) or
+  **Keep mine and overwrite**; nothing is written until you choose. A save
+  also checks first, so the studio never overwrites a change it has not
+  seen. A file that cannot be read (say, conflict markers in project.json)
+  keeps the editor's project and says why.
+- **Losing access** (permission revoked in the browser's site settings)
+  shows a banner with **Grant access**; your edits stay in the editor, and
+  are saved once access is back. A folder deleted under the studio gets a
+  banner with **Save to another folder…**.
+
+| Browser | Projects in folders | Fallback |
+|---|---|---|
+| Chrome, Edge, Opera (desktop) | yes: `showDirectoryPicker`, handles in IndexedDB, permission prompts; changes noticed by polling, or `FileSystemObserver` where the browser has it | — |
+| Firefox, Safari | no (`showDirectoryPicker` is Chromium-only) | browser storage (OPFS), with Import / Export .zip to back up or move a project, or to put it under version control; the start screen says so |
+| No OPFS either (some private windows, old browsers) | no | memory only, until the tab closes; the status bar says so |
+
+Folder access needs the page served from `localhost` or `https`.
 
 ## What works
 
@@ -291,17 +371,37 @@ so.
 
 ### Checked end to end (`npm run screenshots`)
 
-The demo opens and checks clean; right-click StartPB → Change type → XIO
+The start screen offers New, Open and the demo; the demo opens and checks
+clean; right-click StartPB → Change type → XIO
 changes it; Shift+F10 opens the menu; a broken rung gets plcc's diagnostics
 on two elements and in Problems; the ST view shows the generated ST and the
 IEC translation; Simulate runs plcc's build (1.6-1.7 s on a local server,
 1.4 s from the cache after a reload), StartPB seals Motor in and RunTimer
 accumulates about 1000 ms per second; Download builds the Opta image
 (10.7 KB at 0x08180000); an L5X fixture and an ST file import; Online against
-the demo device shows the console traffic and the program state. With
+the demo device shows the console traffic and the program state; New
+project… writes the project, README.md and .gitignore into a folder, edits
+autosave to it, a change made on disk reloads the project, a change on
+disk while an edit is unsaved raises the conflict banner and nothing is
+overwritten until Keep mine, Open refuses a folder without project.toml and
+New a non-empty one, Open recent reopens the folder, and Save to folder…
+moves a browser-storage project to disk. The native folder picker cannot be
+scripted, so the script replaces `showDirectoryPicker` with one that returns
+folders under an OPFS directory (the same handle interface). With
 `STUDIO_BASE=/plcc/` too.
 
 ## What is left
+
+- Folder projects are not yet tried by hand in Chrome against a real disk
+  folder under version control (the checks above use OPFS folders through a
+  stubbed picker, and an in-memory handle in vitest). Chromium closes itself
+  when an *incognito* page reads a directory handle back from IndexedDB, at
+  least for OPFS handles (seen in Playwright's default contexts; the
+  screenshot script uses a normal profile); whether that also happens for
+  real folders in an Incognito window is not known yet.
+- A folder project's name lives in project.toml and cannot be edited in the
+  studio yet (browser-storage projects can be renamed); New project names
+  it after the folder.
 
 - Run Download and an Online session against a real Opta once the
   program-image runtime is on it (runtimes/arduino-opta/README.md).
