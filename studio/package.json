@@ -13,12 +13,17 @@
     "screenshots": "node scripts/screenshots.mjs"
   },
   "dependencies": {
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.13",
     "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
     "@fontsource-variable/manrope": "^5.3.0",
     "@fontsource/ibm-plex-mono": "^5.3.0",
     "@fontsource/ibm-plex-sans": "^5.3.0",
+    "@lezer/highlight": "^1.2.5",
     "@plcc/plc-image": "file:../packages/plc-image",
     "@plcc/plc-wasm": "file:../packages/plc-wasm",
     "@plcc/plcc-compiler-wasm": "file:../packages/plcc-compiler-wasm",

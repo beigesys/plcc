@@ -7,6 +7,14 @@
 
 :root,
 :root[data-theme="graphite"] {
+  --syn-keyword: #a5b4fc;
+  --syn-type: #67e8f9;
+  --syn-number: #f9a8d4;
+  --syn-string: #d8b4fe;
+  --syn-comment: #8b8b94;
+  --syn-function: #e4e4e7;
+  --syn-selection: #3f3f4699;
+
   --bg: #0a0a0b;
   --surface: #131316;
   --surface-2: #18181b;
@@ -37,6 +45,14 @@
 }
 
 :root[data-theme="control-room"] {
+  --syn-keyword: #a5b4fc;
+  --syn-type: #99f6e4;
+  --syn-number: #f9a8d4;
+  --syn-string: #d8b4fe;
+  --syn-comment: #7f8a96;
+  --syn-function: #e8ebef;
+  --syn-selection: #4b556399;
+
   --bg: #1a1e23;
   --surface: #22272e;
   --surface-2: #2a3038;
@@ -64,6 +80,14 @@
 }
 
 :root[data-theme="blueprint"] {
+  --syn-keyword: #4338ca;
+  --syn-type: #0e7490;
+  --syn-number: #be185d;
+  --syn-string: #7e22ce;
+  --syn-comment: #78716c;
+  --syn-function: #1b1a17;
+  --syn-selection: #bfdbfe99;
+
   --bg: #f5f4ef;
   --surface: #ffffff;
   --surface-2: #faf9f6;
