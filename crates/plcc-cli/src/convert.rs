@@ -203,7 +203,9 @@ fn model_to_st(model: &Project, prelude: bool) -> Result<String> {
             if errs.iter().any(|e| !e.is_warning()) {
                 miette::bail!("the Logix model does not lower:\n{}", joined(&errs));
             }
-            let mut out = plcc_st::print_unit(&unit);
+            // The text is not complete without the prelude: say what it holds.
+            let mut out = String::from(plcc_l5x::PRELUDE_NOTE);
+            out.push_str(&plcc_st::print_unit(&unit));
             if prelude {
                 out.push_str("\n(* ---- Logix prelude (plcc-l5x) ---- *)\n");
                 out.push_str(&plcc_l5x::prelude());

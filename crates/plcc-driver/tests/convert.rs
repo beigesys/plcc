@@ -139,6 +139,33 @@ fn st_view_numbers_rungs_from_zero() {
     }
 }
 
+/// The "As compiled" view reads as a complete program: the first-scan flag
+/// the program body sets, `lx__S_FS`, is explained where it is used and in
+/// the head of the text (it is a global of the Logix prelude), and with the
+/// prelude appended the text declares it and checks.
+#[test]
+fn st_view_explains_the_first_scan_flag() {
+    let (st, _) = st_view(DEMO, Dialect::Logix);
+    assert!(st.starts_with(plcc_l5x::PRELUDE_NOTE), "{st}");
+    let used = st.find("lx__S_FS := lx__first;").expect("first-scan flag");
+    let said = st.find("(* S:FS: lx__S_FS is TRUE during this program's first scan").expect("comment");
+    assert!(said < used, "{st}");
+    assert!(st[said..used].contains("VAR_GLOBALs of\n"), "{st}");
+    // With the prelude: declared, and the whole text checks.
+    let mut p = project(&[("project.json", DEMO)]);
+    p.entry = Some(vec!["project.json".into()]);
+    let c = convert(&p, Format::St, Some(Dialect::Logix), true);
+    let full = c.output.unwrap_or_else(|| panic!("{:#?}", c.diagnostics));
+    assert!(full.contains("lx__S_FS : BOOL;"));
+    let checked = plcc_driver::check(&project(&[("view.st", &full)]));
+    let errors: Vec<_> = checked
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "{errors:#?}");
+}
+
 /// A rung the translation adds (a one-shot's storage-bit update) is numbered
 /// as the rung it belongs to: the rungs after it keep their numbers.
 #[test]

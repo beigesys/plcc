@@ -997,6 +997,19 @@ impl<'s> Lower<'s> {
         // S:FS is set during the program's first scan; the prescan pass runs
         // just before it (1756-RM003 "Math status flags", each instruction's
         // "Prescan" row).
+        if self.annotate {
+            // The printed program does not include the prelude: say where
+            // the status flags come from.
+            let mut c = self.comments.borrow_mut();
+            out.s(&format!("__PLCC_COMMENT({});\n", c.len()));
+            c.push(
+                "S:FS: lx__S_FS is TRUE during this program's first scan, which starts with\n\
+                 its prescan (METHOD lx__prescan). lx__S_FS and the other controller status\n\
+                 flags (lx__S_V, lx__S_Z, lx__S_N, lx__S_C, lx__S_MINOR) are VAR_GLOBALs of\n\
+                 the Logix prelude, which plcc compiles with every L5X program."
+                    .into(),
+            );
+        }
         out.s("lx__S_FS := lx__first;\nIF lx__first THEN\n    lx__prescan();\n    lx__first := FALSE;\nEND_IF;\n");
         match &pr.main_routine {
             Some(m) => match routines.get(&m.text.to_ascii_lowercase()) {

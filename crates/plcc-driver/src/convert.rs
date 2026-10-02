@@ -208,7 +208,9 @@ fn model_to_st(model: &Model, prelude: bool, diags: &mut Vec<Diagnostic>) -> Opt
                 }));
                 return None;
             }
-            let mut out = plcc_st::print_unit(&unit);
+            // The text is not complete without the prelude: say what it holds.
+            let mut out = String::from(plcc_l5x::PRELUDE_NOTE);
+            out.push_str(&plcc_st::print_unit(&unit));
             if prelude {
                 out.push_str("\n(* ---- Logix prelude (plcc-l5x) ---- *)\n");
                 out.push_str(&plcc_l5x::prelude());

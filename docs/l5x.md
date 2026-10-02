@@ -308,7 +308,10 @@ to (`--prelude` appends the Logix prelude, so the file compiles on its own:
   (floating value), which apply the Logix conversion and set `lx__S_V`,
   `lx__S_Z`, `lx__S_N` (S:V, S:Z, S:N); `lx__div_i`, `lx__mod_i`, `lx__round`,
   `lx__r2l` are the division, modulo and rounding rules of the table above.
-  Status and first-scan flags are globals (`lx__S_FS`, `lx__S_V`, ...).
+  Status and first-scan flags are globals of the prelude (`lx__S_FS`,
+  `lx__S_V`, ...). Without `prelude` the text does not declare them: a
+  comment at its head says what the undeclared names are, and one above
+  `lx__S_FS := lx__first;` in each program says what the flag is.
 - **Hidden variables** start with `lx__`: `lx__rc` (rung condition),
   `lx__bs<n>` / `lx__bo<n>` (branch start / branch OR at nesting depth n),
   `lx__jmp` (a taken JMP's label number), `lx__mcr`, `lx__first`.

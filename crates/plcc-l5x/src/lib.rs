@@ -48,6 +48,14 @@ pub struct Options {
     pub long_rungs: bool,
 }
 
+/// A comment for the head of printed Structured Text lowered from Logix
+/// ladder: what the names it does not declare are.
+pub const PRELUDE_NOTE: &str = "(* Logix ladder lowered by plcc. Names it does not declare come from the Logix\n   \
+prelude, compiled with every L5X program: the data types (TIMER, COUNTER,\n   \
+CONTROL, ...), the instructions (lx__ton, lx__ctu, lx__put_DINT_i, ...) and the\n   \
+controller status flags (lx__S_FS first scan, lx__S_V overflow, lx__S_Z,\n   \
+lx__S_N, ...). docs/l5x.md \"Reading the generated ST\". *)\n\n";
+
 /// Name under which the prelude is reported in diagnostics.
 pub const PRELUDE_NAME: &str = "logix.st";
 
