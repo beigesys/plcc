@@ -7,8 +7,9 @@
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import type { Project } from '@/model'
-import type { FileStore } from './fs'
-import { loadProjectFiles, ProjectFormatError, projectFromFiles, projectNeedsMigration, projectToFiles } from './serialize'
+import { SubFileStore, type FileStore } from './fs'
+import { ProjectFolder } from './folder'
+import { ProjectFormatError, projectFromFiles, projectToFiles, type LoadedProject } from './serialize'
 import { reserveProjectIds } from '@/model'
 
 export interface ProjectSummary {
@@ -63,17 +64,9 @@ export class ProjectRepo {
     return out.sort((a, b) => a.name.localeCompare(b.name))
   }
 
-  private async readAll(dir: string, prefix = ''): Promise<Record<string, string>> {
-    const files: Record<string, string> = {}
-    for (const e of await this.store.list(prefix ? `${dir}/${prefix}` : dir)) {
-      const rel = prefix ? `${prefix}/${e.name}` : e.name
-      if (e.kind === 'dir') Object.assign(files, await this.readAll(dir, rel))
-      else {
-        const t = await this.store.readText(`${dir}/${rel}`)
-        if (t !== null) files[rel] = t
-      }
-    }
-    return files
+  /** The project's folder, to read, save and watch it. */
+  folder(id: string): ProjectFolder {
+    return new ProjectFolder(new SubFileStore(this.store, this.dir(id)))
   }
 
   async load(id: string): Promise<Project> {
@@ -81,28 +74,13 @@ export class ProjectRepo {
   }
 
   /** Loads a project; one in an older format is migrated and saved, with what changed. */
-  async loadWithNotes(id: string): Promise<{ project: Project; migrated?: { notes: string[] } }> {
-    const files = await this.readAll(this.dir(id))
-    if (Object.keys(files).length === 0) throw new Error(`project "${id}" not found`)
-    const loaded = loadProjectFiles(files)
-    reserveProjectIds(loaded.project)
-    if (projectNeedsMigration(files)) await this.save(id, loaded.project)
-    return loaded
+  async loadWithNotes(id: string): Promise<LoadedProject> {
+    if (!(await this.exists(id))) throw new Error(`project "${id}" not found`)
+    return this.folder(id).load()
   }
 
   async save(id: string, project: Project): Promise<void> {
-    const dir = this.dir(id)
-    const files = projectToFiles(project)
-    for (const [path, text] of Object.entries(files)) await this.store.writeText(`${dir}/${path}`, text)
-    for (const sub of ['devices']) {
-      for (const e of await this.store.list(`${dir}/${sub}`)) {
-        const rel = `${sub}/${e.name}`
-        if (!(rel in files)) await this.store.remove(`${dir}/${rel}`)
-      }
-    }
-    // Format 1 files, replaced by project.json.
-    await this.store.remove(`${dir}/routines`)
-    await this.store.remove(`${dir}/tags.toml`)
+    await this.folder(id).save(project, { force: true })
   }
 
   async exists(id: string): Promise<boolean> {
@@ -181,7 +159,7 @@ export interface Autosaver {
 
 /** Debounced saves: the last project scheduled within `delayMs` wins. */
 export function createAutosaver(
-  repo: ProjectRepo,
+  repo: { save(id: string, project: Project): Promise<unknown> },
   delayMs: number,
   onStatus: (status: AutosaveStatus, error?: unknown) => void = () => {},
 ): Autosaver {
