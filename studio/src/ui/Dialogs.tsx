@@ -140,7 +140,7 @@ export function ImportDialog() {
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && close()}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Import</DialogTitle>
           <DialogDescription>
@@ -209,7 +209,7 @@ export function ExportDialog() {
   const report = lastExportReport()
   return (
     <Dialog open={dialog?.kind === 'export' && !!report} onOpenChange={(o) => !o && setDialog(null)}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="sm:max-w-2xl">
         {report && (
           <>
             <DialogHeader>
@@ -240,7 +240,7 @@ function ManifestDialog() {
   const dev = dialog?.kind === 'manifest' ? project.devices.find((d) => d.name === dialog.device) : undefined
   return (
     <Dialog open={!!dev} onOpenChange={(o) => !o && setDialog(null)}>
-      <DialogContent className="max-w-3xl">
+      <DialogContent className="sm:max-w-3xl">
         {dev && (
           <>
             <DialogHeader>

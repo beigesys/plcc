@@ -61,7 +61,7 @@ export function DownloadDialog() {
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && close()}>
-      <DialogContent className="max-w-xl">
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>Download to {ref?.name ?? device.device.name}</DialogTitle>
           <DialogDescription>

@@ -182,7 +182,7 @@ export function AddDeviceDialog({ open, onOpenChange, initialTab = 'catalog' }: 
   }
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl">
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>Add device</DialogTitle>
           <DialogDescription>
@@ -284,7 +284,7 @@ export function ManifestUpdateDialog({
   const changed = diff.filter((d) => d.op !== ' ').length
   return (
     <Dialog open={update !== null} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-3xl">
+      <DialogContent className="sm:max-w-3xl">
         {update && (
           <>
             <DialogHeader>

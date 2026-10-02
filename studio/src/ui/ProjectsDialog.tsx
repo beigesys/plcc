@@ -49,7 +49,7 @@ export function ProjectsDialog() {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogContent className="max-w-xl">
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>Projects</DialogTitle>
           <DialogDescription>
