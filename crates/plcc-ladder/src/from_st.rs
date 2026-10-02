@@ -544,6 +544,7 @@ impl Conv<'_> {
                 label: None,
                 elements,
                 label_src: None,
+                part_of: None,
             });
         }
         rungs

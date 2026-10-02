@@ -25,7 +25,7 @@ Pou     { id, name, kind: program | function_block | function, return_type?,
 Variable{ name, data_type, section: local | input | output | in_out | external
           | temp | global, initial?, address?, comment?, constant, retain }
 Routine { id, name, rungs: [Rung] }
-Rung    { id, comment?, label?, elements: [Element] }      -- a series, left to right
+Rung    { id, comment?, label?, part_of?, elements: [Element] }  -- a series, left to right
 Element = contact { id, operand, kind: no | nc | rising | falling }
         | coil    { id, operand, kind: normal | negated | set | reset | rising | falling }
         | branch  { id, legs: [[Element]] }                -- parallel legs, top to bottom
@@ -36,8 +36,13 @@ Pin     { name, dir: input | output | in_out, value?, negated, rung? }
 ```
 
 Every element, rung, routine and POU carries an `id` unique in the project, so
-an editor can refer to an element. Elements may carry `notes` (translation
-warnings, why a network became an ST box). Operands, pin values and ST-box code
+an editor can refer to an element. Rungs are numbered from 0 in routine order
+(as in Studio 5000 and the L5X `Number` attribute) wherever plcc names one: the
+`(* rung N *)` comments of generated ST, translation warnings. `part_of` marks
+a rung the IEC ↔ Logix translation added to carry part of the rung with that
+id (a one-shot's storage-bit update, a counter reset); it has no number of its
+own (`(* part of rung N *)`), so the original rungs keep theirs. Elements
+may carry `notes` (translation warnings, why a network became an ST box). Operands, pin values and ST-box code
 are text: ST expressions in the IEC dialect, Logix operands (tag paths,
 immediates, CPT expressions) in the Logix dialect.
 

@@ -300,10 +300,24 @@ impl L<'_> {
             self.hide("_ld_jmp", "DINT");
             body.push(assign(jmp(), int(0)));
         }
+        // Rungs are numbered from 0, as Studio 5000 and the L5X `Number`
+        // attribute do; a rung a translation added is numbered as the rung
+        // it is part of.
+        let mut numbers = HashMap::new();
+        for g in r.rungs.iter().filter(|g| g.part_of.is_none()) {
+            let n = numbers.len();
+            numbers.insert(g.id, n);
+        }
         let mut pass = Vec::new();
-        for (ri, g) in r.rungs.iter().enumerate() {
+        for g in &r.rungs {
             if self.opts.annotate {
-                let mut text = format!("rung {}", ri + 1);
+                let mut text = match g.part_of {
+                    None => format!("rung {}", numbers[&g.id]),
+                    Some(of) => match numbers.get(&of) {
+                        Some(n) => format!("part of rung {n}"),
+                        None => "added rung".to_string(),
+                    },
+                };
                 if let Some(c) = &g.comment {
                     text.push_str(": ");
                     text.push_str(c);

@@ -381,7 +381,7 @@ impl<'o> Tr<'o> {
         for r in &pou.routines {
             let mut rungs = Vec::new();
             for (k, g) in r.rungs.iter().enumerate() {
-                self.place = format!("{}/{} rung {}", pou.name, r.name, k + 1);
+                self.place = format!("{}/{} rung {k}", pou.name, r.name);
                 let mut around = Around::default();
                 let elements = f(self, &g.elements, &mut around);
                 let mut label = g.label.clone();
@@ -390,6 +390,7 @@ impl<'o> Tr<'o> {
                         id: self.id(),
                         label: label.take(),
                         elements: before,
+                        part_of: Some(g.id),
                         ..Default::default()
                     });
                 }
@@ -399,11 +400,13 @@ impl<'o> Tr<'o> {
                     label,
                     elements,
                     label_src: None,
+                    part_of: None,
                 });
                 for after in around.after {
                     rungs.push(Rung {
                         id: self.id(),
                         elements: after,
+                        part_of: Some(g.id),
                         ..Default::default()
                     });
                 }

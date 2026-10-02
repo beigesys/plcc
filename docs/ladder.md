@@ -160,7 +160,8 @@ variable.
 
 **Printing.** `plcc convert plant.xml --to st` prints the lowered ST, each
 network's statements after a `(* rung N *)` comment (`network N` in FBD),
-networks numbered from 1 in execution order.
+networks numbered from 0 in execution order (as Logix and the ladder model
+number rungs).
 
 **Spans.** Every generated statement and expression carries the span of the XML
 element it came from: a coil's assignment points at the `<coil>`, and an

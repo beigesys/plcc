@@ -161,6 +161,12 @@ pub struct Rung {
     /// Where the label came from (the `LBL` instruction of rung text).
     #[serde(skip)]
     pub label_src: Option<Src>,
+    /// A rung the IEC ↔ Logix translation added to carry part of the rung
+    /// with this id (a one-shot's storage-bit update, a counter reset): it
+    /// has no rung number of its own, so the rungs of the original keep
+    /// their numbers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part_of: Option<Id>,
 }
 
 /// One element of a rung.

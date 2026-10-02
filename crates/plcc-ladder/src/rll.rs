@@ -279,6 +279,7 @@ pub fn read(text: &str, ids: &mut Ids) -> Result<Vec<Rung>, TextError> {
                 label,
                 elements: series(text, body, ids),
                 label_src,
+                part_of: None,
             }
         })
         .collect())

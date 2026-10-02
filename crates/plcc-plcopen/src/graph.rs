@@ -853,7 +853,9 @@ impl Graph<'_, '_> {
             if self.lower.annotate {
                 let span = net.first().map_or(body_span, |&i| self.elems[i].span);
                 pass.push(stmt(
-                    StatementKind::Comment(format!("{} {}", self.unit_word, ni + 1)),
+                    // Numbered from 0, like the rungs of the ladder model
+                    // and of Logix.
+                    StatementKind::Comment(format!("{} {ni}", self.unit_word)),
                     span,
                 ));
             }
