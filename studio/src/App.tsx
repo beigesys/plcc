@@ -4,16 +4,18 @@ import { primaryDevice } from '@/devices/project'
 import { useEditor } from '@/state/editor'
 import { startSimulator, stopSimulator, simSend } from '@/state/live'
 import { disconnectOnline, setOnlineProject } from '@/state/online'
-import { initPersistence } from '@/state/persistence'
+import { initPersistence, useProjects } from '@/state/persistence'
 import { runCheck, scheduleCheck } from '@/state/problems'
 import { buildForSimulator, resetSimBuild } from '@/state/simulate'
 import { DialogHost } from '@/ui/Dialogs'
+import { DiskBanner } from '@/ui/DiskBanner'
 import { ProblemsPanel } from '@/ui/ProblemsPanel'
 import { CommandPalette } from '@/ui/CommandPalette'
 import { Inspector } from '@/ui/Inspector'
 import { LeftNav } from '@/ui/LeftNav'
 import { MainView } from '@/ui/MainView'
 import { ProjectsDialog } from '@/ui/ProjectsDialog'
+import { StartScreen } from '@/ui/StartScreen'
 import { StatusBar } from '@/ui/StatusBar'
 import { TopBar } from '@/ui/TopBar'
 
@@ -26,6 +28,7 @@ function isTyping(t: EventTarget | null): boolean {
 export function App() {
   const mode = useEditor((s) => s.mode)
   const projectId = useEditor((s) => s.projectId)
+  const ready = useProjects((s) => s.ready)
   // The simulator restarts when the controller's manifest changes (image sizes).
   const deviceText = useEditor((s) => s.project.deviceFiles[s.project.devices[0]?.manifest ?? ''])
 
@@ -66,6 +69,7 @@ export function App() {
 
   // plcc checks the project after edits settle (in a worker).
   useEffect(() => {
+    if (!projectId) return
     void runCheck(useEditor.getState().project)
     let prev = useEditor.getState().project
     return useEditor.subscribe((s) => {
@@ -107,9 +111,14 @@ export function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  if (!projectId) return ready ? <StartScreen /> : <div className="h-full bg-bg" aria-busy="true" />
+
   return (
-    <div className="grid h-full min-w-[1100px] grid-rows-[52px_minmax(0,1fr)_auto_30px] bg-bg text-text">
+    <div className="grid h-full min-w-[1100px] grid-rows-[52px_auto_minmax(0,1fr)_auto_30px] bg-bg text-text">
       <TopBar />
+      <div>
+        <DiskBanner />
+      </div>
       <div className="grid min-h-0 grid-cols-[232px_minmax(0,1fr)_300px]">
         <LeftNav />
         <MainView />

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-import { ChevronRight, Download, Palette, Check, FileText } from 'lucide-react'
+import { ChevronRight, Download, Palette, Check, FileText, Folder, HardDrive } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuShortcut,
@@ -11,9 +11,12 @@ import { useEditor, type Mode } from '@/state/editor'
 import { useLive } from '@/state/live'
 import { describeProgram } from '@/serial'
 import { exportRoutine } from '@/state/convert'
-import { downloadZip } from '@/state/persistence'
+import {
+  closeProject, downloadZip, newFolderProject, openFolderProject, openRecent, refreshLists, saveToFolder, useProjects,
+} from '@/state/persistence'
 import { THEMES } from '@/state/theme'
 import { Logo } from './Logo'
+import { fileAction } from './projectActions'
 import { StateDot } from './StateDot'
 
 const MODES: { id: Mode; label: string }[] = [
@@ -115,15 +118,43 @@ function ThemeMenu() {
 
 function FileMenu() {
   const s = () => useEditor.getState()
+  const folderAccess = useProjects((p) => p.folderAccess)
+  const recent = useProjects((p) => p.recent)
+  const source = useEditor((e) => e.projectSource)
+  const currentKey = source?.kind === 'folder' ? source.key : null
   return (
-    <DropdownMenu>
+    <DropdownMenu onOpenChange={(o) => o && void refreshLists()}>
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" size="sm" aria-label="File">
           <FileText /> File
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-64">
-        <DropdownMenuItem onSelect={() => s().setProjectsOpen(true)}>Projects…</DropdownMenuItem>
+        {folderAccess ? (
+          <>
+            <DropdownMenuItem onSelect={() => fileAction(() => newFolderProject())}>New project…</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => fileAction(() => openFolderProject())}>Open project…</DropdownMenuItem>
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger disabled={recent.length === 0}>Open recent</DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="w-64">
+                {recent.slice(0, 8).map((e) => (
+                  <DropdownMenuItem key={e.key} disabled={e.key === currentKey} onSelect={() => fileAction(() => openRecent(e))}>
+                    <span className="min-w-0 flex-1 truncate">{e.name || e.folder}</span>
+                    <DropdownMenuShortcut>{e.folder}</DropdownMenuShortcut>
+                  </DropdownMenuItem>
+                ))}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => s().setProjectsOpen(true)}>All projects…</DropdownMenuItem>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          </>
+        ) : (
+          <DropdownMenuItem onSelect={() => s().setProjectsOpen(true)}>New or open project…</DropdownMenuItem>
+        )}
+        <DropdownMenuItem onSelect={() => s().setProjectsOpen(true)}>Projects and browser storage…</DropdownMenuItem>
+        {folderAccess && source?.kind === 'browser' && (
+          <DropdownMenuItem onSelect={() => fileAction(() => saveToFolder())}>Save to folder…</DropdownMenuItem>
+        )}
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={() => s().setDialog({ kind: 'import' })}>
           Import L5X, PLCopen, ST, TwinCAT…
@@ -146,6 +177,8 @@ function FileMenu() {
             </DropdownMenuItem>
           </DropdownMenuSubContent>
         </DropdownMenuSub>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={() => void closeProject()}>Close project</DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   )
@@ -155,6 +188,7 @@ export function TopBar() {
   const project = useEditor((s) => s.project)
   const view = useEditor((s) => s.view)
   const openProjects = useEditor((s) => s.setProjectsOpen)
+  const source = useEditor((s) => s.projectSource)
   const crumbs: string[] = []
   if (view.kind === 'routine') crumbs.push(view.program, view.routine)
   else if (view.kind === 'tags') crumbs.push('Tags')
@@ -170,11 +204,21 @@ export function TopBar() {
       <nav aria-label="Breadcrumb" className="flex min-w-0 flex-1 items-center gap-1 text-dense">
         <button
           type="button"
-          className="truncate rounded-control px-1.5 py-0.5 font-medium hover:bg-surface-2"
+          data-testid="project-crumb"
+          className="flex min-w-0 items-center gap-1.5 rounded-control px-1.5 py-0.5 hover:bg-surface-2"
           onClick={() => openProjects(true)}
-          title="Projects"
+          title={source?.kind === 'folder' ? `Folder “${source.folder}” on disk` : 'In browser storage (no folder)'}
         >
-          {project.name}
+          {source?.kind === 'folder' ? (
+            <>
+              <Folder className="size-3.5 shrink-0 text-text-muted" aria-hidden />
+              <span className="truncate text-text-muted">{source.folder}</span>
+              <ChevronRight className="size-3.5 shrink-0 text-text-muted" aria-hidden />
+            </>
+          ) : (
+            <HardDrive className="size-3.5 shrink-0 text-text-muted" aria-label="Browser storage" />
+          )}
+          <span className="truncate font-medium">{project.name}</span>
         </button>
         {crumbs.map((c, i) => (
           <span key={i} className="flex min-w-0 items-center gap-1 text-text-muted">

@@ -12,9 +12,10 @@ import { emptyProject } from '@/model'
 import type { Diagnostic } from '@/plcc/frontend'
 import { importKind, ImportError, lastExportReport, mergeImport, readImport, type Imported, type ImportKind } from '@/state/convert'
 import { useEditor } from '@/state/editor'
-import { createProject } from '@/state/persistence'
+import { createProject, useProjects } from '@/state/persistence'
 import { AddDeviceDialog, ManifestUpdateDialog } from './DeviceDialogs'
 import { DownloadDialog } from './DownloadDialog'
+import { runProjectAction } from './projectActions'
 
 function DiagList({ diagnostics, label }: { diagnostics: Diagnostic[]; label: string }) {
   if (!diagnostics.length) return null
@@ -125,8 +126,12 @@ export function ImportDialog() {
     if (!result) return
     const base = { ...emptyProject(result.name), pous: [], tasks: [] }
     const { project } = mergeImport(base, result.imported.model)
-    await createProject(result.name, project)
-    close()
+    const ok = await runProjectAction(() => createProject(result.name, project))
+    if (ok) close()
+    else if (useProjects.getState().note) {
+      close()
+      useEditor.getState().setProjectsOpen(true)
+    }
   }
 
   const counts = result
@@ -190,7 +195,7 @@ export function ImportDialog() {
                 Cancel
               </Button>
               <Button variant="outline" size="sm" onClick={() => void asNew()}>
-                Open as a new project
+                {useProjects.getState().folderAccess ? 'Open as a new project (in a folder)…' : 'Open as a new project'}
               </Button>
               <Button size="sm" onClick={add}>
                 Add to this project

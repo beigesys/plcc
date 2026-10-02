@@ -6,7 +6,8 @@ import {
 import { PALETTE, parseQuickEntry, printRung } from '@/model'
 import { addRungFromQuickEntry, insertInstruction } from '@/state/commands'
 import { useEditor, type Mode } from '@/state/editor'
-import { downloadZip } from '@/state/persistence'
+import { closeProject, downloadZip, newFolderProject, openFolderProject, useProjects } from '@/state/persistence'
+import { fileAction } from './projectActions'
 import { COMMANDS, isEnabled, type Target } from '@/state/registry'
 import { THEMES } from '@/state/theme'
 
@@ -129,8 +130,21 @@ export function CommandPalette() {
             ))}
           </CommandGroup>
           <CommandGroup heading="Project">
-            <CommandItem value="projects open new rename delete import" onSelect={() => run(() => s().setProjectsOpen(true))}>
+            {useProjects.getState().folderAccess && (
+              <>
+                <CommandItem value="new project folder" onSelect={() => run(() => fileAction(() => newFolderProject()))}>
+                  New project…
+                </CommandItem>
+                <CommandItem value="open project folder" onSelect={() => run(() => fileAction(() => openFolderProject()))}>
+                  Open project…
+                </CommandItem>
+              </>
+            )}
+            <CommandItem value="projects recent browser storage rename delete import" onSelect={() => run(() => s().setProjectsOpen(true))}>
               Projects…
+            </CommandItem>
+            <CommandItem value="close project" onSelect={() => run(() => void closeProject())}>
+              Close project
             </CommandItem>
             <CommandItem value="export zip download project" onSelect={() => run(() => downloadZip(s().project))}>
               Export project as .zip

@@ -69,10 +69,25 @@ function useSmoothedStats(stats: { lastScanMs: number; jitterMs: number } | null
 function SaveText() {
   const status = useEditor((s) => s.saveStatus)
   const err = useEditor((s) => s.saveError)
+  const source = useEditor((s) => s.projectSource)
+  const where = source?.kind === 'folder' ? `to ${source.folder}` : 'in browser'
   const text =
-    status === 'saving' ? 'Saving…' : status === 'pending' ? 'Unsaved' : status === 'saved' ? 'Saved' : status === 'memory' ? 'In memory only' : status === 'error' ? 'Save failed' : ''
+    status === 'saving'
+      ? 'Saving…'
+      : status === 'pending'
+        ? 'Unsaved'
+        : status === 'saved'
+          ? `Saved ${where}`
+          : status === 'memory'
+            ? 'In memory only'
+            : status === 'error'
+              ? 'Save failed'
+              : status === 'blocked'
+                ? 'Not saved'
+                : ''
+  const tone = status === 'error' ? 'text-fault' : status === 'memory' || status === 'blocked' ? 'text-alarm' : 'text-text-muted'
   return (
-    <span className={status === 'error' ? 'text-fault' : status === 'memory' ? 'text-alarm' : 'text-text-muted'} title={err}>
+    <span data-testid="save-status" data-status={status} className={tone} title={err}>
       {text}
     </span>
   )

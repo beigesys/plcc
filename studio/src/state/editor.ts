@@ -23,7 +23,19 @@ export interface Selection {
   elementId: Id | null
 }
 
-export type SaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error' | 'memory'
+/** `blocked`: edits are not saved until a disk banner is resolved. */
+export type SaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error' | 'memory' | 'blocked'
+
+/** Where the open project lives. */
+export type ProjectSource =
+  | { kind: 'folder'; key: string; folder: string }
+  | { kind: 'browser'; id: string }
+
+/** Something about the project's folder that needs the user. */
+export type DiskBanner =
+  | { kind: 'permission'; folder: string }
+  | { kind: 'conflict'; paths: string[]; error?: string }
+  | { kind: 'gone'; folder: string }
 
 /** Dialogs opened from commands (context menus, the palette). */
 export type DialogState =
@@ -46,7 +58,10 @@ export type FocusRequest =
 const HISTORY_LIMIT = 200
 
 export interface EditorState {
+  /** Null when no project is open: the start screen. */
   projectId: string | null
+  projectSource: ProjectSource | null
+  disk: DiskBanner | null
   project: Project
   past: Project[]
   future: Project[]
@@ -68,6 +83,8 @@ export interface EditorState {
   notice: { text: string; tone: 'info' | 'alarm' | 'fault' } | null
 
   openProject(id: string | null, project: Project): void
+  /** The open project, re-read from disk: keeps the view when it still exists. */
+  reloadProject(project: Project): void
   commit(fn: (p: Project) => Project): void
   undo(): void
   redo(): void
@@ -93,6 +110,8 @@ export function firstRoutineView(p: Project): View {
 
 export const useEditor = create<EditorState>((set, get) => ({
   projectId: null,
+  projectSource: null,
+  disk: null,
   project: demoProject(),
   past: [],
   future: [],
@@ -119,7 +138,13 @@ export const useEditor = create<EditorState>((set, get) => ({
       view: firstRoutineView(project),
       selection: { rungId: null, elementId: null },
       editing: null,
+      disk: null,
     })
+  },
+  reloadProject(project) {
+    reserveProjectIds(project)
+    set({ project, past: [], future: [], editing: null })
+    fixView()
   },
   commit(fn) {
     const prev = get().project
