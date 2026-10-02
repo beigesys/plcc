@@ -233,6 +233,7 @@ fn parse_impl(source: &str, opts: &Options, annotate: bool) -> (CompilationUnit,
         )));
     }
     let mut declarations = unit.declarations;
+    dedup_prescan(&mut declarations);
     if !comments.is_empty() {
         comment_markers(&mut declarations, &comments);
     }
@@ -255,6 +256,75 @@ fn parse_impl(source: &str, opts: &Options, annotate: bool) -> (CompilationUnit,
         },
         errors,
     )
+}
+
+/// Drop the assignments of a program's `lx__prescan` method that repeat an
+/// earlier one with nothing in between that could have changed the target:
+/// several instructions on one tag each contribute their prescan action (a
+/// TON's `ACC := 0`, and its `Accum` operand `0`), and the method should say
+/// it once. Only assignments of a literal are dropped; a write that may touch
+/// the target (the same path, a path inside it or around it, any indexed
+/// path on the same tag) ends the earlier assignment's reach, and a call ends
+/// every one; an indexed target is never a repeat. The order of what stays is
+/// unchanged.
+fn dedup_prescan(decls: &mut [plcc_st::Declaration]) {
+    use plcc_st::{ExpressionKind, StatementKind, print_expression};
+    fn literal(e: &plcc_st::Expression) -> bool {
+        match &e.kind {
+            ExpressionKind::IntegerLiteral(_)
+            | ExpressionKind::RealLiteral(_)
+            | ExpressionKind::BoolLiteral(_) => true,
+            ExpressionKind::UnaryOp { operand, .. } => literal(operand),
+            ExpressionKind::Parenthesized(inner) => literal(inner),
+            _ => false,
+        }
+    }
+    fn root(path: &str) -> &str {
+        path.split(['.', '[']).next().unwrap_or(path)
+    }
+    // Could a write to `a` change `b` (or the reverse)?
+    fn overlap(a: &str, b: &str) -> bool {
+        if root(a) != root(b) {
+            return false;
+        }
+        if a.contains('[') || b.contains('[') {
+            return true;
+        }
+        let inside = |x: &str, y: &str| {
+            x == y || (x.starts_with(y) && x[y.len()..].starts_with(['.', '[']))
+        };
+        inside(a, b) || inside(b, a)
+    }
+    for d in decls {
+        let plcc_st::Declaration::FunctionBlock(f) = d else {
+            continue;
+        };
+        for m in &mut f.methods {
+            if !m.name.name.eq_ignore_ascii_case("lx__prescan") {
+                continue;
+            }
+            // (target, value) of the assignments still in effect.
+            let mut seen: Vec<(String, String)> = Vec::new();
+            m.body.retain(|s| {
+                let StatementKind::Assignment { target, value } = &s.kind else {
+                    seen.clear();
+                    return true;
+                };
+                let t = print_expression(target).to_ascii_uppercase();
+                let v = print_expression(value).to_ascii_uppercase();
+                if seen.iter().any(|(st, sv)| *st == t && *sv == v) {
+                    return false;
+                }
+                seen.retain(|(st, _)| !overlap(st, &t));
+                // An indexed target names another element once its index
+                // variable changes: never treated as a repeat.
+                if literal(value) && !t.contains('[') {
+                    seen.push((t, v));
+                }
+                true
+            });
+        }
+    }
 }
 
 /// Replace the `__PLCC_COMMENT(k);` markers of an annotated lowering with
@@ -339,4 +409,60 @@ fn byte_offset(src: &str, pos: roxmltree::TextPos) -> usize {
         line += 1;
     }
     src.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn prescan_after_dedup(body: &str) -> String {
+        let src = format!(
+            "FUNCTION_BLOCK F\nVAR a : ARRAY[0..3] OF BOOL; i : DINT; t : TIMER; x : BOOL; END_VAR\n\
+             METHOD lx__prescan\n{body}\nEND_METHOD\nEND_FUNCTION_BLOCK\n"
+        );
+        let (unit, errs) = plcc_st::parse(&src);
+        assert!(errs.is_empty(), "{errs:?}");
+        let mut decls = unit.declarations;
+        dedup_prescan(&mut decls);
+        let plcc_st::Declaration::FunctionBlock(f) = &decls[0] else {
+            panic!()
+        };
+        plcc_st::print_statements(&f.methods[0].body, 0)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn prescan_repeats_are_dropped_only_when_nothing_changed_them() {
+        // A plain repeat goes; the first stays where it was.
+        assert_eq!(
+            prescan_after_dedup("x := FALSE; t.ACC := 0; x := FALSE; t.ACC := 0;"),
+            "x := FALSE; t.ACC := 0;"
+        );
+        // Another value in between, a write of the whole structure, a call:
+        // the repeat stays.
+        assert_eq!(
+            prescan_after_dedup("x := FALSE; x := TRUE; x := FALSE;"),
+            "x := FALSE; x := TRUE; x := FALSE;"
+        );
+        assert_eq!(
+            prescan_after_dedup("t.ACC := 0; t := t; t.ACC := 0;"),
+            "t.ACC := 0; t := t; t.ACC := 0;"
+        );
+        assert_eq!(
+            prescan_after_dedup("x := FALSE; t(); x := FALSE;"),
+            "x := FALSE; t(); x := FALSE;"
+        );
+        // An indexed target is another element once the index changes.
+        assert_eq!(
+            prescan_after_dedup("a[i] := TRUE; i := 1; a[i] := TRUE;"),
+            "a[i] := TRUE; i := 1; a[i] := TRUE;"
+        );
+        // A write to another member does not end the repeat.
+        assert_eq!(
+            prescan_after_dedup("t.ACC := 0; t.DN := FALSE; t.ACC := 0;"),
+            "t.ACC := 0; t.DN := FALSE;"
+        );
+    }
 }

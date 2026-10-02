@@ -130,6 +130,10 @@ actions from every routine of a program into a `lx__prescan` method that runs
 once, just before the program's first scan. Pseudo-operands (the Preset and
 Accum operands of TON/TOF/RTO/CTU/CTD, RM003 "Pseudo-operand initialization":
 "initialized when the application is downloaded") are applied at the same point.
+An action several instructions contribute (a TON's Accum operand `0` and its
+own `ACC := 0`, two OTEs on one bit) is stated once, at its first place: a
+later assignment of the same literal to the same tag is dropped unless
+something in between may have changed that tag.
 
 **S:FS** (first scan) is TRUE during each program's first scan. **S:V, S:Z, S:N**
 are set by the math and move instructions from the value they store (RM003 "Math
