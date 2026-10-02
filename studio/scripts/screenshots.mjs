@@ -3,6 +3,7 @@
 // Drives the production build in headless Chromium, checks what the studio
 // does end to end, and writes docs/screenshots/*.png and perf.json:
 //
+//   - the start screen; Try the demo;
 //   - the demo project, Simulate with plcc's REAL compiler (downloaded into
 //     the page, compiled to wasm32, linked, run by @plcc/plc-wasm): StartPB
 //     seals Motor in and RunTimer accumulates;
@@ -11,7 +12,12 @@
 //   - the ST view;
 //   - importing an L5X fixture and an ST file;
 //   - the Download dialog building the program image;
-//   - Online against the demo device, with the serial log.
+//   - Online against the demo device, with the serial log;
+//   - projects in folders: New / Open / Recent / Close, autosave to the
+//     folder, a change made on disk reloading the project, a conflict with
+//     unsaved edits, Save to folder…. The native folder picker cannot be
+//     driven, so showDirectoryPicker is stubbed with folders under an OPFS
+//     directory (`disk/`): the same FileSystemDirectoryHandle interface.
 //
 // Any failed check or console error exits non-zero.
 //
@@ -22,7 +28,9 @@
 // (packages/plcc-compiler-wasm: sh build.sh) for the Simulate checks.
 
 import { spawn } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { chromium } from 'playwright'
 
 const PORT = 5199
@@ -54,10 +62,58 @@ function check(name, ok, detail = '') {
   if (!ok) process.exitCode = 1
 }
 
-const browser = await chromium.launch()
+// A persistent (not incognito) profile in a fresh directory: Chromium closes
+// itself when an incognito page reads a FileSystemDirectoryHandle back from
+// IndexedDB (what Recent does), at least for the OPFS handles the picker stub
+// returns.
+const profile = mkdtempSync(join(tmpdir(), 'plcc-studio-shots-'))
 const perf = {}
+let browser
 try {
-  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' })
+  const ctx = await chromium.launchPersistentContext(profile, { viewport: { width: 1440, height: 900 }, colorScheme: 'dark' })
+  browser = ctx
+  // The folder picker, stubbed: each call takes the next name from
+  // window.__picks (none: the user cancelled) and returns OPFS disk/<name>.
+  // window.__disk reads and writes those folders as another program would.
+  await ctx.addInitScript(() => {
+    const diskRoot = async () => (await navigator.storage.getDirectory()).getDirectoryHandle('disk', { create: true })
+    const walk = async (path, create) => {
+      const parts = path.split('/')
+      const name = parts.pop()
+      let d = await diskRoot()
+      for (const p of parts) d = await d.getDirectoryHandle(p, { create })
+      return { d, name }
+    }
+    window.__picks = []
+    window.showDirectoryPicker = async () => {
+      const name = window.__picks.shift()
+      if (!name) throw new DOMException('The user aborted a request.', 'AbortError')
+      return (await diskRoot()).getDirectoryHandle(name, { create: true })
+    }
+    window.__disk = {
+      async read(path) {
+        const { d, name } = await walk(path, false)
+        return (await (await d.getFileHandle(name)).getFile()).text()
+      },
+      async write(path, text) {
+        const { d, name } = await walk(path, true)
+        const w = await (await d.getFileHandle(name, { create: true })).createWritable()
+        await w.write(text)
+        await w.close()
+      },
+      async list(dir) {
+        const out = []
+        const rec = async (h, pre) => {
+          for await (const e of h.values()) {
+            if (e.kind === 'directory') await rec(e, `${pre}${e.name}/`)
+            else out.push(`${pre}${e.name}`)
+          }
+        }
+        await rec((await walk(`${dir}/x`, true)).d, '')
+        return out.sort()
+      },
+    }
+  })
   const page = await ctx.newPage()
   page.setDefaultTimeout(15000)
   page.on('console', (m) => m.type() === 'error' && errors.push(m.text()))
@@ -68,9 +124,19 @@ try {
   const rungText = (i) => page.locator('[data-rung-text]').nth(i).inputValue()
 
   await page.goto(URL)
+  const startScreen = page.getByRole('main', { name: 'Start' })
+  await startScreen.waitFor()
+  check(
+    'the start screen offers New project, Open project and the demo',
+    (await startScreen.getByRole('button', { name: 'New project…' }).isVisible()) &&
+      (await startScreen.getByRole('button', { name: 'Open project…' }).isVisible()) &&
+      (await startScreen.getByRole('button', { name: 'Try the demo' }).isVisible()),
+  )
+  await shot('start-screen')
+  await startScreen.getByRole('button', { name: 'Try the demo' }).click()
   await page.getByRole('application').waitFor()
   await page.waitForTimeout(800)
-  check('opens with the demo project', (await page.locator('[data-rung-text]').count()) === 3)
+  check('Try the demo opens the demo project', (await page.locator('[data-rung-text]').count()) === 3)
   // plcc's front end loads in a worker and checks the project.
   await page.waitForFunction(() => {
     const b = [...document.querySelectorAll('button')].find((x) => x.getAttribute('aria-label')?.startsWith('Problems:'))
@@ -307,6 +373,88 @@ try {
   await page.keyboard.press('Escape')
   await page.keyboard.press('Escape')
 
+  // ---- projects in folders (showDirectoryPicker stubbed, see the top)
+  const fileMenu = async (item) => {
+    await page.getByRole('button', { name: 'File' }).click()
+    await page.getByRole('menuitem', { name: item, exact: true }).click()
+  }
+  const disk = {
+    read: (path) => page.evaluate((p) => window.__disk.read(p), path),
+    write: (path, text) => page.evaluate(([p, t]) => window.__disk.write(p, t), [path, text]),
+    list: (dir) => page.evaluate((d) => window.__disk.list(d), dir),
+  }
+  const pick = (name) => page.evaluate((n) => window.__picks.push(n), name)
+  const crumb = page.getByTestId('project-crumb')
+  const saved = () => page.locator('[data-testid=save-status][data-status=saved]').waitFor()
+  const addRung = async (text) => {
+    await page.locator('#quick-entry').fill(text)
+    await page.locator('#quick-entry').press('Enter')
+  }
+
+  await page.getByRole('radio', { name: 'Offline' }).click()
+  await fileMenu('Close project')
+  await startScreen.waitFor()
+  await pick('pump-skid')
+  await startScreen.getByRole('button', { name: 'New project…' }).click()
+  await page.getByRole('application').waitFor()
+  const files = await disk.list('pump-skid')
+  check(
+    'New project… writes the project into the picked folder',
+    JSON.stringify(files) === JSON.stringify(['.gitignore', 'README.md', 'devices/simulator.toml', 'project.json', 'project.toml']) &&
+      /pump-skid/.test(await crumb.innerText()),
+    files.join(' '),
+  )
+  await addRung('XIC Start OTE Lamp')
+  await saved()
+  check('edits autosave to the folder', /"Lamp"/.test(await disk.read('pump-skid/project.json')))
+
+  const toml = await disk.read('pump-skid/project.toml')
+  await disk.write('pump-skid/project.toml', toml.replace('name = "Pump skid"', 'name = "Pump Skid (from git)"'))
+  await page.waitForFunction(() => /from git/.test(document.querySelector('[data-testid=project-crumb]')?.textContent ?? ''), null, { timeout: 8000 })
+  check('a change on disk reloads the project', /Reloaded from disk/.test(await page.locator('footer').innerText()))
+
+  await addRung('XIC Start OTE Horn')
+  await disk.write('pump-skid/project.toml', toml.replace('name = "Pump skid"', 'name = "Theirs"'))
+  const banner = page.getByTestId('disk-banner')
+  await page.locator('[data-testid=disk-banner][data-kind=conflict]').waitFor({ timeout: 8000 })
+  const theirsKept = /Theirs/.test(await disk.read('pump-skid/project.toml')) && !/Horn/.test(await disk.read('pump-skid/project.json'))
+  await shot('disk-conflict')
+  await banner.getByRole('button', { name: 'Keep mine and overwrite' }).click()
+  await banner.waitFor({ state: 'detached' })
+  check(
+    'unsaved edits + a change on disk: a conflict, nothing overwritten until Keep mine',
+    theirsKept && /Horn/.test(await disk.read('pump-skid/project.json')) && /from git/.test(await disk.read('pump-skid/project.toml')),
+  )
+
+  await disk.write('notes/todo.txt', 'not a project\n')
+  await pick('notes')
+  await fileMenu('Open project…')
+  const projectsDialog = page.getByRole('dialog', { name: 'Projects' })
+  await projectsDialog.getByRole('alert').waitFor()
+  const openErr = await projectsDialog.getByRole('alert').innerText()
+  await pick('notes')
+  await projectsDialog.getByRole('button', { name: 'New project…' }).click()
+  await page.waitForFunction(() => /not empty/.test(document.querySelector('[role=dialog] [role=alert]')?.textContent ?? ''))
+  check('Open refuses a folder without project.toml, New a non-empty one', /not a plcc project/.test(openErr), openErr)
+  await page.keyboard.press('Escape')
+
+  await fileMenu('Close project')
+  await startScreen.waitFor()
+  await shot('start-screen-recent')
+  await startScreen.getByRole('button', { name: /^Pump Skid \(from git\)/ }).click()
+  await page.getByRole('application').waitFor()
+  check('Open recent reopens the folder', /pump-skid/.test(await crumb.innerText()) && (await page.locator('[data-rung-text]').count()) === 2)
+  await page.waitForTimeout(300)
+  await shot('project-folder')
+
+  await fileMenu('Close project')
+  await startScreen.getByRole('button', { name: 'Try the demo' }).click()
+  await page.getByRole('application').waitFor()
+  await pick('demo-copy')
+  await fileMenu('Save to folder…')
+  await page.waitForFunction(() => /demo-copy/.test(document.querySelector('[data-testid=project-crumb]')?.textContent ?? ''))
+  check('Save to folder… moves a browser-storage project to disk', /Demo Opta/.test(await disk.read('demo-copy/project.toml')))
+
   // Narrow window.
   await page.setViewportSize({ width: 1100, height: 760 })
   await page.waitForTimeout(300)
@@ -314,7 +462,8 @@ try {
 } catch (e) {
   check('the run completed', false, e instanceof Error ? e.message.split('\n')[0] : String(e))
 } finally {
-  await browser.close()
+  await browser?.close()
+  rmSync(profile, { recursive: true, force: true })
   server.kill()
 }
 

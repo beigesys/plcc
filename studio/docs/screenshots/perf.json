@@ -1,12 +1,12 @@
 {
-  "compilerFirstLoadMs": 1641,
+  "compilerFirstLoadMs": 1671,
   "simulatePlcc": {
     "fps": 60.3,
     "p50FrameMs": 16.7,
     "p99FrameMs": 16.8,
     "longTasks": 0,
     "longestTaskMs": 0,
-    "statusBar": "Simulator · plcc wasm32 build (1449 ms) Scan 31 µs · max 100 µs Period 10 ms Jitter 4.11 ms · max 4.66 ms 0 0 Rung 0, element 3/5 Saved"
+    "statusBar": "Simulator · plcc wasm32 build (1384 ms) Scan 17 µs · max 100 µs Period 10 ms Jitter 4.14 ms · max 4.62 ms 0 0 Rung 0, element 3/5 Saved in browser"
   },
-  "compilerCachedLoadMs": 1404
+  "compilerCachedLoadMs": 1353
 }
